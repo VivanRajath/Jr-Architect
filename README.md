@@ -1,86 +1,160 @@
 # Jr Architect 🚀
 
-Jr Architect is a powerful system that instantly clones any GitHub repository and provisions a live Docker container for it. It automatically detects the project's runtime (Node.js, Python, Go, Rust, React, Next.js, etc.) and starts the appropriate development server. It also features a fully-fledged browser-based IDE for making live code edits.
+Jr Architect is a sandbox-based development environment that automatically runs GitHub repositories. The goal of the project is to simulate a lightweight AI-assisted developer workspace that can analyze a repository, determine how to run it, and execute the application inside an isolated sandbox.
 
-## Features ✨
+This project is built as an experimental developer tool and side project inspired by modern AI-assisted coding environments.
 
-### Automatic Runtime Detection
-Simply paste a GitHub URL! The engine inspects `package.json`, `requirements.txt`, `go.mod`, etc., or matches keywords in `README.md`/`INSTRUCTIONS.md` to determine the correct Docker image, port, and startup commands. It features specialized extraction for standard frameworks like Next.js, Vite, FastAPI, Django, Flask, Express, and specialized support for Lyzr workflow applications.
+## Overview
 
-### Dual Modes
-*   **Prompt Mode (⚡):** Instantly start a sandbox, get a live preview link, and view the container logs directly from the landing page. Perfect for quickly running and sharing apps.
-*   **Dev Mode (🖥):** Dive into a full Cloud IDE experience!
-    *   **File Explorer:** Browse the cloned repository, create, and delete files.
-    *   **Monaco Editor:** A VS Code-like code editor with syntax highlighting and file-saving capabilities.
-    *   **Terminal:** An interactive shell to run bash commands directly inside the running Docker container.
-    *   **Live Preview:** See your web app running side-by-side with your code.
-    *   **AI Agent Chat:** Integrated AI assistant that can help write code, explore files, and execute terminal commands.
+Modern repositories often require manual setup before running. Developers usually need to inspect project structure, install dependencies, and determine correct run commands.
 
-## Prerequisites 🛠
+Jr Architect simplifies this workflow by automatically performing these steps.
 
-Ensure you have the following installed on your host machine:
+### Workflow:
 
-*   **Docker:** Required to spin up the isolated sandbox containers.
-*   **Go (1.20+):** Required to compile and run the backend server.
-*   **Python (3.10+):** Required to run the AI coding agent backend.
+User provides GitHub Repository URL
+        ↓
+Repository is cloned
+        ↓
+Project structure is analyzed
+        ↓
+Run instructions are generated or detected
+        ↓
+Application runs inside sandbox
+        ↓
+Preview or development environment is provided
 
-## Project Structure 📁
+## Features
 
-*   `main.go`: The core Go server handling HTTP endpoints, Docker sandbox provisioning, asynchronous Dev Mode execution, and WebSocket/API proxies.
-*   `detector.go`: The robust runtime detection logic.
-*   `index.html`: The UI containing both the landing page and the IDE layout.
-*   `ide.js` & `ide.css`: The frontend logic and styling for the Cloud IDE.
-*   `sandbox-images/`: Dockerfile definitions for the various supported runtimes (node, python, go, rust, static, etc.).
-*   `agent/`: The Python-based AI assistant service (`main.py`, `requirements.txt`).
+### Repository Execution
+Runs public GitHub repositories inside a sandbox environment.
+*   Accepts GitHub repository URLs
+*   Automatically clones repositories
+*   Detects project structure
+*   Executes application based on detected commands
 
-## Getting Started 🚀
+### Dual Execution Modes
 
-### 1. Start the AI Agent Service
+#### Prompt Mode
+Prompt mode focuses on simple execution.
+1.  Clone repository
+2.  Detect instructions
+3.  Run application automatically
+4.  Show output preview
+This mode hides the IDE and prioritizes quick execution.
 
-The agent handles chat requests and AI modifications within the IDE.
+#### Dev Mode
+Dev mode behaves like a lightweight cloud IDE.
+*   Repository cloned and loaded
+*   Monaco editor interface
+*   Background sandbox execution
+*   Live preview of the application
+*   Interactive development environment
 
+## Instruction System
+
+Jr Architect supports an instruction-driven execution system. Repositories may include a file named: `INSTRUCTIONS.md`. Each line in the file is interpreted as a shell command.
+
+**Example:**
 ```bash
-cd agent
-python -m venv venv
-# Activate virtual environment (Windows)
-.\venv\Scripts\activate
-# Activate virtual environment (Mac/Linux)
-# source venv/bin/activate
-pip install -r requirements.txt
-python main.py
+npm install
+npm run dev
 ```
 
-*The agent defaults to running on port 8001.*
+If the file exists, the sandbox will execute the commands sequentially. If it does not exist, Jr Architect attempts to infer run commands automatically.
 
-### 2. Run the Main Backend
+## Project Architecture
 
-The main Go application compiles the server, automatically triggers the pre-building of Docker images in the `sandbox-images/` directory, and serves the UI.
+The system follows a modular architecture:
+User Interface → Repository Manager → Instruction Detector → Sandbox Runner → Execution Environment → Live Preview / IDE
 
-```bash
-# In the root repository directory
-go build -o sandbox-runner.exe
-./sandbox-runner.exe
-```
+### Main components:
 
-*The UI will be served at `http://localhost:9000`.*
+| Component | Description |
+| :--- | :--- |
+| **Repository Manager** | Handles cloning and repository access |
+| **Instruction Detector** | Reads instructions or detects run commands |
+| **Sandbox Runner** | Executes commands inside sandbox |
+| **Execution Environment** | Isolated environment for running apps |
+| **Preview System** | Displays running application |
 
-## How it Works 🧠
+## Sandbox Execution
 
-1.  **Request:** User inputs a GitHub URL on `localhost:9000` and clicks Run.
-2.  **Detection & Execution:**
-    *   In **Dev Mode**, control is immediately returned to the IDE UI allowing instantaneous visual feedback.
-    *   The `main.go` backend uses `git clone` to fetch the repo into a temporary local directory.
-    *   `detectRuntimeConfig` scans the repository to figure out the framework.
-    *   It executes `docker run` binding the appropriate internal port (e.g., 3000 for Next.js) to a dynamically assigned free port on the host.
-3.  **Interaction:** The IDE uses `/file` and `/files` APIs to interact with the local file system slice mounted inside the container, and `docker exec` routes handle the terminal functionality.
+Applications run inside a controlled sandbox environment.
+Responsibilities of the sandbox:
+*   Execute repository commands
+*   Isolate runtime processes
+*   Capture logs
+*   Prevent system interference
 
-## Automatic Cleanup 🧹
+The sandbox is designed to safely run unknown repositories.
 
-Containers spawned by Jr Architect are entirely transient. `main.go` sets up a background goroutine to automatically stop and wipe the Docker container, as well as the locally cloned Git repository directory after **10 minutes** of uptime limits.
+## Supported Project Types
 
+Jr Architect attempts to detect common project structures.
+
+| Project Type | Detection File |
+| :--- | :--- |
+| Node.js | package.json |
+| Python | requirements.txt |
+| Go | go.mod |
+| Java | pom.xml |
+
+Based on these files, the system generates run commands automatically.
+
+## Example Workflow
+
+User provides repository: `https://github.com/example/project`
+
+Execution process:
+1. Clone repository
+2. Check for `INSTRUCTIONS.md`
+   - **If found:** execute commands
+   - **Else:** detect project type
+3. Install dependencies
+4. Start application
+5. Display preview
+
+## Setup
+
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/VivanRajath/Jr-Architect.git
+    cd Jr-Architect
+    ```
+2.  Configure environment variables if required (e.g., `OPENAI_API_KEY`, `CLAUDE_API_KEY`).
+3.  Run the application:
+    ```bash
+    go run main.go
+    ```
+
+## Goals of the Project
+
+This project explores ideas around:
+*   AI assisted development environments
+*   Automated repository execution
+*   Sandbox based application testing
+*   Developer productivity tools
+
+The goal is experimentation and learning rather than building a commercial product.
+
+## Future Improvements
+
+*   Automatic run command detection using AI
+*   Container based sandboxing
+*   Resource isolation
+*   Multi-language runtime support
+*   Agent based repository analysis
+*   Automated environment setup
 
 ## Footnote
 
 This project is developed purely as a side project and is not intended to be a commercially viable product. The name “Jr Architect” is simply a placeholder, inspired by “Architect” by Lyzr, and does not imply any official association.
 
 All repositories that are cloned or used by Jr Architect are publicly available on GitHub (github.com).
+
+## Author
+
+**Vivan Rajath**
+
+[GitHub](https://github.com/VivanRajath)
