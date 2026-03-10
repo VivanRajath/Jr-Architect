@@ -77,3 +77,10 @@ go build -o sandbox-runner.exe
 ## Automatic Cleanup 🧹
 
 Containers spawned by Jr Architect are entirely transient. `main.go` sets up a background goroutine to automatically stop and wipe the Docker container, as well as the locally cloned Git repository directory after **10 minutes** of uptime limits.
+
+
+## Footnote
+
+This project is developed purely as a side project and is not intended to be a commercially viable product. The name “Jr Architect” is simply a placeholder, inspired by “Architect” by Lyzr, and does not imply any official association.
+
+All repositories that are cloned or used by Jr Architect are publicly available on GitHub (github.com).
