@@ -1,6 +1,6 @@
 # Jr Architect 🚀
 
-Jr Architect is a sandbox-based development environment that automatically runs GitHub repositories. The goal of the project is to simulate a lightweight AI-assisted developer workspace that can analyze a repository, determine how to run it, and execute the application inside an isolated sandbox.
+Jr Architect is a sandbox-based development environment that automatically runs GitHub repositories.This was Inspired by Architect by Lyzr not a viable product just a Learning product. The goal of the project was to run Apps built by Architect by Lyzr and stress test them and also  simulate a lightweight AI-assisted developer workspace that can analyze a repository, determine how to run it, and execute the application inside an isolated sandbox which I think would be an extension of Architect.
 
 This project is built as an experimental developer tool and side project inspired by modern AI-assisted coding environments.
 
