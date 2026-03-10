@@ -1,0 +1,1279 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jr Architect - Cloud IDE</title>
+  <meta name="description"
+    content="Run any GitHub repo instantly in a Docker sandbox with a full cloud IDE experience." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="/ide.css" />
+  <link rel="stylesheet" href="/ide-agent.css" />
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #F5F2EE;
+      --surface: #FFFFFF;
+      --surface2: #EBE8E3;
+      --border: #DEDAD1;
+      --border2: #CEC8BA;
+      --accent: #6B3E1A;
+      --accent2: #8B5A2B;
+      --accent-glow: rgba(107, 62, 26, 0.15);
+      --accent-soft: rgba(107, 62, 26, 0.08);
+      --green: #2D6A4F;
+      --green-soft: rgba(45, 106, 79, 0.1);
+      --red: #A4161A;
+      --red-soft: rgba(164, 22, 26, 0.1);
+      --yellow: #B07D05;
+      --yellow-soft: rgba(176, 125, 5, 0.1);
+      --text: #2C1810;
+      --text2: #5D4037;
+      --text3: #8D6E63;
+      --mono: 'JetBrains Mono', monospace;
+      --sans: 'Inter', sans-serif;
+    }
+
+    html,
+    body {
+      height: 100%;
+    }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Background grid */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(107, 62, 26, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(107, 62, 26, 0.05) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Glow orb */
+    body::after {
+      content: '';
+      position: fixed;
+      top: -200px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 800px;
+      height: 500px;
+      background: radial-gradient(ellipse, rgba(107, 62, 26, 0.08) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .app {
+      position: relative;
+      z-index: 1;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+
+    /* Header */
+    header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(107, 62, 26, 0.2);
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 4px 12px;
+      border-radius: 100px;
+      margin-bottom: 20px;
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+        box-shadow: 0 0 0 0 rgba(107, 62, 26, 0.4);
+      }
+
+      50% {
+        opacity: 0.8;
+        box-shadow: 0 0 0 6px rgba(107, 62, 26, 0);
+      }
+    }
+
+    h1 {
+      font-size: clamp(28px, 5vw, 42px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      margin-bottom: 12px;
+    }
+
+    h1 span {
+      background: linear-gradient(135deg, #6B3E1A, #8B5A2B, #A67C52);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      color: var(--text2);
+      font-size: 16px;
+      line-height: 1.6;
+      max-width: 500px;
+      margin: 0 auto;
+    }
+
+    /* Run Card */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      margin-bottom: 24px;
+      transition: border-color 0.2s;
+    }
+
+    .card:hover {
+      border-color: var(--border2);
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text3);
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-title svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .input-wrap {
+      flex: 1;
+      position: relative;
+    }
+
+    .input-wrap svg {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 16px;
+      height: 16px;
+      color: var(--text3);
+      pointer-events: none;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      padding: 12px 14px 12px 40px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      outline: none;
+    }
+
+    input[type="text"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    input[type="text"]::placeholder {
+      color: var(--text3);
+    }
+
+    /* Mode Toggle */
+    .mode-toggle {
+      display: flex;
+      gap: 0;
+      margin-top: 16px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 3px;
+      width: fit-content;
+    }
+
+    .mode-option {
+      padding: 8px 20px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text3);
+      cursor: pointer;
+      border-radius: 8px;
+      transition: all .2s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      user-select: none;
+    }
+
+    .mode-option:hover {
+      color: var(--text2);
+    }
+
+    .mode-option.active {
+      background: linear-gradient(135deg, rgba(124, 58, 237, 0.25), rgba(109, 40, 217, 0.2));
+      color: #a78bfa;
+      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.2);
+    }
+
+    .mode-option .mode-desc {
+      font-size: 11px;
+      color: var(--text3);
+      font-weight: 400;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(135deg, #7c3aed, #6d28d9);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 600;
+      padding: 12px 22px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+      box-shadow: 0 4px 15px rgba(124, 58, 237, 0.35);
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(124, 58, 237, 0.5);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-sm {
+      font-size: 12px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.3);
+    }
+
+    .btn-danger {
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+    }
+
+    .btn-danger:hover {
+      box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);
+    }
+
+    .btn-ghost {
+      background: var(--surface2);
+      color: var(--text2);
+      border: 1px solid var(--border);
+      box-shadow: none;
+    }
+
+    .btn-ghost:hover {
+      background: var(--border);
+      box-shadow: none;
+    }
+
+    .btn-success {
+      background: linear-gradient(135deg, #10b981, #059669);
+      box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+    }
+
+    .btn-success:hover {
+      box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
+    }
+
+    /* Spinner */
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: none;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .loading .spinner {
+      display: block;
+    }
+
+    .loading .btn-icon {
+      display: none;
+    }
+
+    /* Status */
+    .status-bar {
+      display: none;
+      align-items: flex-start;
+      gap: 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-top: 14px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    /* Instructions textarea */
+    .instructions-wrap {
+      margin-top: 16px;
+    }
+
+    .instructions-label {
+      font-size: 12px;
+      color: var(--text3);
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .instructions-label span {
+      font-weight: 500;
+      color: var(--text2);
+    }
+
+    .instructions-label small {
+      font-size: 11px;
+      color: var(--text3);
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 110px;
+      resize: vertical;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 10px 12px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .status-bar.show {
+      display: flex;
+    }
+
+    .status-icon {
+      font-size: 16px;
+      line-height: 1;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .status-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .status-bar.success {
+      border-color: rgba(16, 185, 129, 0.3);
+      background: var(--green-soft);
+    }
+
+    .status-bar.error {
+      border-color: rgba(239, 68, 68, 0.3);
+      background: var(--red-soft);
+    }
+
+    .status-bar.loading {
+      border-color: rgba(124, 58, 237, 0.3);
+      background: var(--accent-soft);
+    }
+
+    .link-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+
+    .sandbox-link {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: #a78bfa;
+      background: rgba(124, 58, 237, 0.15);
+      border: 1px solid rgba(124, 58, 237, 0.25);
+      padding: 4px 10px;
+      border-radius: 6px;
+      text-decoration: none;
+      transition: background 0.15s;
+    }
+
+    .sandbox-link:hover {
+      background: rgba(124, 58, 237, 0.25);
+    }
+
+    /* Tag for runtime */
+    .runtime-tag {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 100px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .tag-python {
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.2);
+    }
+
+    .tag-node {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.2);
+    }
+
+    .tag-go {
+      background: rgba(6, 182, 212, 0.15);
+      color: #22d3ee;
+      border: 1px solid rgba(6, 182, 212, 0.2);
+    }
+
+    .tag-static {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.2);
+    }
+
+    .tag-rust {
+      background: rgba(249, 115, 22, 0.15);
+      color: #fb923c;
+      border: 1px solid rgba(249, 115, 22, 0.2);
+    }
+
+    .tag-java {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.2);
+    }
+
+    .tag-other {
+      background: rgba(148, 163, 184, 0.15);
+      color: #94a3b8;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+
+    /* Sandboxes list */
+    .sandboxes-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .count-badge {
+      background: var(--accent-soft);
+      color: #a78bfa;
+      border: 1px solid rgba(124, 58, 237, 0.25);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 100px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 48px 20px;
+      color: var(--text3);
+    }
+
+    .empty-state svg {
+      width: 40px;
+      height: 40px;
+      margin: 0 auto 12px;
+      display: block;
+      opacity: 0.3;
+    }
+
+    .empty-state p {
+      font-size: 14px;
+    }
+
+    .sandbox-item {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      transition: border-color 0.2s, transform 0.15s;
+      animation: slideIn 0.3s ease-out;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(-8px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .sandbox-item:hover {
+      border-color: var(--border2);
+      transform: translateX(2px);
+    }
+
+    .sandbox-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .sandbox-name {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text3);
+      margin-bottom: 4px;
+    }
+
+    .sandbox-repo {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .sandbox-actions {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      flex-shrink: 0;
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+      animation: pulse-green 2s infinite;
+    }
+
+    @keyframes pulse-green {
+
+      0%,
+      100% {
+        box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+      }
+
+      50% {
+        box-shadow: 0 0 16px rgba(16, 185, 129, 0.9);
+      }
+    }
+
+    /* Logs modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(4px);
+      z-index: 100;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .modal-overlay.show {
+      display: flex;
+    }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      border-radius: 16px;
+      width: 100%;
+      max-width: 720px;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+    }
+
+    .modal-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .modal-title {
+      font-size: 14px;
+      font-weight: 600;
+      font-family: var(--mono);
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text3);
+      cursor: pointer;
+      font-size: 20px;
+      line-height: 1;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .modal-close:hover {
+      background: var(--surface2);
+      color: var(--text);
+    }
+
+    .modal-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      background: var(--surface);
+    }
+
+    .logs-output {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-all;
+      line-height: 1.7;
+    }
+
+    .logs-output:empty::before {
+      content: 'No logs yet...';
+      color: var(--text3);
+    }
+
+    /* Supported runtimes section */
+    .runtimes-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+      gap: 10px;
+    }
+
+    .runtime-chip {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text2);
+      transition: border-color 0.2s, color 0.2s;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .runtime-chip:hover {
+      border-color: var(--border2);
+      color: var(--text);
+    }
+
+    .runtime-chip .chip-icon {
+      font-size: 20px;
+    }
+
+    /* Divider */
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 8px 0;
+    }
+
+    /* Toast */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .toast {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 220px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+      animation: toastIn 0.3s ease-out;
+    }
+
+    @keyframes toastIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .toast.success {
+      border-color: rgba(16, 185, 129, 0.4);
+    }
+
+    .toast.error {
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+
+    /* Responsive */
+    @media (max-width: 560px) {
+      .input-row {
+        flex-direction: column;
+      }
+
+      .sandbox-item {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="landing-page">
+    <div class="app">
+      <header>
+        <div class="badge">
+          <div class="badge-dot"></div>
+          Jr Architect
+        </div>
+        <h1>Stress Test Any Repo <span>Instantly</span></h1>
+        <p class="subtitle">Paste a GitHub URL and get a live sandbox in seconds. Use Prompt Mode for quick runs or Dev
+          Mode for a full cloud IDE experience.</p>
+      </header>
+
+      <!-- Run a sandbox -->
+      <div class="card">
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 3l14 9-14 9V3z" />
+          </svg>
+          Launch Sandbox
+        </div>
+        <div class="input-row">
+          <div class="input-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path
+                d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />
+            </svg>
+            <input id="repoInput" type="text" placeholder="https://github.com/user/repo" autocomplete="off"
+              spellcheck="false" />
+          </div>
+          <button id="runBtn" class="btn" onclick="runSandbox()">
+            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="15"
+              height="15">
+              <path d="M5 3l14 9-14 9V3z" />
+            </svg>
+            <div class="spinner"></div>
+            Run
+          </button>
+        </div>
+
+        <!-- Mode Toggle -->
+        <div class="mode-toggle" id="modeToggle">
+          <div class="mode-option active" data-mode="prompt" onclick="setMode('prompt')">
+            Prompt Mode
+          </div>
+          <div class="mode-option" data-mode="dev" onclick="setMode('dev')">
+            Dev Mode
+          </div>
+        </div>
+
+        <div class="instructions-wrap">
+          <div class="instructions-label">
+            <span>Optional INSTRUCTIONS.md</span>
+            <small>Paste install &amp; run commands if not in repo</small>
+          </div>
+          <textarea id="instructionsInput" placeholder="Paste your setup commands, one per line:
+
+npm install
+npm run dev
+
+Or any shell commands:
+npm install
+node server.js"></textarea>
+        </div>
+        <div id="runStatus" class="status-bar">
+          <div class="status-icon"></div>
+          <div class="status-content"></div>
+        </div>
+      </div>
+
+      <!-- Active Sandboxes -->
+      <div class="card">
+        <div class="sandboxes-header">
+          <div class="section-title">
+            Active Sandboxes
+            <span class="count-badge" id="sandboxCount">0</span>
+          </div>
+          <button class="btn btn-sm btn-ghost" onclick="loadSandboxes()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+              <path d="M1 4v6h6M23 20v-6h-6" />
+              <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+            </svg>
+            Refresh
+          </button>
+        </div>
+        <div id="sandboxList">
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="2" y="3" width="20" height="14" rx="2" />
+              <path d="M8 21h8M12 17v4" />
+            </svg>
+            <p>No active sandboxes</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Supported Runtimes -->
+      <div class="card">
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          Supported Runtimes
+        </div>
+        <div class="runtimes-grid">
+          <div class="runtime-chip"><span class="chip-icon">🐍</span>Python / Flask / FastAPI / Django</div>
+          <div class="runtime-chip"><span class="chip-icon">🟦</span>Node.js / Express / Next.js / Vite</div>
+          <div class="runtime-chip"><span class="chip-icon">🐹</span>Go</div>
+          <div class="runtime-chip"><span class="chip-icon">🦀</span>Rust</div>
+          <div class="runtime-chip"><span class="chip-icon">☕</span>Java / Spring Boot</div>
+          <div class="runtime-chip"><span class="chip-icon">🐘</span>PHP / Laravel</div>
+          <div class="runtime-chip"><span class="chip-icon">💎</span>Ruby / Rails</div>
+          <div class="runtime-chip"><span class="chip-icon">🟢</span>Bun</div>
+          <div class="runtime-chip"><span class="chip-icon">🦕</span>Deno</div>
+          <div class="runtime-chip"><span class="chip-icon">🔷</span>.NET</div>
+          <div class="runtime-chip"><span class="chip-icon">🌐</span>Static HTML</div>
+        </div>
+        <div class="divider" style="margin-top: 16px;"></div>
+        <p style="font-size: 12px; color: var(--text3); margin-top: 12px; line-height: 1.6;">
+          ⚡ FastAPI apps expose <code
+            style="font-family: var(--mono); background: var(--surface2); padding: 1px 5px; border-radius: 4px; color: #a78bfa;">/docs</code>
+          and <code
+            style="font-family: var(--mono); background: var(--surface2); padding: 1px 5px; border-radius: 4px; color: #a78bfa;">/redoc</code>
+          automatically. Sandboxes auto-destroy after 10 minutes.
+        </p>
+      </div>
+    </div>
+
+    <!-- Logs Modal -->
+    <div class="modal-overlay" id="logsModal" onclick="closeLogsIfOverlay(event)">
+      <div class="modal">
+        <div class="modal-header">
+          <div class="modal-title" id="logsTitle">Container Logs</div>
+          <button class="modal-close" onclick="closeLogs()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="logs-output" id="logsOutput"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast container -->
+    <div class="toast-container" id="toastContainer"></div>
+  </div><!-- end landing-page -->
+
+  <!-- ═══ IDE Layout (hidden until sandbox starts in Dev Mode) ═══ -->
+  <div id="ide-page" style="display:none; flex-direction:column; height:100vh;">
+    <!-- Top Bar -->
+    <div class="ide-topbar">
+      <span class="logo">⚡ Jr Architect</span>
+      <span class="repo-name"></span>
+      <span class="mode-badge">DEV MODE</span>
+      <div class="spacer"></div>
+      <div class="ide-status-indicator" id="ide-status-indicator">
+        <span class="ide-status-dot"></span>
+        <span class="ide-status-text">Running</span>
+      </div>
+      <button class="top-btn" onclick="saveCurrentFile()">💾 Save</button>
+      <button class="top-btn" onclick="openLivePreview()">🌐 Live Preview</button>
+      <button class="top-btn" onclick="loadFileTree()">🔄 Refresh</button>
+      <button class="top-btn" onclick="backToLanding()">← Back</button>
+    </div>
+    <!-- Main -->
+    <div class="ide-main">
+      <!-- Sidebar -->
+      <div class="ide-sidebar">
+        <div class="sidebar-header">
+          <span>Explorer</span>
+          <div style="display:flex;gap:4px;">
+            <button onclick="promptCreateFile()" title="New File">+📄</button>
+            <button onclick="promptCreateFolder()" title="New Folder">+📁</button>
+            <button onclick="loadFileTree()" title="Refresh">⟳</button>
+          </div>
+        </div>
+        <div class="file-tree" id="file-tree"></div>
+      </div>
+      <!-- Editor Area -->
+      <div class="ide-editor-area">
+        <div class="editor-tabs" id="editor-tabs"></div>
+        <div class="editor-container">
+          <div class="editor-welcome" id="editor-welcome">
+            <div class="big-icon">📝</div>
+            <div>Select a file from the explorer to start editing</div>
+            <div style="font-size:12px;color:var(--text3)">Ctrl+S to save · Click files in the sidebar</div>
+          </div>
+          <div id="monaco-container" style="display:none;width:100%;height:100%"></div>
+        </div>
+        <!-- Bottom Panel -->
+        <div class="panel-resize" id="panel-resize"></div>
+        <div class="ide-bottom-panel">
+          <div class="panel-tabs">
+            <div class="panel-tab active" data-tab="terminal" onclick="switchPanelTab('terminal')">Terminal</div>
+            <div class="panel-tab" data-tab="logs" onclick="switchPanelTab('logs')">Logs</div>
+            <div class="panel-tab" data-tab="status" onclick="switchPanelTab('status')">Status</div>
+            <div class="panel-tab" data-tab="agent" onclick="switchPanelTab('agent')">🤖 Agent</div>
+          </div>
+          <div class="panel-content">
+            <div class="terminal-pane active" data-tab="terminal">
+              <div class="terminal-output" id="terminal-output"></div>
+              <div class="terminal-input-row">
+                <span>$</span>
+                <input type="text" id="terminal-input" placeholder="Type a command..." autocomplete="off"
+                  spellcheck="false" />
+              </div>
+            </div>
+            <div class="panel-pane" data-tab="logs" id="logs-output"></div>
+            <div class="panel-pane" data-tab="status" id="status-output">
+              <div class="status-panel-content" id="status-panel-content">Loading status...</div>
+            </div>
+            <div class="panel-pane agent-pane" data-tab="agent" id="agent-pane">
+              <div class="agent-chat" id="agent-chat">
+                <div class="agent-messages" id="agent-messages">
+                  <div class="agent-welcome">
+                    <div style="font-size:32px;margin-bottom:8px">🤖</div>
+                    <div style="font-weight:600;margin-bottom:4px">AI Coding Agent</div>
+                    <div style="font-size:12px;color:var(--text3)">Ask me to explain code, suggest edits, create files,
+                      or run commands.</div>
+                  </div>
+                </div>
+                <div class="agent-input-row">
+                  <select id="agent-provider" class="agent-provider-select">
+                    <option value="gemini">Gemini</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                  </select>
+                  <input type="text" id="agent-input" placeholder="Ask the AI agent..." autocomplete="off"
+                    spellcheck="false" />
+                  <button class="agent-send-btn" onclick="sendAgentMessage()">Send</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Live Preview Panel -->
+      <div class="ide-preview-panel" id="ide-preview-panel" style="display:none;">
+        <div class="preview-header">
+          <span>🌐 Live Preview</span>
+          <div style="display:flex;gap:4px;">
+            <button onclick="refreshPreview()" title="Refresh">⟳</button>
+            <button onclick="openPreviewExternal()" title="Open in new tab">↗</button>
+            <button onclick="closePreview()" title="Close">✕</button>
+          </div>
+        </div>
+        <iframe id="preview-iframe" class="preview-iframe"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+      </div>
+    </div>
+    <div class="ide-toast" id="ide-toast"></div>
+  </div>
+
+  <script>
+    const API = '';
+    let currentMode = 'prompt';
+
+    function setMode(mode) {
+      currentMode = mode;
+      document.querySelectorAll('.mode-option').forEach(el => {
+        el.classList.toggle('active', el.dataset.mode === mode);
+      });
+    }
+
+    function toast(msg, type = 'success') {
+      const el = document.createElement('div');
+      el.className = `toast ${type}`;
+      el.innerHTML = `<span>${type === 'success' ? '✅' : '❌'}</span><span>${msg}</span>`;
+      document.getElementById('toastContainer').appendChild(el);
+      setTimeout(() => el.remove(), 3500);
+    }
+
+    function runtimeTag(image) {
+      if (!image) return '';
+      const map = {
+        'sandbox-python': ['python', 'tag-python'],
+        'sandbox-node': ['node', 'tag-node'],
+        'sandbox-go': ['go', 'tag-go'],
+        'sandbox-static': ['static', 'tag-static'],
+        'sandbox-rust': ['rust', 'tag-rust'],
+        'sandbox-java': ['java', 'tag-java'],
+      };
+      const [label, cls] = map[image] || [image.replace('sandbox-', ''), 'tag-other'];
+      return `<span class="runtime-tag ${cls}">${label}</span>`;
+    }
+
+    function setRunStatus(type, icon, html) {
+      const bar = document.getElementById('runStatus');
+      bar.className = `status-bar show ${type}`;
+      bar.querySelector('.status-icon').textContent = icon;
+      bar.querySelector('.status-content').innerHTML = html;
+    }
+
+    async function runSandbox() {
+      const repo = document.getElementById('repoInput').value.trim();
+      if (!repo) {
+        document.getElementById('repoInput').focus();
+        return;
+      }
+
+      const instructionsEl = document.getElementById('instructionsInput');
+      const instructions = instructionsEl ? instructionsEl.value.trim() : '';
+
+      const btn = document.getElementById('runBtn');
+      btn.disabled = true;
+      btn.closest('.card').classList.add('loading');
+      setRunStatus('loading', '⏳', `Cloning and starting <strong>${repo}</strong>…<br><small style="color:var(--text3)">This may take up to 30 seconds.</small>`);
+
+      try {
+        const res = await fetch(`${API}/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repo, instructions, mode: currentMode }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.error || data || 'Unknown error');
+
+        const url = data.url;
+        const container = data.container;
+        const mode = data.mode || currentMode;
+
+        if (mode === 'dev') {
+          // Dev Mode: switch to IDE
+          setRunStatus('success', '🚀', `<strong>Sandbox is live!</strong> Opening IDE…`);
+          toast('Sandbox launched — opening IDE!');
+          initIDE(container, repo);
+        } else {
+          // Prompt Mode: stay on landing, show URL
+          setRunStatus('success', '🚀', `
+            <strong>Sandbox is live!</strong><br>
+            <div class="link-row" style="margin-top:8px;">
+              <a class="sandbox-link" href="${url}" target="_blank" rel="noopener">${url}</a>
+              ${url.includes('8000') ? `<a class="sandbox-link" href="${url}/docs" target="_blank" rel="noopener">📖 /docs</a>` : ''}
+              <button class="btn btn-sm btn-ghost" onclick="viewLogs('${container}')">📋 Logs</button>
+              <button class="btn btn-sm btn-success" onclick="initIDE('${container}','${repo}')">🖥 Open IDE</button>
+            </div>
+            <small style="color:var(--text3); display:block; margin-top:6px;">Auto-destroys in 10 min · Container: ${container}</small>
+          `);
+          toast('Sandbox launched!');
+        }
+        setTimeout(loadSandboxes, 1000);
+      } catch (err) {
+        setRunStatus('error', '❌', `<strong>Error:</strong> ${err.message}`);
+        toast(err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.closest('.card').classList.remove('loading');
+      }
+    }
+
+    async function loadSandboxes() {
+      try {
+        const res = await fetch(`${API}/sandboxes`);
+        const data = await res.json();
+        const list = document.getElementById('sandboxList');
+        const count = document.getElementById('sandboxCount');
+
+        const items = Object.values(data || {});
+        count.textContent = items.length;
+
+        if (items.length === 0) {
+          list.innerHTML = `
+            <div class="empty-state">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+              <p>No active sandboxes</p>
+            </div>`;
+          return;
+        }
+
+        list.innerHTML = items.map(sb => `
+          <div class="sandbox-item">
+            <div class="status-dot"></div>
+            <div class="sandbox-info">
+              <div class="sandbox-name">${sb.container}</div>
+              <div class="sandbox-repo">${sb.repo}</div>
+            </div>
+            <div class="sandbox-actions">
+              <a class="btn btn-sm btn-ghost" href="http://127.0.0.1:${sb.port}" target="_blank" rel="noopener">Open ↗</a>
+              <button class="btn btn-sm btn-success" onclick="initIDE('${sb.container}','${sb.repo}')">IDE</button>
+              <button class="btn btn-sm btn-ghost" onclick="viewLogs('${sb.container}')">Logs</button>
+              <button class="btn btn-sm btn-danger" onclick="stopSandbox('${sb.container}')">Stop</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        console.error('Failed to load sandboxes:', err);
+      }
+    }
+
+    async function stopSandbox(container) {
+      try {
+        await fetch(`${API}/stop/${container}`, { method: 'POST' });
+        toast('Sandbox stopped');
+        loadSandboxes();
+      } catch (err) {
+        toast('Failed to stop sandbox', 'error');
+      }
+    }
+
+    async function viewLogs(container) {
+      document.getElementById('logsTitle').textContent = `Logs: ${container}`;
+      document.getElementById('logsOutput').textContent = 'Loading…';
+      document.getElementById('logsModal').classList.add('show');
+
+      try {
+        const res = await fetch(`${API}/logs/${container}`);
+        const text = await res.text();
+        document.getElementById('logsOutput').textContent = text || '(no output yet)';
+      } catch (err) {
+        document.getElementById('logsOutput').textContent = `Error: ${err.message}`;
+      }
+    }
+
+    function closeLogs() {
+      document.getElementById('logsModal').classList.remove('show');
+    }
+
+    function closeLogsIfOverlay(e) {
+      if (e.target === document.getElementById('logsModal')) closeLogs();
+    }
+
+    document.getElementById('repoInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') runSandbox();
+    });
+
+    // Initial load
+    loadSandboxes();
+    setInterval(loadSandboxes, 5000);
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+  <script src="/ide.js"></script>
+  <script src="/ide-agent.js"></script>
+</body>
+
+</html>
