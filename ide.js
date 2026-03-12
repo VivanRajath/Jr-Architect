@@ -3,6 +3,11 @@ const IDE = {
   container: null, repoUrl: '', previewUrl: '', tabs: [], activeTab: null,
   editor: null, models: {}, logsInterval: null, statusInterval: null,
   panelTab: 'terminal',
+  // Multi-terminal support
+  terminals: [],
+  activeTerminalId: null,
+  terminalCounter: 0,
+  darkMode: false,
 };
 
 function initIDE(containerId, repoUrl) {
@@ -14,8 +19,13 @@ function initIDE(containerId, repoUrl) {
   document.querySelector('.repo-name').textContent = repoUrl.replace(/https?:\/\/github\.com\//, '');
   loadFileTree();
   initMonaco();
+  initTerminal();
   startLogsPolling();
   startStatusPolling();
+  // Restore dark mode preference
+  if (localStorage.getItem('jr-dark-mode') === 'true') {
+    setDarkMode(true);
+  }
 }
 
 // ── File Tree ──
@@ -38,15 +48,15 @@ function renderTree(nodes, parent, depth) {
       const item = document.createElement('div');
       item.className = 'tree-item';
       item.style.setProperty('--depth', depth);
-      item.innerHTML = `<span class="icon">▸</span><span class="name">${esc(node.name)}</span>
+      item.innerHTML = `<span class="icon">\u25B8</span><span class="name">${esc(node.name)}</span>
         <span class="tree-actions">
-          <button onclick="event.stopPropagation(); deleteFileOrFolder('${esc(node.path)}', true)" title="Delete">🗑</button>
+          <button onclick="event.stopPropagation(); deleteFileOrFolder('${esc(node.path)}', true)" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
         </span>`;
       item.onclick = (e) => {
         if (e.target.closest('.tree-actions')) return;
         e.stopPropagation();
         dir.classList.toggle('open');
-        item.querySelector('.icon').textContent = dir.classList.contains('open') ? '▾' : '▸';
+        item.querySelector('.icon').textContent = dir.classList.contains('open') ? '\u25BE' : '\u25B8';
       };
       const children = document.createElement('div');
       children.className = 'tree-children';
@@ -60,7 +70,7 @@ function renderTree(nodes, parent, depth) {
       item.style.setProperty('--depth', depth);
       item.innerHTML = `<span class="icon">${fileIcon(node.name)}</span><span class="name">${esc(node.name)}</span>
         <span class="tree-actions">
-          <button onclick="event.stopPropagation(); deleteFileOrFolder('${esc(node.path)}', false)" title="Delete">🗑</button>
+          <button onclick="event.stopPropagation(); deleteFileOrFolder('${esc(node.path)}', false)" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
         </span>`;
       item.onclick = (e) => {
         if (e.target.closest('.tree-actions')) return;
@@ -74,11 +84,11 @@ function renderTree(nodes, parent, depth) {
 function fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
   const map = {
-    js: '📜', ts: '📘', jsx: '⚛', tsx: '⚛', py: '🐍', go: '🔷', rs: '🦀', java: '☕',
-    html: '🌐', css: '🎨', json: '📋', md: '📝', yml: '⚙', yaml: '⚙', toml: '⚙',
-    svg: '🖼', png: '🖼', jpg: '🖼', gif: '🖼', sh: '🔧', dockerfile: '🐳',
+    js: 'JS', ts: 'TS', jsx: 'JX', tsx: 'TX', py: 'PY', go: 'GO', rs: 'RS', java: 'JV',
+    html: 'HT', css: 'CS', json: '{}', md: 'MD', yml: 'YM', yaml: 'YM', toml: 'TM',
+    svg: 'SV', png: 'IM', jpg: 'IM', gif: 'IM', sh: 'SH', dockerfile: 'DK',
   };
-  return map[ext] || '📄';
+  return map[ext] || 'F';
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
@@ -139,6 +149,58 @@ async function deleteFileOrFolder(path, isDir) {
 }
 
 // ── Monaco ──
+function getTerminalTheme() {
+  if (IDE.darkMode) {
+    return {
+      background: '#1a1410',
+      foreground: '#D7CCC8',
+      cursor: '#A67C52',
+      cursorAccent: '#1a1410',
+      selectionBackground: '#3E2C1E80',
+      black: '#1a1410',
+      red: '#CF6679',
+      green: '#81C784',
+      yellow: '#FFD54F',
+      blue: '#64B5F6',
+      magenta: '#CE93D8',
+      cyan: '#4DD0E1',
+      white: '#D7CCC8',
+      brightBlack: '#5D4037',
+      brightRed: '#EF5350',
+      brightGreen: '#A5D6A7',
+      brightYellow: '#FFE082',
+      brightBlue: '#90CAF9',
+      brightMagenta: '#E1BEE7',
+      brightCyan: '#80DEEA',
+      brightWhite: '#EFEBE9',
+    };
+  } else {
+    return {
+      background: '#FAF8F5',
+      foreground: '#2C1810',
+      cursor: '#6B3E1A',
+      cursorAccent: '#FAF8F5',
+      selectionBackground: '#DEDAD180',
+      black: '#2C1810',
+      red: '#A4161A',
+      green: '#2D6A4F',
+      yellow: '#B07D05',
+      blue: '#1565C0',
+      magenta: '#7B1FA2',
+      cyan: '#00838F',
+      white: '#F5F2EE',
+      brightBlack: '#5D4037',
+      brightRed: '#C62828',
+      brightGreen: '#388E3C',
+      brightYellow: '#F9A825',
+      brightBlue: '#1E88E5',
+      brightMagenta: '#8E24AA',
+      brightCyan: '#00ACC1',
+      brightWhite: '#FFFFFF',
+    };
+  }
+}
+
 function initMonaco() {
   require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
   require(['vs/editor/editor.main'], () => {
@@ -154,8 +216,21 @@ function initMonaco() {
         'editor.lineHighlightBackground': '#F5F2EE',
       }
     });
+    monaco.editor.defineTheme('jr-architect-dark', {
+      base: 'vs-dark', inherit: true,
+      rules: [],
+      colors: {
+        'editor.background': '#1a1410',
+        'editor.foreground': '#D7CCC8',
+        'editorLineNumber.foreground': '#8D6E63',
+        'editorCursor.foreground': '#A67C52',
+        'editor.selectionBackground': '#3E2C1E80',
+        'editor.lineHighlightBackground': '#231C16',
+      }
+    });
     IDE.editor = monaco.editor.create(document.getElementById('monaco-container'), {
-      theme: 'jr-architect-light', fontSize: 14, fontFamily: "'JetBrains Mono', Consolas, monospace",
+      theme: IDE.darkMode ? 'jr-architect-dark' : 'jr-architect-light',
+      fontSize: 14, fontFamily: "'JetBrains Mono', Consolas, monospace",
       minimap: { enabled: true }, scrollBeyondLastLine: false, automaticLayout: true,
       padding: { top: 8 }, smoothScrolling: true, cursorBlinking: 'smooth',
       renderWhitespace: 'selection',
@@ -226,7 +301,7 @@ function renderTabs() {
   IDE.tabs.forEach(tab => {
     const d = document.createElement('div');
     d.className = 'editor-tab' + (tab === IDE.activeTab ? ' active' : '');
-    d.innerHTML = `${esc(tab.name)}${tab.modified ? '<span class="tab-modified">●</span>' : ''}<span class="tab-close" onclick="closeTab('${tab.path}', event)">×</span>`;
+    d.innerHTML = `${esc(tab.name)}${tab.modified ? '<span class="tab-modified">\u25CF</span>' : ''}<span class="tab-close" onclick="closeTab('${tab.path}', event)">\u00D7</span>`;
     d.onclick = () => activateTab(tab);
     el.appendChild(d);
   });
@@ -258,23 +333,142 @@ async function saveCurrentFile() {
   } catch (e) { showToast('Save error', 'error'); }
 }
 
-// ── Terminal ──
-const termHistory = [];
-let termHistIdx = -1;
-async function execTerminal(cmd) {
-  if (!cmd.trim()) return;
-  termHistory.unshift(cmd); termHistIdx = -1;
-  const out = document.getElementById('terminal-output');
-  out.textContent += `$ ${cmd}\n`;
-  try {
-    const res = await fetch('/terminal/exec', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ container: IDE.container, command: cmd })
-    });
-    const text = await res.text();
-    out.textContent += text + '\n';
-  } catch (e) { out.textContent += 'Error: ' + e.message + '\n'; }
-  out.scrollTop = out.scrollHeight;
+// ── Multi-Terminal Support ──
+function initTerminal() {
+  // Clean up any existing terminals
+  IDE.terminals.forEach(t => {
+    if (t.term) t.term.dispose();
+    if (t.socket) t.socket.close();
+  });
+  IDE.terminals = [];
+  IDE.activeTerminalId = null;
+  IDE.terminalCounter = 0;
+
+  // Create default terminal
+  createTerminal();
+}
+
+function createTerminal() {
+  IDE.terminalCounter++;
+  const id = IDE.terminalCounter;
+  const termTheme = getTerminalTheme();
+
+  // Create container div for this terminal
+  const termContainer = document.createElement('div');
+  termContainer.id = `terminal-instance-${id}`;
+  termContainer.className = 'terminal-instance';
+  termContainer.style.display = 'none';
+  document.getElementById('terminal-instances').appendChild(termContainer);
+
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 14,
+    fontFamily: "'JetBrains Mono', monospace",
+    theme: termTheme,
+    allowProposedApi: true
+  });
+
+  const termFit = new FitAddon.FitAddon();
+  term.loadAddon(termFit);
+  term.open(termContainer);
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(`${protocol}//${window.location.host}/terminal/ws?container=${IDE.container}`);
+
+  socket.onmessage = (event) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      term.write(new Uint8Array(reader.result));
+    };
+    reader.readAsArrayBuffer(event.data);
+  };
+
+  term.onData((data) => {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(data);
+    }
+  });
+
+  const terminalObj = { id, term, termFit, socket, name: `Terminal ${id}` };
+  IDE.terminals.push(terminalObj);
+
+  switchTerminal(id);
+  renderTerminalTabs();
+
+  // Ensure fit happens after rendering
+  setTimeout(() => {
+    termFit.fit();
+    term.focus();
+  }, 100);
+
+  return terminalObj;
+}
+
+function switchTerminal(id) {
+  IDE.activeTerminalId = id;
+  IDE.terminals.forEach(t => {
+    const el = document.getElementById(`terminal-instance-${t.id}`);
+    if (el) el.style.display = t.id === id ? 'block' : 'none';
+  });
+  renderTerminalTabs();
+
+  // Fit the active terminal
+  const active = IDE.terminals.find(t => t.id === id);
+  if (active && active.termFit) {
+    setTimeout(() => {
+      active.termFit.fit();
+      active.term.focus();
+    }, 50);
+  }
+}
+
+function closeTerminal(id, e) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  // Don't close if it's the only terminal
+  if (IDE.terminals.length <= 1) return;
+
+  const idx = IDE.terminals.findIndex(t => t.id === id);
+  if (idx === -1) return;
+
+  const termObj = IDE.terminals[idx];
+  termObj.term.dispose();
+  if (termObj.socket) termObj.socket.close();
+
+  const el = document.getElementById(`terminal-instance-${id}`);
+  if (el) el.remove();
+
+  IDE.terminals.splice(idx, 1);
+
+  if (IDE.activeTerminalId === id) {
+    const next = IDE.terminals[Math.min(idx, IDE.terminals.length - 1)];
+    if (next) switchTerminal(next.id);
+  }
+  renderTerminalTabs();
+}
+
+function renderTerminalTabs() {
+  const tabBar = document.getElementById('terminal-tab-bar');
+  if (!tabBar) return;
+
+  // Clear existing tabs (but not the + button)
+  const addBtn = tabBar.querySelector('.terminal-add-btn');
+  tabBar.innerHTML = '';
+
+  IDE.terminals.forEach(t => {
+    const tab = document.createElement('div');
+    tab.className = 'terminal-tab' + (t.id === IDE.activeTerminalId ? ' active' : '');
+    tab.innerHTML = `<span class="terminal-tab-name">${esc(t.name)}</span>${IDE.terminals.length > 1 ? '<span class="terminal-tab-close" onclick="closeTerminal(' + t.id + ', event)">\u00D7</span>' : ''}`;
+    tab.onclick = () => switchTerminal(t.id);
+    tabBar.appendChild(tab);
+  });
+
+  // Re-add the + button
+  const newAddBtn = document.createElement('button');
+  newAddBtn.className = 'terminal-add-btn';
+  newAddBtn.innerHTML = '+';
+  newAddBtn.title = 'New Terminal';
+  newAddBtn.onclick = () => createTerminal();
+  tabBar.appendChild(newAddBtn);
 }
 
 // ── Logs ──
@@ -361,12 +555,51 @@ function switchPanelTab(name) {
   IDE.panelTab = name;
   document.querySelectorAll('.panel-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.panel-pane, .terminal-pane').forEach(p => p.classList.toggle('active', p.dataset.tab === name));
+  // If switching to terminal, fit the active one
+  if (name === 'terminal') {
+    const active = IDE.terminals.find(t => t.id === IDE.activeTerminalId);
+    if (active && active.termFit) {
+      setTimeout(() => { active.termFit.fit(); active.term.focus(); }, 50);
+    }
+  }
+}
+
+// ── Dark Mode ──
+function toggleDarkMode() {
+  setDarkMode(!IDE.darkMode);
+}
+
+function setDarkMode(enabled) {
+  IDE.darkMode = enabled;
+  document.body.classList.toggle('dark-mode', enabled);
+  localStorage.setItem('jr-dark-mode', enabled);
+
+  // Update dark mode button icon
+  const btn = document.getElementById('dark-mode-btn');
+  if (btn) {
+    btn.innerHTML = enabled
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg> Light'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> Dark';
+  }
+
+  // Update Monaco theme
+  if (IDE.editor && typeof monaco !== 'undefined') {
+    monaco.editor.setTheme(enabled ? 'jr-architect-dark' : 'jr-architect-light');
+  }
+
+  // Update all terminal themes
+  const termTheme = getTerminalTheme();
+  IDE.terminals.forEach(t => {
+    if (t.term) {
+      t.term.options.theme = termTheme;
+    }
+  });
 }
 
 // ── Toast ──
 function showToast(msg, type) {
   const el = document.getElementById('ide-toast');
-  el.textContent = (type === 'success' ? '✓ ' : '✗ ') + msg;
+  el.textContent = (type === 'success' ? '\u2713 ' : '\u2717 ') + msg;
   el.className = 'ide-toast show ' + type;
   clearTimeout(el._t);
   el._t = setTimeout(() => el.classList.remove('show'), 2500);
@@ -381,6 +614,13 @@ function backToLanding() {
   IDE.tabs = []; IDE.activeTab = null; IDE.models = {};
   if (IDE.logsInterval) clearInterval(IDE.logsInterval);
   if (IDE.statusInterval) clearInterval(IDE.statusInterval);
+  // Clean up terminals
+  IDE.terminals.forEach(t => {
+    if (t.term) t.term.dispose();
+    if (t.socket) t.socket.close();
+  });
+  IDE.terminals = [];
+  IDE.activeTerminalId = null;
   closePreview();
 }
 
@@ -401,15 +641,17 @@ function initPanelResize() {
   });
 }
 
-// ── Init terminal input ──
+// ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
-  const input = document.getElementById('terminal-input');
-  if (input) {
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { execTerminal(input.value); input.value = ''; }
-      if (e.key === 'ArrowUp') { if (termHistory.length) { termHistIdx = Math.min(termHistIdx + 1, termHistory.length - 1); input.value = termHistory[termHistIdx]; } }
-      if (e.key === 'ArrowDown') { termHistIdx = Math.max(termHistIdx - 1, -1); input.value = termHistIdx >= 0 ? termHistory[termHistIdx] : ''; }
-    });
-  }
   initPanelResize();
+  // Restore dark mode on landing page too
+  if (localStorage.getItem('jr-dark-mode') === 'true') {
+    setDarkMode(true);
+  }
+});
+
+// Handle window resize for active terminal
+window.addEventListener('resize', () => {
+  const active = IDE.terminals.find(t => t.id === IDE.activeTerminalId);
+  if (active && active.termFit) active.termFit.fit();
 });

@@ -64,7 +64,7 @@ async function sendAgentMessage() {
                 data.file_changes.forEach(change => {
                     const applyBtn = document.createElement('button');
                     applyBtn.className = 'agent-apply-btn';
-                    applyBtn.textContent = `📝 Apply to ${change.path}`;
+                    applyBtn.textContent = `Apply to ${change.path}`;
                     applyBtn.onclick = () => applyAgentChange(change);
                     assistEl.appendChild(applyBtn);
                 });

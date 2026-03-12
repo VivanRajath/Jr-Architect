@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"github.com/gorilla/websocket"
+    "github.com/creack/pty"
 )
 
 //go:embed index.html
@@ -36,7 +38,7 @@ var ideAgentJSFile []byte
 type Request struct {
 	Repo         string `json:"repo"`
 	Instructions string `json:"instructions,omitempty"`
-	Mode         string `json:"mode,omitempty"` // "prompt" (default) or "dev"
+	Mode         string `json:"mode,omitempty"` 
 }
 
 type Sandbox struct {
@@ -161,8 +163,7 @@ func startSandbox(repo string, instructions string, mode string) (Sandbox, error
 		return Sandbox{}, err
 	}
 
-	// MkdirTemp creates the directory, but git clone needs it to not exist.
-	// Remove it so git clone can create it fresh.
+
 	os.Remove(workdir)
 
 	container := "sandbox-" + filepath.Base(workdir)
@@ -779,6 +780,68 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+//terminal websoket//
+
+var wsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
+
+	container := r.URL.Query().Get("container")
+
+	mutex.Lock()
+	_, ok := sandboxes[container]
+	mutex.Unlock()
+
+	if !ok {
+		http.Error(w, "sandbox not found", 404)
+		return
+	}
+
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+
+	cmd := exec.Command("docker", "exec", "-it", container, "sh")
+
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
+		conn.Close()
+		return
+	}
+
+	// send container output → browser
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := ptmx.Read(buf)
+			if err != nil {
+				break
+			}
+			conn.WriteMessage(websocket.BinaryMessage, buf[:n])
+		}
+	}()
+
+	// send browser input → container
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+
+		_, err = ptmx.Write(msg)
+		if err != nil {
+			break
+		}
+	}
+
+	ptmx.Close()
+	conn.Close()
+}
+
 func main() {
 
 	go preheatImages()
@@ -800,6 +863,7 @@ func main() {
 	http.HandleFunc("/terminal/exec", terminalExecHandler)
 	http.HandleFunc("/sandbox/status", sandboxStatusHandler)
 	http.Handle("/agent/", agentProxyHandler())
+	http.HandleFunc("/terminal/ws", terminalWSHandler)
 
 	fmt.Println("Sandbox server running on http://localhost:9000")
 

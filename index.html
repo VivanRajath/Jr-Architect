@@ -14,6 +14,7 @@
     rel="stylesheet" />
   <link rel="stylesheet" href="/ide.css" />
   <link rel="stylesheet" href="/ide-agent.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
   <style>
     *,
     *::before,
@@ -44,6 +45,43 @@
       --text3: #8D6E63;
       --mono: 'JetBrains Mono', monospace;
       --sans: 'Inter', sans-serif;
+    }
+
+    body.dark-mode {
+      --bg: #1a1410;
+      --surface: #231C16;
+      --surface2: #2E241C;
+      --border: #3E2C1E;
+      --border2: #4E3C2E;
+      --accent: #A67C52;
+      --accent2: #C19A6B;
+      --accent-glow: rgba(166, 124, 82, 0.2);
+      --accent-soft: rgba(166, 124, 82, 0.1);
+      --green: #81C784;
+      --green-soft: rgba(129, 199, 132, 0.1);
+      --red: #EF5350;
+      --red-soft: rgba(239, 83, 80, 0.1);
+      --yellow: #FFD54F;
+      --yellow-soft: rgba(255, 213, 79, 0.1);
+      --text: #EFEBE9;
+      --text2: #D7CCC8;
+      --text3: #8D6E63;
+    }
+
+    body.dark-mode::before {
+      background-image:
+        linear-gradient(rgba(166, 124, 82, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(166, 124, 82, 0.04) 1px, transparent 1px);
+    }
+
+    body.dark-mode::after {
+      background: radial-gradient(ellipse, rgba(166, 124, 82, 0.06) 0%, transparent 70%);
+    }
+
+    body.dark-mode h1 span {
+      background: linear-gradient(135deg, #A67C52, #C19A6B, #D4A574);
+      -webkit-background-clip: text;
+      background-clip: text;
     }
 
     html,
@@ -266,8 +304,8 @@
     }
 
     .mode-option.active {
-      background: linear-gradient(135deg, rgba(124, 58, 237, 0.25), rgba(109, 40, 217, 0.2));
-      color: #a78bfa;
+      background: #6B3E1A;
+      color: #ffffff;
       box-shadow: 0 2px 8px rgba(124, 58, 237, 0.2);
     }
 
@@ -281,7 +319,7 @@
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      background: linear-gradient(135deg, #7c3aed, #6d28d9);
+      background: #6B3E1A;
       color: white;
       border: none;
       border-radius: 10px;
@@ -297,7 +335,7 @@
 
     .btn:hover {
       transform: translateY(-1px);
-      box-shadow: 0 6px 20px rgba(124, 58, 237, 0.5);
+
     }
 
     .btn:active {
@@ -947,24 +985,24 @@ node server.js"></textarea>
           Supported Runtimes
         </div>
         <div class="runtimes-grid">
-          <div class="runtime-chip"><span class="chip-icon">🐍</span>Python / Flask / FastAPI / Django</div>
-          <div class="runtime-chip"><span class="chip-icon">🟦</span>Node.js / Express / Next.js / Vite</div>
-          <div class="runtime-chip"><span class="chip-icon">🐹</span>Go</div>
-          <div class="runtime-chip"><span class="chip-icon">🦀</span>Rust</div>
-          <div class="runtime-chip"><span class="chip-icon">☕</span>Java / Spring Boot</div>
-          <div class="runtime-chip"><span class="chip-icon">🐘</span>PHP / Laravel</div>
-          <div class="runtime-chip"><span class="chip-icon">💎</span>Ruby / Rails</div>
-          <div class="runtime-chip"><span class="chip-icon">🟢</span>Bun</div>
-          <div class="runtime-chip"><span class="chip-icon">🦕</span>Deno</div>
-          <div class="runtime-chip"><span class="chip-icon">🔷</span>.NET</div>
-          <div class="runtime-chip"><span class="chip-icon">🌐</span>Static HTML</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">PY</span>Python / Flask / FastAPI / Django</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">JS</span>Node.js / Express / Next.js / Vite</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">GO</span>Go</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">RS</span>Rust</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">JV</span>Java / Spring Boot</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">PHP</span>PHP / Laravel</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">RB</span>Ruby / Rails</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">BN</span>Bun</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">DN</span>Deno</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">.N</span>.NET</div>
+          <div class="runtime-chip"><span class="chip-icon" style="font-size:12px;font-weight:700;font-family:var(--mono)">HT</span>Static HTML</div>
         </div>
         <div class="divider" style="margin-top: 16px;"></div>
         <p style="font-size: 12px; color: var(--text3); margin-top: 12px; line-height: 1.6;">
-          ⚡ FastAPI apps expose <code
-            style="font-family: var(--mono); background: var(--surface2); padding: 1px 5px; border-radius: 4px; color: #a78bfa;">/docs</code>
+          FastAPI apps expose <code
+            style="font-family: var(--mono); background: var(--surface2); padding: 1px 5px; border-radius: 4px; color: var(--accent);">/docs</code>
           and <code
-            style="font-family: var(--mono); background: var(--surface2); padding: 1px 5px; border-radius: 4px; color: #a78bfa;">/redoc</code>
+            style="font-family: var(--mono); background: var(--surface2); padding: 1px 5px; border-radius: 4px; color: var(--accent);">/redoc</code>
           automatically. Sandboxes auto-destroy after 10 minutes.
         </p>
       </div>
@@ -975,7 +1013,7 @@ node server.js"></textarea>
       <div class="modal">
         <div class="modal-header">
           <div class="modal-title" id="logsTitle">Container Logs</div>
-          <button class="modal-close" onclick="closeLogs()">✕</button>
+          <button class="modal-close" onclick="closeLogs()">&times;</button>
         </div>
         <div class="modal-body">
           <div class="logs-output" id="logsOutput"></div>
@@ -991,7 +1029,7 @@ node server.js"></textarea>
   <div id="ide-page" style="display:none; flex-direction:column; height:100vh;">
     <!-- Top Bar -->
     <div class="ide-topbar">
-      <span class="logo">⚡ Jr Architect</span>
+      <span class="logo">Jr Architect</span>
       <span class="repo-name"></span>
       <span class="mode-badge">DEV MODE</span>
       <div class="spacer"></div>
@@ -999,10 +1037,11 @@ node server.js"></textarea>
         <span class="ide-status-dot"></span>
         <span class="ide-status-text">Running</span>
       </div>
-      <button class="top-btn" onclick="saveCurrentFile()">💾 Save</button>
-      <button class="top-btn" onclick="openLivePreview()">🌐 Live Preview</button>
-      <button class="top-btn" onclick="loadFileTree()">🔄 Refresh</button>
-      <button class="top-btn" onclick="backToLanding()">← Back</button>
+      <button class="top-btn" onclick="saveCurrentFile()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save</button>
+      <button class="top-btn" onclick="openLivePreview()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> Preview</button>
+      <button class="top-btn" onclick="loadFileTree()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg> Refresh</button>
+      <button class="top-btn dark-mode-toggle" id="dark-mode-btn" onclick="toggleDarkMode()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> Dark</button>
+      <button class="top-btn" onclick="backToLanding()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg> Back</button>
     </div>
     <!-- Main -->
     <div class="ide-main">
@@ -1011,9 +1050,9 @@ node server.js"></textarea>
         <div class="sidebar-header">
           <span>Explorer</span>
           <div style="display:flex;gap:4px;">
-            <button onclick="promptCreateFile()" title="New File">+📄</button>
-            <button onclick="promptCreateFolder()" title="New Folder">+📁</button>
-            <button onclick="loadFileTree()" title="Refresh">⟳</button>
+            <button onclick="promptCreateFile()" title="New File">+ File</button>
+            <button onclick="promptCreateFolder()" title="New Folder">+ Dir</button>
+            <button onclick="loadFileTree()" title="Refresh"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg></button>
           </div>
         </div>
         <div class="file-tree" id="file-tree"></div>
@@ -1023,9 +1062,9 @@ node server.js"></textarea>
         <div class="editor-tabs" id="editor-tabs"></div>
         <div class="editor-container">
           <div class="editor-welcome" id="editor-welcome">
-            <div class="big-icon">📝</div>
+            <div class="big-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></div>
             <div>Select a file from the explorer to start editing</div>
-            <div style="font-size:12px;color:var(--text3)">Ctrl+S to save · Click files in the sidebar</div>
+            <div style="font-size:12px;color:var(--text3)">Ctrl+S to save  --  Click files in the sidebar</div>
           </div>
           <div id="monaco-container" style="display:none;width:100%;height:100%"></div>
         </div>
@@ -1036,16 +1075,12 @@ node server.js"></textarea>
             <div class="panel-tab active" data-tab="terminal" onclick="switchPanelTab('terminal')">Terminal</div>
             <div class="panel-tab" data-tab="logs" onclick="switchPanelTab('logs')">Logs</div>
             <div class="panel-tab" data-tab="status" onclick="switchPanelTab('status')">Status</div>
-            <div class="panel-tab" data-tab="agent" onclick="switchPanelTab('agent')">🤖 Agent</div>
+            <div class="panel-tab" data-tab="agent" onclick="switchPanelTab('agent')"> Agent</div>
           </div>
           <div class="panel-content">
             <div class="terminal-pane active" data-tab="terminal">
-              <div class="terminal-output" id="terminal-output"></div>
-              <div class="terminal-input-row">
-                <span>$</span>
-                <input type="text" id="terminal-input" placeholder="Type a command..." autocomplete="off"
-                  spellcheck="false" />
-              </div>
+              <div class="terminal-tabs-bar" id="terminal-tab-bar"></div>
+              <div class="terminal-output" id="terminal-instances"></div>
             </div>
             <div class="panel-pane" data-tab="logs" id="logs-output"></div>
             <div class="panel-pane" data-tab="status" id="status-output">
@@ -1055,7 +1090,7 @@ node server.js"></textarea>
               <div class="agent-chat" id="agent-chat">
                 <div class="agent-messages" id="agent-messages">
                   <div class="agent-welcome">
-                    <div style="font-size:32px;margin-bottom:8px">🤖</div>
+                    <div style="font-size:16px;margin-bottom:8px;font-weight:700;color:var(--accent)">AI</div>
                     <div style="font-weight:600;margin-bottom:4px">AI Coding Agent</div>
                     <div style="font-size:12px;color:var(--text3)">Ask me to explain code, suggest edits, create files,
                       or run commands.</div>
@@ -1079,11 +1114,11 @@ node server.js"></textarea>
       <!-- Live Preview Panel -->
       <div class="ide-preview-panel" id="ide-preview-panel" style="display:none;">
         <div class="preview-header">
-          <span>🌐 Live Preview</span>
+          <span>Live Preview</span>
           <div style="display:flex;gap:4px;">
-            <button onclick="refreshPreview()" title="Refresh">⟳</button>
-            <button onclick="openPreviewExternal()" title="Open in new tab">↗</button>
-            <button onclick="closePreview()" title="Close">✕</button>
+            <button onclick="refreshPreview()" title="Refresh"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg></button>
+            <button onclick="openPreviewExternal()" title="Open in new tab"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+            <button onclick="closePreview()" title="Close">&times;</button>
           </div>
         </div>
         <iframe id="preview-iframe" class="preview-iframe"
@@ -1107,7 +1142,7 @@ node server.js"></textarea>
     function toast(msg, type = 'success') {
       const el = document.createElement('div');
       el.className = `toast ${type}`;
-      el.innerHTML = `<span>${type === 'success' ? '✅' : '❌'}</span><span>${msg}</span>`;
+      el.innerHTML = `<span>${type === 'success' ? '\u2713' : '\u2717'}</span><span>${msg}</span>`;
       document.getElementById('toastContainer').appendChild(el);
       setTimeout(() => el.remove(), 3500);
     }
@@ -1146,7 +1181,7 @@ node server.js"></textarea>
       const btn = document.getElementById('runBtn');
       btn.disabled = true;
       btn.closest('.card').classList.add('loading');
-      setRunStatus('loading', '⏳', `Cloning and starting <strong>${repo}</strong>…<br><small style="color:var(--text3)">This may take up to 30 seconds.</small>`);
+      setRunStatus('loading', '', `Cloning and starting <strong>${repo}</strong>...<br><small style="color:var(--text3)">This may take up to 30 seconds.</small>`);
 
       try {
         const res = await fetch(`${API}/run`, {
@@ -1165,26 +1200,26 @@ node server.js"></textarea>
 
         if (mode === 'dev') {
           // Dev Mode: switch to IDE
-          setRunStatus('success', '🚀', `<strong>Sandbox is live!</strong> Opening IDE…`);
+          setRunStatus('success', '', `<strong>Sandbox is live!</strong> Opening IDE...`);
           toast('Sandbox launched — opening IDE!');
           initIDE(container, repo);
         } else {
           // Prompt Mode: stay on landing, show URL
-          setRunStatus('success', '🚀', `
+          setRunStatus('success', '', `
             <strong>Sandbox is live!</strong><br>
             <div class="link-row" style="margin-top:8px;">
               <a class="sandbox-link" href="${url}" target="_blank" rel="noopener">${url}</a>
-              ${url.includes('8000') ? `<a class="sandbox-link" href="${url}/docs" target="_blank" rel="noopener">📖 /docs</a>` : ''}
-              <button class="btn btn-sm btn-ghost" onclick="viewLogs('${container}')">📋 Logs</button>
-              <button class="btn btn-sm btn-success" onclick="initIDE('${container}','${repo}')">🖥 Open IDE</button>
+              ${url.includes('8000') ? `<a class="sandbox-link" href="${url}/docs" target="_blank" rel="noopener">/docs</a>` : ''}
+              <button class="btn btn-sm btn-ghost" onclick="viewLogs('${container}')">Logs</button>
+              <button class="btn btn-sm btn-success" onclick="initIDE('${container}','${repo}')">Open IDE</button>
             </div>
-            <small style="color:var(--text3); display:block; margin-top:6px;">Auto-destroys in 10 min · Container: ${container}</small>
+            <small style="color:var(--text3); display:block; margin-top:6px;">Auto-destroys in 10 min -- Container: ${container}</small>
           `);
           toast('Sandbox launched!');
         }
         setTimeout(loadSandboxes, 1000);
       } catch (err) {
-        setRunStatus('error', '❌', `<strong>Error:</strong> ${err.message}`);
+        setRunStatus('error', '', `<strong>Error:</strong> ${err.message}`);
         toast(err.message, 'error');
       } finally {
         btn.disabled = false;
@@ -1272,6 +1307,8 @@ node server.js"></textarea>
     setInterval(loadSandboxes, 5000);
   </script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
   <script src="/ide.js"></script>
   <script src="/ide-agent.js"></script>
 </body>
