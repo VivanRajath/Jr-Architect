@@ -1,6 +1,5 @@
-// ── IDE State ──
 const IDE = {
-  container: null, repoUrl: '', previewUrl: '', tabs: [], activeTab: null,
+  container: null, repoUrl: '', previewUrl: '', port: null, tabs: [], activeTab: null,
   editor: null, models: {}, logsInterval: null, statusInterval: null,
   panelTab: 'terminal',
   // Multi-terminal support
@@ -10,9 +9,10 @@ const IDE = {
   darkMode: false,
 };
 
-function initIDE(containerId, repoUrl) {
+function initIDE(containerId, repoUrl, port) {
   IDE.container = containerId;
   IDE.repoUrl = repoUrl;
+  IDE.port = port;
   document.body.classList.add('ide-mode');
   document.getElementById('landing-page').style.display = 'none';
   document.getElementById('ide-page').style.display = 'flex';

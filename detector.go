@@ -622,20 +622,13 @@ func detectLyzrRepo(path string) (RuntimeConfig, bool) {
 		isLyzr = true
 	} else if fileExists(filepath.Join(path, "response_schemas")) {
 		isLyzr = true
-	} else if fileExists(filepath.Join(path, "next.config.js")) {
-		isLyzr = true
-	}
-
-	pkg, err := readPackageJSON(filepath.Join(path, "package.json"))
-	if err == nil {
-		if _, ok := pkg.Dependencies["next"]; ok {
-			isLyzr = true
-		}
 	}
 
 	if !isLyzr {
 		return RuntimeConfig{}, false
 	}
+
+	pkg, err := readPackageJSON(filepath.Join(path, "package.json"))
 
 	startupCommand := "npm install --no-audit --no-fund && npx next dev -H 0.0.0.0"
 	if err == nil {
@@ -725,7 +718,7 @@ func detectRuntimeConfig(path string) (RuntimeConfig, error) {
 		cfg := RuntimeConfig{
 			Image:          "sandbox-static",
 			Port:           80,
-			StartupCommand: "nginx -g \"daemon off;\"",
+			StartupCommand: "cp -r . /usr/share/nginx/html && nginx -g \"daemon off;\"",
 		}
 		cfg.StartupCommand = prefixSubdir(cfg.StartupCommand, subdir)
 		return cfg, nil

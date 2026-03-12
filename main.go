@@ -17,7 +17,9 @@ import (
 	"sync"
 	"time"
 	"github.com/gorilla/websocket"
-    "github.com/creack/pty"
+	"github.com/creack/pty"
+	"bytes"
+	"runtime"
 )
 
 //go:embed index.html
@@ -51,18 +53,41 @@ type Sandbox struct {
 var (
 	sandboxes = map[string]Sandbox{}
 	mutex     sync.Mutex
+	// logs per container to capture setup phase
+	setupLogs = map[string]*strings.Builder{}
+	logsMutex sync.Mutex
 )
 
-func run(cmd string, args ...string) error {
+func addLog(container, msg string) {
+	logsMutex.Lock()
+	defer logsMutex.Unlock()
+	if _, ok := setupLogs[container]; !ok {
+		setupLogs[container] = &strings.Builder{}
+	}
+	fmt.Fprintf(setupLogs[container], "[%s] %s\n", time.Now().Format("15:04:05"), msg)
+	fmt.Println(msg)
+}
+
+func run(container, cmd string, args ...string) error {
+	if container != "" {
+		addLog(container, fmt.Sprintf("Running: %s %v", cmd, args))
+	}
 	c := exec.Command(cmd, args...)
 	out, err := c.CombinedOutput()
 	if err != nil {
-		fmt.Println(string(out))
+		if container != "" {
+			addLog(container, fmt.Sprintf("Error: %v\nOutput: %s", err, string(out)))
+		} else {
+			fmt.Println(string(out))
+		}
 	}
 	return err
 }
 
-func output(cmd string, args ...string) (string, error) {
+func output(container, cmd string, args ...string) (string, error) {
+	if container != "" {
+		addLog(container, fmt.Sprintf("Running: %s %v", cmd, args))
+	}
 	c := exec.Command(cmd, args...)
 	out, err := c.CombinedOutput()
 	return string(out), err
@@ -134,7 +159,7 @@ func preheatImages() {
 		imageName := "sandbox-" + img
 		folder := imageMap[img]
 
-		out, err := output("docker", "images", "-q", imageName)
+		out, err := output("", "docker", "images", "-q", imageName)
 
 		if err == nil && strings.TrimSpace(out) != "" {
 			fmt.Printf("%s already exists, skipping\n", imageName)
@@ -145,7 +170,7 @@ func preheatImages() {
 
 		fmt.Printf("Building %s from %s\n", imageName, path)
 
-		buildErr := run("docker", "build", "-t", imageName, path)
+		buildErr := run("", "docker", "build", "-t", imageName, path)
 		if buildErr != nil {
 			fmt.Printf("Failed to build %s: %v\n", imageName, buildErr)
 		} else {
@@ -187,9 +212,10 @@ func startSandbox(repo string, instructions string, mode string) (Sandbox, error
 	mutex.Unlock()
 
 	setupFunc := func() error {
-		fmt.Println("Cloning repo:", repo)
+		addLog(container, "Cloning repo: "+repo)
 
 		err := run(
+			container,
 			"git",
 			"clone",
 			"--depth", "1",
@@ -200,6 +226,7 @@ func startSandbox(repo string, instructions string, mode string) (Sandbox, error
 		)
 
 		if err != nil {
+			addLog(container, "Failed to clone repo: "+err.Error())
 			return err
 		}
 
@@ -211,11 +238,15 @@ func startSandbox(repo string, instructions string, mode string) (Sandbox, error
 			}
 		}
 
+		addLog(container, "Detecting runtime...")
 		runtimeConfig, err := detectRuntimeConfig(workdir)
 
 		if err != nil {
+			addLog(container, "Runtime detection failed: "+err.Error())
 			return err
 		}
+
+		addLog(container, fmt.Sprintf("Runtime detected: image=%s, port=%d, cmd=%s", runtimeConfig.Image, runtimeConfig.Port, runtimeConfig.StartupCommand))
 
 		args := []string{
 			"run",
@@ -224,8 +255,6 @@ func startSandbox(repo string, instructions string, mode string) (Sandbox, error
 			"--memory", "1024m",
 			"--cpus", "1",
 			"--pids-limit", "100",
-			"--cap-drop", "ALL",
-			"--security-opt", "no-new-privileges",
 			"-p", fmt.Sprintf("0.0.0.0:%d:%d", port, runtimeConfig.Port),
 			"-v", fmt.Sprintf("%s:/workspace", abs),
 			"-v", fmt.Sprintf("%s/.npm:/root/.npm", os.Getenv("HOME")),
@@ -240,26 +269,28 @@ func startSandbox(repo string, instructions string, mode string) (Sandbox, error
 			runtimeConfig.StartupCommand,
 		}
 
-		err = run("docker", args...)
+		addLog(container, "Starting Docker container...")
+		err = run(container, "docker", args...)
 
 		if err != nil {
+			addLog(container, "Failed to start container: "+err.Error())
 			return err
 		}
 
 		if !waitForServer(port) {
-			fmt.Println("Warning: server not ready yet")
-			out, _ := output("docker", "logs", "--tail", "50", container)
-			fmt.Println("--- Container Logs ---")
-			fmt.Println(out)
-			fmt.Println("----------------------")
+			addLog(container, "Warning: server not ready yet")
+			out, _ := output(container, "docker", "logs", "--tail", "50", container)
+			addLog(container, "--- Container Logs ---\n"+out+"\n----------------------")
+		} else {
+			addLog(container, "Server is ready!")
 		}
 
 		go func() {
 
 			time.Sleep(10 * time.Minute)
 
-			run("docker", "stop", container)
-			run("docker", "rm", container)
+			run("", "docker", "stop", container)
+			run("", "docker", "rm", container)
 
 			os.RemoveAll(workdir)
 
@@ -350,8 +381,8 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 
 	container := strings.TrimPrefix(r.URL.Path, "/stop/")
 
-	run("docker", "stop", container)
-	run("docker", "rm", container)
+	run("", "docker", "stop", container)
+	run("", "docker", "rm", container)
 
 	mutex.Lock()
 	delete(sandboxes, container)
@@ -367,14 +398,21 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 
 	container := strings.TrimPrefix(r.URL.Path, "/logs/")
 
-	out, err := output("docker", "logs", container)
+	logsMutex.Lock()
+	slog := ""
+	if b, ok := setupLogs[container]; ok {
+		slog = b.String()
+	}
+	logsMutex.Unlock()
+
+	out, err := output("", "docker", "logs", container)
 
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		fmt.Fprint(w, slog+"\n[Error fetching container logs: "+err.Error()+"]")
 		return
 	}
 
-	fmt.Fprint(w, out)
+	fmt.Fprint(w, slog+"\n"+out)
 }
 
 // ── File tree types ──
@@ -654,7 +692,7 @@ func sandboxStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get container status from Docker
-	out, err := output("docker", "inspect", "--format", "{{.State.Status}}", sb.Container)
+	out, err := output("", "docker", "inspect", "--format", "{{.State.Status}}", sb.Container)
 	status := strings.TrimSpace(out)
 	if err != nil {
 		status = "unknown"
@@ -713,7 +751,7 @@ func terminalExecHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := output("docker", "exec", req.Container, "sh", "-c", req.Command)
+	out, err := output("", "docker", "exec", req.Container, "sh", "-c", req.Command)
 	if err != nil {
 		// Still return output even on non-zero exit
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -804,12 +842,65 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cmd := exec.Command("docker", "exec", "-it", container, "sh")
+	// Start docker exec command
+	// Note: We use -i for interactive, but avoid -t on Windows if it causes issues with creack/pty
+	// However, docker exec -it is generally what's needed for a functional shell.
+	// The issue might be how creack/pty handles the Windows process.
+	
+	// Try a more robust approach for Windows:
+	// If PTY fails or on Windows, we can fallback to a simpler pipe mechanism
+	// but let's first try to fix the command.
+	// Robust handling for Windows and PTY failures
+	isWindows := (runtime.GOOS == "windows")
+	
+	startFallback := func() {
+		// Create a NEW command object for the fallback
+		fcmd := exec.Command("docker", "exec", "-i", container, "sh", "-i")
+		stdin, _ := fcmd.StdinPipe()
+		stdout, _ := fcmd.StdoutPipe()
+		if err := fcmd.Start(); err != nil {
+			addLog(container, "Fallback shell start failed: "+err.Error())
+			conn.Close()
+			return
+		}
+		
+		// stdout -> browser
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, err := stdout.Read(buf)
+				if err != nil {
+					break
+				}
+				conn.WriteMessage(websocket.BinaryMessage, buf[:n])
+			}
+			conn.Close()
+		}()
+		
+		// browser -> stdin
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			// Translate \r to \n for dumb terminal mode
+			msg = bytes.ReplaceAll(msg, []byte("\r"), []byte("\n"))
+			stdin.Write(msg)
+		}
+		fcmd.Process.Kill()
+	}
 
-	ptmx, err := pty.Start(cmd)
+	if isWindows {
+		startFallback()
+		return
+	}
+
+	// Try PTY only on non-Windows
+	cmd := exec.Command("docker", "exec", "-it", container, "sh")
+	entry, err := pty.Start(cmd)
 	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
-		conn.Close()
+		addLog(container, "PTY start failed, using fallback: "+err.Error())
+		startFallback()
 		return
 	}
 
@@ -817,7 +908,7 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		buf := make([]byte, 1024)
 		for {
-			n, err := ptmx.Read(buf)
+			n, err := entry.Read(buf)
 			if err != nil {
 				break
 			}
@@ -832,13 +923,13 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		_, err = ptmx.Write(msg)
+		_, err = entry.Write(msg)
 		if err != nil {
 			break
 		}
 	}
 
-	ptmx.Close()
+	entry.Close()
 	conn.Close()
 }
 
