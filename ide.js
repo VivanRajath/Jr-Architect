@@ -20,6 +20,7 @@ function initIDE(containerId, repoUrl, port) {
   loadFileTree();
   initMonaco();
   initTerminal();
+  initTerminalInput();
   startLogsPolling();
   startStatusPolling();
   // Restore dark mode preference
@@ -444,6 +445,23 @@ function closeTerminal(id, e) {
     if (next) switchTerminal(next.id);
   }
   renderTerminalTabs();
+}
+
+function initTerminalInput() {
+  const input = document.getElementById('terminal-input');
+  if (!input) return;
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const active = IDE.terminals.find(t => t.id === IDE.activeTerminalId);
+      if (active && active.socket && active.socket.readyState === WebSocket.OPEN) {
+        // Send command with newline encoded as Uint8Array
+        const cmd = input.value + '\r';
+        const encoder = new TextEncoder();
+        active.socket.send(encoder.encode(cmd));
+        input.value = '';
+      }
+    }
+  });
 }
 
 function renderTerminalTabs() {

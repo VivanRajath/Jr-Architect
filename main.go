@@ -16,10 +16,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"github.com/gorilla/websocket"
+
 	"github.com/creack/pty"
-	"bytes"
-	"runtime"
+	"github.com/gorilla/websocket"
 )
 
 //go:embed index.html
@@ -40,7 +39,7 @@ var ideAgentJSFile []byte
 type Request struct {
 	Repo         string `json:"repo"`
 	Instructions string `json:"instructions,omitempty"`
-	Mode         string `json:"mode,omitempty"` 
+	Mode         string `json:"mode,omitempty"`
 }
 
 type Sandbox struct {
@@ -137,18 +136,18 @@ func preheatImages() {
 
 	// maps image suffix -> subfolder name under sandbox-images/
 	imageMap := map[string]string{
-		"static":  "static-sites",
-		"node":    "node",
-		"python":  "python",
-		"go":      "go",
-		"java":    "java",
-		"php":     "php",
-		"ruby":    "ruby",
-		"rust":    "rust",
-		"dotnet":  "dotnet",
-		"deno":    "deno",
-		"bun":     "bun",
-		"react":   "react",
+		"static": "static-sites",
+		"node":   "node",
+		"python": "python",
+		"go":     "go",
+		"java":   "java",
+		"php":    "php",
+		"ruby":   "ruby",
+		"rust":   "rust",
+		"dotnet": "dotnet",
+		"deno":   "deno",
+		"bun":    "bun",
+		"react":  "react",
 	}
 
 	// iterate in a consistent order
@@ -187,7 +186,6 @@ func startSandbox(repo string, instructions string, mode string) (Sandbox, error
 	if err != nil {
 		return Sandbox{}, err
 	}
-
 
 	os.Remove(workdir)
 
@@ -842,28 +840,24 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start docker exec command
-	// Note: We use -i for interactive, but avoid -t on Windows if it causes issues with creack/pty
-	// However, docker exec -it is generally what's needed for a functional shell.
-	// The issue might be how creack/pty handles the Windows process.
-	
-	// Try a more robust approach for Windows:
-	// If PTY fails or on Windows, we can fallback to a simpler pipe mechanism
-	// but let's first try to fix the command.
-	// Robust handling for Windows and PTY failures
-	isWindows := (runtime.GOOS == "windows")
-	
-	startFallback := func() {
+	// Try PTY 
+	cmd := exec.Command("docker", "exec", "-it", container, "sh")
+	entry, err := pty.Start(cmd)
+	if err != nil {
+		addLog(container, "PTY start failed, using fallback: "+err.Error())
+		
 		// Create a NEW command object for the fallback
-		fcmd := exec.Command("docker", "exec", "-i", container, "sh", "-i")
+		fcmd := exec.Command("docker", "exec", "-it", container, "sh")
 		stdin, _ := fcmd.StdinPipe()
 		stdout, _ := fcmd.StdoutPipe()
+		stderr, _ := fcmd.StderrPipe()
+		
 		if err := fcmd.Start(); err != nil {
 			addLog(container, "Fallback shell start failed: "+err.Error())
 			conn.Close()
 			return
 		}
-		
+
 		// stdout -> browser
 		go func() {
 			buf := make([]byte, 1024)
@@ -874,33 +868,30 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				conn.WriteMessage(websocket.BinaryMessage, buf[:n])
 			}
-			conn.Close()
 		}()
-		
+
+		// stderr -> browser
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, err := stderr.Read(buf)
+				if err != nil {
+					break
+				}
+				conn.WriteMessage(websocket.BinaryMessage, buf[:n])
+			}
+		}()
+
 		// browser -> stdin
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
 				break
 			}
-			// Translate \r to \n for dumb terminal mode
-			msg = bytes.ReplaceAll(msg, []byte("\r"), []byte("\n"))
 			stdin.Write(msg)
 		}
 		fcmd.Process.Kill()
-	}
-
-	if isWindows {
-		startFallback()
-		return
-	}
-
-	// Try PTY only on non-Windows
-	cmd := exec.Command("docker", "exec", "-it", container, "sh")
-	entry, err := pty.Start(cmd)
-	if err != nil {
-		addLog(container, "PTY start failed, using fallback: "+err.Error())
-		startFallback()
+		conn.Close()
 		return
 	}
 

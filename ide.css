@@ -609,14 +609,21 @@ body.dark-mode .terminal-add-btn:hover {
 
 .terminal-input-row {
   display: flex;
+  background: var(--surface);
   border-top: 1px solid var(--border);
+  align-items: center;
+}
+
+body.dark-mode .terminal-input-row {
+  background: var(--surface);
 }
 
 .terminal-input-row span {
-  padding: 6px 8px;
+  padding: 8px 8px 8px 12px;
   color: var(--green);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 14px;
+  font-weight: bold;
 }
 
 .terminal-input-row input {
@@ -626,8 +633,8 @@ body.dark-mode .terminal-add-btn:hover {
   outline: none;
   color: var(--text);
   font-family: var(--mono);
-  font-size: 12px;
-  padding: 6px 4px;
+  font-size: 14px;
+  padding: 8px 12px 8px 4px;
 }
 
 /* Status panel */
