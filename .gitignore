@@ -22,3 +22,13 @@ agent/__pycache__/
 # Docker / Sandboxes temp files
 sandbox-*
 !sandbox-images/
+
+# Node
+node_modules/
+agent-services/node_modules/
+
+# Logs
+*.log
+logs.txt
+test.log
+container_logs.txt
