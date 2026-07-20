@@ -53,6 +53,33 @@ function providerHasKey(p) {
 const NO_KEY_MESSAGE =
   "No AI provider API key configured. Set GROQ_API_KEY (or ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) in .env and restart the server.";
 
+// All configured Groq keys: GROQ_API_KEY, GROQ_API_KEY_2..10, and any comma-
+// separated GROQ_API_KEYS. Groq's free tier caps tokens-per-minute PER ORG, so
+// keys from separate orgs each get their own bucket — round-robining across them
+// multiplies usable throughput (it does NOT raise the single-request size limit).
+// pi-ai reads process.env.GROQ_API_KEY at request time, so we rotate that var.
+const GROQ_KEYS = (() => {
+  const keys = [];
+  const add = (v) => { const t = (v || "").trim(); if (t && !keys.includes(t)) keys.push(t); };
+  (process.env.GROQ_API_KEYS || "").split(",").forEach(add);
+  add(process.env.GROQ_API_KEY);
+  for (let i = 2; i <= 10; i++) add(process.env[`GROQ_API_KEY_${i}`]);
+  return keys;
+})();
+// Ensure pi-ai's providerHasKey/getEnvApiKey see a key even if only the numbered
+// or comma-separated forms were set.
+if (!process.env.GROQ_API_KEY && GROQ_KEYS.length) process.env.GROQ_API_KEY = GROQ_KEYS[0];
+if (GROQ_KEYS.length > 1) console.log(`[agent] Groq key pool: ${GROQ_KEYS.length} keys (round-robin per turn)`);
+
+let groqCursor = 0;
+// Point process.env.GROQ_API_KEY at the next key in the pool before a Groq turn,
+// so consecutive agent requests land on different orgs' TPM buckets.
+function rotateGroqKey(model) {
+  if (!model || !model.startsWith("groq:") || GROQ_KEYS.length < 2) return;
+  process.env.GROQ_API_KEY = GROQ_KEYS[groqCursor % GROQ_KEYS.length];
+  groqCursor++;
+}
+
 // Restrict the agent to the core coding tools. gitclaw otherwise injects extra
 // built-ins (capture_photo, task_tracker, skill_learner) plus a system prompt
 // that pushes the model through skill/task rituals — noise that bloats the
@@ -122,11 +149,13 @@ app.post("/agent/chat", async (req, res) => {
 
   let fullResponse = "";
   let errText = "";
+  const model = modelFor(provider);
+  rotateGroqKey(model);
   try {
     for await (const msg of query({
       prompt: message,
       dir: session.dir,
-      model: modelFor(provider),
+      model,
       allowedTools: AGENT_ALLOWED_TOOLS,
     })) {
       if (msg.type === "delta" && msg.deltaType !== "thinking") fullResponse += msg.content;
@@ -194,6 +223,7 @@ wss.on("connection", (ws) => {
       }
 
       const model = modelFor(provider);
+      rotateGroqKey(model);
       console.log(`[agent] chat container=${targetContainer} model=${model}`);
       ws.send(JSON.stringify({ type: "thinking", content: "" }));
 
