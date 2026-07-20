@@ -31,7 +31,11 @@ const sessions = new Map();
 // env so operators can point a provider at whatever model their gitclaw build
 // supports without a code change.
 const PROVIDER_MODELS = {
-  groq: process.env.AGENT_MODEL_GROQ || "groq:llama-3.3-70b-versatile",
+  // Kimi K2 is the most reliable tool-caller on Groq. llama-3.3-70b-versatile
+  // frequently emits malformed tool calls ("cli {json}" as the function NAME),
+  // which Groq rejects with "tool call ... not in request.tools" — so it can't
+  // drive an agent that must use tools. Override with AGENT_MODEL_GROQ.
+  groq: process.env.AGENT_MODEL_GROQ || "groq:moonshotai/kimi-k2-instruct",
   anthropic: process.env.AGENT_MODEL_ANTHROPIC || "anthropic:claude-sonnet-4-5",
   openai: process.env.AGENT_MODEL_OPENAI || "openai:gpt-4.1",
   gemini: process.env.AGENT_MODEL_GEMINI || "google:gemini-2.0-flash",

@@ -23,7 +23,7 @@ version: 1.0.0
 description: AI agent for {{.ProjectName}} ({{.Stack}} project)
 
 model:
-  preferred: "groq:llama-3.3-70b-versatile"
+  preferred: "groq:moonshotai/kimi-k2-instruct"
   fallback: ["anthropic:claude-sonnet-4-5", "openai:gpt-4o"]
   constraints:
     temperature: 0.3

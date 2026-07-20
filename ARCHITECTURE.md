@@ -250,7 +250,9 @@ Server → Client:
 
 The `gitclaw` library reads `agent.yaml` from the workspace and runs the full agentic loop (read → think → tool calls → commit → respond).
 
-**Model selection:** `modelFor(provider)` resolves the model from the UI's provider dropdown (`groq` | `anthropic` | `openai` | `gemini`) but **only ever returns a provider that actually has an API key in the environment** (`providerHasKey()` mirrors pi-ai's env var names). Resolution order: `GITCLAW_MODEL` (if its provider has a key) → the selected provider (if it has a key) → the first configured provider, **preferring Groq**. If no provider is configured, the request is rejected up front with a clear message instead of letting the agent loop crash. This is why a machine with only `GROQ_API_KEY` runs the agent on `groq:llama-3.3-70b-versatile` with no extra config. Per-provider defaults are overridable via `AGENT_MODEL_GROQ` / `AGENT_MODEL_ANTHROPIC` / `AGENT_MODEL_OPENAI` / `AGENT_MODEL_GEMINI`.
+**Model selection:** `modelFor(provider)` resolves the model from the UI's provider dropdown (`groq` | `anthropic` | `openai` | `gemini`) but **only ever returns a provider that actually has an API key in the environment** (`providerHasKey()` mirrors pi-ai's env var names). Resolution order: `GITCLAW_MODEL` (if its provider has a key) → the selected provider (if it has a key) → the first configured provider, **preferring Groq**. If no provider is configured, the request is rejected up front with a clear message instead of letting the agent loop crash. This is why a machine with only `GROQ_API_KEY` runs the agent on `groq:moonshotai/kimi-k2-instruct` with no extra config. Kimi K2 is the default because it is a reliable tool-caller on Groq; `llama-3.3-70b-versatile` (fine for Build Mode's text generation) frequently emits malformed tool calls that Groq rejects with `tool call ... not in request.tools`, so it can't drive the agent. Per-provider defaults are overridable via `AGENT_MODEL_GROQ` / `AGENT_MODEL_ANTHROPIC` / `AGENT_MODEL_OPENAI` / `AGENT_MODEL_GEMINI`.
+
+**Output-token cap (Groq 12k TPM):** Groq's free tier counts input **plus reserved output** against its 12,000 tokens-per-minute limit, and pi-ai otherwise reserves the model's full output window (`min(model.maxTokens, 32000)` = 32000 for Groq). That alone billed every turn at ~34k/min and returned `413 Requested 33889` — the prompt (~1.9k tokens) was never the problem. pi-agent-core drops per-request `constraints.maxTokens` (its loop config uses a fixed field whitelist), so the service caps output at the **model-registry** level instead: at startup it lowers `getModels("groq")` entries' `maxTokens` to `AGENT_MAX_OUTPUT_TOKENS` (default 3000), which pi-ai reads for the reservation. A turn then bills ~input+3000, well under 12k.
 
 The service also installs `unhandledRejection` / `uncaughtException` handlers so a single failing turn (e.g. an async provider error) logs and keeps the service alive rather than terminating the whole process.
 
@@ -557,7 +559,7 @@ GITCLAW_MODEL=anthropic:claude-sonnet-4-6
 # Per-provider model overrides (optional) — map the UI's provider selector to a
 # gitclaw model id. The agent auto-selects the first provider that has a key,
 # preferring Groq, so with only GROQ_API_KEY set it uses the Groq model below.
-AGENT_MODEL_GROQ=groq:llama-3.3-70b-versatile
+AGENT_MODEL_GROQ=groq:moonshotai/kimi-k2-instruct
 AGENT_MODEL_ANTHROPIC=anthropic:claude-sonnet-4-5
 AGENT_MODEL_OPENAI=openai:gpt-4.1
 AGENT_MODEL_GEMINI=google:gemini-2.0-flash

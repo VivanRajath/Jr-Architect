@@ -39,7 +39,7 @@ GROQ_API_KEY=gsk_...
 # first provider that has a key, preferring Groq — so a Groq-only setup needs
 # none of these. GITCLAW_MODEL can force one model but is ignored if its
 # provider has no key.
-# AGENT_MODEL_GROQ=groq:llama-3.3-70b-versatile
+# AGENT_MODEL_GROQ=groq:moonshotai/kimi-k2-instruct
 # AGENT_MODEL_ANTHROPIC=anthropic:claude-sonnet-4-5
 # AGENT_MODEL_OPENAI=openai:gpt-4.1
 # AGENT_MODEL_GEMINI=google:gemini-2.0-flash
@@ -129,7 +129,9 @@ The agent panel talks to the Node agent service over a WebSocket at `/agent/ws`,
 
 **If the agent replies with an error (or nothing):** a failed model call now surfaces in the chat as an error message instead of leaving the panel spinning. The agent is intentionally limited to the core tools (`cli, read, write, memory`); set `AGENT_ALLOWED_TOOLS` to change that.
 
-**`413 Request too large ... tokens per minute (TPM): Limit 12000`:** Groq's free tier caps requests at 12k tokens/minute. This used to fire on Lyzr apps because their large `AGENTS.md` was injected into the agent prompt (30k+ tokens). It's now moved aside automatically (kept as `AGENTS.md.sandbox-bak`), keeping the request small. If you still hit it on a very large repo, either raise your Groq tier or lower `maxInjectedDocBytes`.
+**`413 Request too large ... tokens per minute (TPM): Limit 12000, Requested 33889`:** Groq's free tier counts input **plus reserved output** against a 12k-tokens/minute limit. The actual prompt here is only ~1.9k tokens — the culprit was the agent stack reserving the model's full 32k output window, so a turn billed ~34k/min. The service now caps output at `AGENT_MAX_OUTPUT_TOKENS` (default 3000) via the model registry, so a turn bills ~input+3000. Raise `AGENT_MAX_OUTPUT_TOKENS` on a paid Groq tier for longer replies. (A large repo `AGENTS.md` is also moved aside as `AGENTS.md.sandbox-bak` to keep the prompt itself small.)
+
+**`tool call validation failed: attempted to call tool 'cli {...}' which was not in request.tools`:** the model produced a malformed tool call (arguments jammed into the tool name) and Groq rejected it. `llama-3.3-70b-versatile` does this often, so the agent defaults to `groq:moonshotai/kimi-k2-instruct`, a reliable tool-caller. If you still see it, set `AGENT_MODEL_GROQ` to another tool-capable Groq model (e.g. `groq:openai/gpt-oss-120b`).
 
 ---
 
