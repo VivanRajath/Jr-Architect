@@ -347,6 +347,13 @@ func startSandbox(repo string, instructions string, mode string) (Sandbox, error
 			// non-fatal — sandbox still runs without agent spec
 		} else {
 			addLog(container, "GitAgent spec generated for stack: "+stack)
+			// Layer 1 of code retrieval: build a repo map so the agent knows the
+			// codebase's shape up front. Best-effort — never blocks the sandbox.
+			if mapErr := generateRepoMap(workdir, stack, framework); mapErr != nil {
+				addLog(container, "Warning: repo map generation failed: "+mapErr.Error())
+			} else {
+				addLog(container, "Repo map generated (knowledge/repo-map.md)")
+			}
 			go RegisterWithAgentService(container, abs, stack)
 		}
 

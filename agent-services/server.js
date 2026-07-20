@@ -3,8 +3,8 @@ import { WebSocketServer } from "ws";
 import { createServer } from "http";
 import { query } from "gitclaw";
 import { getModels } from "@mariozechner/pi-ai";
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
+import { readFileSync, existsSync, readdirSync, statSync } from "fs";
+import { join, extname } from "path";
 
 // Keep the agent service alive if a single request's agent loop throws
 // asynchronously — e.g. a provider/key error surfaced from a background stream
@@ -101,12 +101,116 @@ function rotateGroqKey(model) {
 // that pushes the model through skill/task rituals — noise that bloats the
 // request and derails smaller models (e.g. Groq's llama-3.3-70b) so they never
 // get around to answering. Override with AGENT_ALLOWED_TOOLS if needed.
-const AGENT_ALLOWED_TOOLS = (process.env.AGENT_ALLOWED_TOOLS || "cli,read,write,memory")
+const AGENT_ALLOWED_TOOLS = (process.env.AGENT_ALLOWED_TOOLS || "cli,read,write,memory,search_code")
   .split(",").map((s) => s.trim()).filter(Boolean);
 
 // Tools whose completion means files on disk may have changed — used to tell the
 // UI to reload the tree/preview. Reads and memory ops don't touch the workspace.
 const WRITE_TOOLS = new Set(["write", "edit", "create", "cli"]);
+
+// ── Layer 2 of code retrieval: the search_code tool ──────────────────────────
+// A ripgrep-style code search implemented in pure JS (no external binary, works
+// on Windows/macOS/Linux). The agent calls it to find where a symbol/string is
+// defined or used and pulls back only the matching lines — the token-frugal
+// alternative to reading whole files, which matters on Groq's 12k TPM tier.
+const SEARCH_SKIP_DIRS = new Set([
+  ".git", "node_modules", "__pycache__", ".next", "vendor", ".venv", "venv",
+  "dist", "build", ".gitagent", "coverage", ".turbo", ".cache", "out", "target",
+  ".idea", ".vscode",
+]);
+const SEARCH_TEXT_EXT = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".py", ".rb", ".php",
+  ".java", ".rs", ".vue", ".svelte", ".css", ".scss", ".sass", ".html", ".json",
+  ".md", ".mdx", ".yaml", ".yml", ".txt", ".sh", ".sql", ".toml", ".prisma",
+]);
+const SEARCH_MAX_FILE_BYTES = 512 * 1024;
+const SEARCH_MAX_RESULTS_DEFAULT = 20;
+const SEARCH_MAX_RESULTS_CAP = 50;
+
+// Build a search_code tool bound to a specific workspace dir. Returned in the
+// gitclaw SDK-tool shape ({name, description, inputSchema, handler}).
+function makeSearchCodeTool(dir) {
+  return {
+    name: "search_code",
+    description:
+      "Search the repository's source for a text string or regular expression. " +
+      "Returns ranked file:line matches, each with a one-line snippet. Prefer this " +
+      "over reading whole files when locating where a symbol, function, or string " +
+      "is defined or used. Case-insensitive.",
+    inputSchema: {
+      properties: {
+        query: {
+          type: "string",
+          description: "Text or JS regular expression to find (e.g. a function name, symbol, or literal).",
+          required: true,
+        },
+        max_results: {
+          type: "number",
+          description: `Max matches to return (default ${SEARCH_MAX_RESULTS_DEFAULT}, hard cap ${SEARCH_MAX_RESULTS_CAP}).`,
+        },
+      },
+    },
+    handler: async (params) => {
+      const q = ((params && params.query) || "").trim();
+      if (!q) return "search_code: empty query.";
+      const limit = Math.min(
+        Math.max(1, Number(params && params.max_results) || SEARCH_MAX_RESULTS_DEFAULT),
+        SEARCH_MAX_RESULTS_CAP,
+      );
+      // Treat query as a regex; on invalid pattern fall back to a literal match.
+      let re;
+      try {
+        re = new RegExp(q, "i");
+      } catch {
+        re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      }
+      const hits = [];
+      const walk = (abs, rel) => {
+        if (hits.length >= limit) return;
+        let entries;
+        try {
+          entries = readdirSync(abs, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const e of entries) {
+          if (hits.length >= limit) return;
+          const childAbs = join(abs, e.name);
+          const childRel = rel ? rel + "/" + e.name : e.name;
+          if (e.isDirectory()) {
+            if (SEARCH_SKIP_DIRS.has(e.name) || e.name.startsWith(".")) continue;
+            walk(childAbs, childRel);
+          } else {
+            if (!SEARCH_TEXT_EXT.has(extname(e.name).toLowerCase())) continue;
+            let st;
+            try {
+              st = statSync(childAbs);
+            } catch {
+              continue;
+            }
+            if (st.size > SEARCH_MAX_FILE_BYTES) continue;
+            let content;
+            try {
+              content = readFileSync(childAbs, "utf8");
+            } catch {
+              continue;
+            }
+            const lines = content.split(/\r?\n/);
+            for (let i = 0; i < lines.length; i++) {
+              if (re.test(lines[i])) {
+                hits.push(`${childRel}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+                if (hits.length >= limit) return;
+              }
+            }
+          }
+        }
+      };
+      walk(dir, "");
+      if (hits.length === 0) return `No matches for /${q}/i in the repository.`;
+      return `Found ${hits.length} match(es) for /${q}/i:\n` + hits.join("\n");
+    },
+  };
+}
 
 // Cap the model's *output* reservation. Groq's free-tier 12k tokens-per-minute
 // (TPM) limit counts input PLUS reserved output (max_completion_tokens). pi-ai
@@ -204,6 +308,7 @@ app.post("/agent/chat", async (req, res) => {
         dir: session.dir,
         model,
         allowedTools: AGENT_ALLOWED_TOOLS,
+        tools: [makeSearchCodeTool(session.dir)],
         constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
       })) {
         if (msg.type === "delta" && msg.deltaType !== "thinking") fullResponse += msg.content;
@@ -292,6 +397,7 @@ wss.on("connection", (ws) => {
             dir: session.dir,
             model,
             allowedTools: AGENT_ALLOWED_TOOLS,
+            tools: [makeSearchCodeTool(session.dir)],
             constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
           })) {
             if (msg.type === "delta") {
@@ -359,7 +465,12 @@ wss.on("connection", (ws) => {
   });
 });
 
-const PORT = process.env.AGENT_PORT || 8001;
-server.listen(PORT, () => {
-  console.log(`[agent-service] running on port ${PORT}`);
-});
+export { makeSearchCodeTool };
+
+// Skip binding a port when imported for tests (AGENT_NO_LISTEN=1).
+if (!process.env.AGENT_NO_LISTEN) {
+  const PORT = process.env.AGENT_PORT || 8001;
+  server.listen(PORT, () => {
+    console.log(`[agent-service] running on port ${PORT}`);
+  });
+}
