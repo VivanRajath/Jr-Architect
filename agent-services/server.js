@@ -2,6 +2,7 @@ import express from "express";
 import { WebSocketServer } from "ws";
 import { createServer } from "http";
 import { query } from "gitclaw";
+import { getModels } from "@mariozechner/pi-ai";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 
@@ -92,6 +93,32 @@ const AGENT_ALLOWED_TOOLS = (process.env.AGENT_ALLOWED_TOOLS || "cli,read,write,
 // UI to reload the tree/preview. Reads and memory ops don't touch the workspace.
 const WRITE_TOOLS = new Set(["write", "edit", "create", "cli"]);
 
+// Cap the model's *output* reservation. Groq's free-tier 12k tokens-per-minute
+// (TPM) limit counts input PLUS reserved output (max_completion_tokens). pi-ai
+// otherwise reserves Math.min(model.maxTokens, 32000) = 32000 for Groq, so even a
+// ~1.8k-token prompt is billed as ~33.9k tokens/min and gets a 413 — that, not
+// prompt size, was the real cause of the "Requested 33889" error.
+//
+// The clean per-request `constraints: { maxTokens }` route below is IGNORED by
+// this pi-agent-core build (its _runLoop rebuilds the model config from a fixed
+// field whitelist that omits maxTokens). The mechanism that actually sticks is
+// the model registry: getModels returns shared objects, and pi-ai's output
+// reservation reads model.maxTokens — so we lower it once at startup. Raise
+// AGENT_MAX_OUTPUT_TOKENS if you move to a higher Groq tier.
+const AGENT_MAX_OUTPUT_TOKENS = Number(process.env.AGENT_MAX_OUTPUT_TOKENS) || 3000;
+try {
+  let capped = 0;
+  for (const m of getModels("groq")) {
+    if (m && typeof m.maxTokens === "number" && m.maxTokens > AGENT_MAX_OUTPUT_TOKENS) {
+      m.maxTokens = AGENT_MAX_OUTPUT_TOKENS;
+      capped++;
+    }
+  }
+  console.log(`[agent] capped Groq output reservation to ${AGENT_MAX_OUTPUT_TOKENS} tokens on ${capped} model(s) (keeps a turn under Groq's 12k TPM)`);
+} catch (e) {
+  console.error("[agent] could not cap Groq output reservation:", e.message);
+}
+
 // First configured provider, preferring Groq (the free-tier default).
 export function firstAvailableProvider() {
   return ["groq", "anthropic", "openai", "gemini"].find(providerHasKey) || null;
@@ -157,6 +184,7 @@ app.post("/agent/chat", async (req, res) => {
       dir: session.dir,
       model,
       allowedTools: AGENT_ALLOWED_TOOLS,
+      constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
     })) {
       if (msg.type === "delta" && msg.deltaType !== "thinking") fullResponse += msg.content;
       else if (msg.type === "system" && msg.subtype === "error") errText = msg.content || errText;
@@ -233,6 +261,7 @@ wss.on("connection", (ws) => {
           dir: session.dir,
           model,
           allowedTools: AGENT_ALLOWED_TOOLS,
+          constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
         })) {
           if (msg.type === "delta") {
             // Stream only the visible answer; don't leak chain-of-thought.
