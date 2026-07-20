@@ -85,7 +85,7 @@ if (GROQ_KEYS.length > 1) console.log(`[agent] Groq key pool: ${GROQ_KEYS.length
 // turn failed before any output reached the client, so a partial reply is never
 // duplicated. Total attempts = AGENT_TOOLCALL_RETRIES + 1.
 const AGENT_TOOLCALL_RETRIES = Number(process.env.AGENT_TOOLCALL_RETRIES) || 2;
-const RETRIABLE_TURN_ERROR = /tool call validation|not in request\.tools|malformed|Connection error|rate limit|\b429\b|temporarily|ECONNRESET|fetch failed/i;
+const RETRIABLE_TURN_ERROR = /tool call validation|not in request\.tools|malformed|failed to call a function|failed_generation|adjust your prompt|could not parse|invalid (?:tool|function)|Connection error|rate limit|\b429\b|temporarily|ECONNRESET|fetch failed/i;
 
 let groqCursor = 0;
 // Point process.env.GROQ_API_KEY at the next key in the pool before a Groq turn,
