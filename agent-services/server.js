@@ -3,8 +3,8 @@ import { WebSocketServer } from "ws";
 import { createServer } from "http";
 import { query } from "gitclaw";
 import { getModels } from "@mariozechner/pi-ai";
-import { readFileSync, existsSync, readdirSync, statSync } from "fs";
-import { join, extname } from "path";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "fs";
+import { join, extname, resolve, sep } from "path";
 
 // Keep the agent service alive if a single request's agent loop throws
 // asynchronously — e.g. a provider/key error surfaced from a background stream
@@ -281,22 +281,40 @@ async function buildAskPrompt(dir, message) {
       if (snippets.length >= 18) break;
     }
   }
-  const context = snippets.length
+  const searchBlock = snippets.length
     ? `Relevant code found by searching the repository${terms.length ? ` for: ${terms.join(", ")}` : ""}:\n\n<search_results>\n${snippets.join("\n")}\n</search_results>\n\n`
     : "";
+
+  // For overview/summary questions, inject the actual UI entry file so the model
+  // can describe real code instead of guessing from the map alone.
+  let entryBlock = "";
+  if (/\b(summar|overview|understand|explain|architecture|structure|how does|what is this|walk me through)\b/i.test(message)) {
+    const entry = firstExistingFile(dir, EDIT_ENTRY_CANDIDATES);
+    if (entry) {
+      const body = readFileCapped(join(dir, entry), 3500);
+      if (body) entryBlock = `Contents of the main UI entry \`${entry}\`:\n\n<file path="${entry}">\n${body}\n</file>\n\n`;
+    }
+  }
+
   return (
-    `${context}You are answering a question about THIS repository. Use the repository map already in your context and the search results above. ` +
+    `${searchBlock}${entryBlock}You are answering a question about THIS repository. Use the repository map already in your context, the file contents, and the search results above. ` +
     `Be concrete: cite \`file:line\` for specifics. If a file you need isn't shown, name it and say what you'd look for. Do not invent files or code.\n\n` +
     `Question: ${message}`
   );
 }
 
-// Decide Ask vs agentic. An explicit client mode ("ask"/"agent") wins; otherwise
-// auto-detect from the message. AGENT_ASK_MODE=off disables Ask mode entirely.
+// Decide the turn's mode. An explicit client mode wins; otherwise auto-detect:
+// clear file-modification intent → "edit", else "ask". "agent" forces the legacy
+// tool-driven path (only useful with a strong tool-calling model).
+//   "ask"   — toolless Q&A (retrieve-then-generate)
+//   "edit"  — toolless code change (generate SEARCH/REPLACE, backend applies)
+//   "agent" — legacy agentic loop (model calls tools itself)
 function resolveTurnMode(explicit, message) {
-  if (process.env.AGENT_ASK_MODE === "off") return "agent";
-  if (explicit === "ask" || explicit === "agent") return explicit;
-  return EDIT_INTENT.test(message) ? "agent" : "ask";
+  if (explicit === "ask" || explicit === "edit" || explicit === "agent") return explicit;
+  if (EDIT_INTENT.test(message)) {
+    return process.env.AGENT_EDIT_STRATEGY === "agentic" ? "agent" : "edit";
+  }
+  return "ask";
 }
 
 // Shared stream+retry loop for one turn. Streams delta/tool/file_changed frames,
@@ -344,6 +362,230 @@ async function streamTurn(ws, queryOptions, model) {
     if (turnError) ws.send(JSON.stringify({ type: "error", content: turnError }));
     break;
   }
+  ws.send(JSON.stringify({ type: "complete", content: "" }));
+}
+
+// ── Edit mode: generate-then-apply (toolless code changes) ───────────────────
+// Editing needs a write, but llama-3.3 can't reliably CALL a write tool. So the
+// model never calls a tool: the backend reads the relevant files, asks the model
+// to reply with SEARCH/REPLACE blocks (plain text it's good at), then parses and
+// applies them itself. Mirror of Ask mode, for changes instead of questions.
+
+const EDIT_ENTRY_CANDIDATES = [
+  "app/page.tsx", "app/page.jsx", "app/page.js", "src/app/page.tsx",
+  "pages/index.tsx", "pages/index.jsx", "src/pages/index.tsx",
+  "src/App.tsx", "src/App.jsx", "src/App.js", "src/main.tsx", "src/main.jsx",
+  "src/index.tsx", "index.html", "public/index.html",
+];
+// Files most likely targeted by look-and-feel changes.
+const EDIT_STYLE_CANDIDATES = [
+  "app/globals.css", "src/app/globals.css", "styles/globals.css", "src/globals.css",
+  "src/index.css", "src/App.css", "app/layout.tsx", "src/app/layout.tsx",
+  "tailwind.config.ts", "tailwind.config.js",
+];
+const EDIT_STYLE_INTENT = /\b(theme|dark|light|colou?r|style|styling|css|font|background|ui|layout|design|spacing|padding|margin)\b/i;
+const EDIT_MAX_FILES = 4;
+const EDIT_MAX_FILE_CHARS = 5000;
+
+// Read a file, truncating to maxChars (keeps the request under the token budget).
+function readFileCapped(abs, maxChars) {
+  try {
+    const s = readFileSync(abs, "utf8");
+    return s.length > maxChars ? s.slice(0, maxChars) + "\n/* …truncated… */" : s;
+  } catch {
+    return "";
+  }
+}
+
+// First of `candidates` that exists under dir (forward-slash relative path).
+function firstExistingFile(dir, candidates) {
+  for (const c of candidates) {
+    if (existsSync(join(dir, c))) return c;
+  }
+  return "";
+}
+
+// Choose which files to hand the model for an edit: files matching the request's
+// search terms, plus the UI entry, plus style files for look-and-feel requests.
+async function gatherEditFiles(dir, message) {
+  const chosen = [];
+  const add = (p) => {
+    if (p && !chosen.includes(p) && existsSync(join(dir, p)) && chosen.length < EDIT_MAX_FILES) chosen.push(p);
+  };
+
+  // 1. Files that mention the request's key terms.
+  const tool = makeSearchCodeTool(dir);
+  for (const term of extractSearchTerms(message)) {
+    if (chosen.length >= EDIT_MAX_FILES) break;
+    let res;
+    try {
+      res = await tool.handler({ query: term, max_results: 8 });
+    } catch {
+      continue;
+    }
+    if (!res || res.startsWith("No matches")) continue;
+    for (const line of res.split("\n").slice(1)) {
+      const p = line.split(":")[0];
+      if (p) add(p);
+    }
+  }
+  // 2. The UI entry point (common target for "change the UI").
+  add(firstExistingFile(dir, EDIT_ENTRY_CANDIDATES));
+  // 3. Style files for look-and-feel requests.
+  if (EDIT_STYLE_INTENT.test(message)) {
+    for (const c of EDIT_STYLE_CANDIDATES) add(c);
+  }
+
+  return chosen.map((p) => ({ path: p, content: readFileCapped(join(dir, p), EDIT_MAX_FILE_CHARS) }));
+}
+
+// The generate-then-apply prompt. Strict format so parsing is reliable.
+function buildEditPrompt(files, message) {
+  const fileBlocks = files
+    .map((f) => `<file path="${f.path}">\n${f.content}\n</file>`)
+    .join("\n\n");
+  return (
+    `You are editing THIS repository. Current contents of the relevant files:\n\n${fileBlocks}\n\n` +
+    `Apply the requested change by replying with ONE OR MORE edit blocks in EXACTLY this format and NOTHING else:\n\n` +
+    `<file>relative/path</file>\n<<<<<<< SEARCH\n{lines copied verbatim from the file above}\n=======\n{replacement lines}\n>>>>>>> REPLACE\n\n` +
+    `Rules:\n` +
+    `- SEARCH must match the file contents EXACTLY, including indentation.\n` +
+    `- Keep each block minimal — only the lines that change, with a little surrounding context if needed to be unique.\n` +
+    `- You may output multiple blocks across multiple files.\n` +
+    `- To create a NEW file, use an empty SEARCH section.\n` +
+    `- Output ONLY edit blocks. No prose, no explanation, no code fences.\n\n` +
+    `Change requested: ${message}`
+  );
+}
+
+// Parse Aider-style SEARCH/REPLACE blocks out of the model's reply.
+function parseEditBlocks(text) {
+  const blocks = [];
+  const re = /<file>\s*(.+?)\s*<\/file>\s*<{3,}\s*SEARCH\s*\r?\n([\s\S]*?)\r?\n?={3,}\s*\r?\n([\s\S]*?)\r?\n?>{3,}\s*REPLACE/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    blocks.push({ path: m[1].trim(), search: m[2], replace: m[3] });
+  }
+  return blocks;
+}
+
+// Apply parsed blocks to disk. Path-safe (stays inside dir). Exact match first,
+// then a whitespace-tolerant fallback. Returns per-block status for the summary.
+function applyEditBlocks(dir, blocks) {
+  const root = resolve(dir);
+  const results = [];
+  for (const b of blocks) {
+    const abs = resolve(dir, b.path);
+    if (abs !== root && !abs.startsWith(root + sep)) {
+      results.push({ path: b.path, status: "rejected (outside workspace)" });
+      continue;
+    }
+    // New file: empty SEARCH.
+    if (b.search.trim() === "") {
+      try {
+        writeFileSync(abs, b.replace);
+        results.push({ path: b.path, status: "created" });
+      } catch (e) {
+        results.push({ path: b.path, status: "error: " + e.message });
+      }
+      continue;
+    }
+    let content;
+    try {
+      content = readFileSync(abs, "utf8");
+    } catch {
+      results.push({ path: b.path, status: "file not found" });
+      continue;
+    }
+    if (content.includes(b.search)) {
+      writeFileSync(abs, content.replace(b.search, b.replace));
+      results.push({ path: b.path, status: "edited" });
+      continue;
+    }
+    // Whitespace-tolerant fallback: match ignoring leading/trailing space per line.
+    const norm = (s) => s.split(/\r?\n/).map((l) => l.trim()).join("\n");
+    const idx = norm(content).indexOf(norm(b.search));
+    if (idx >= 0 && norm(b.search).length > 0) {
+      // Rebuild by locating the first line of SEARCH in the raw content.
+      const firstLine = b.search.split(/\r?\n/).find((l) => l.trim());
+      const pos = firstLine ? content.indexOf(firstLine.trim()) : -1;
+      if (pos >= 0) {
+        const lineStart = content.lastIndexOf("\n", pos) + 1;
+        const searchLineCount = b.search.split(/\r?\n/).length;
+        const after = content.slice(lineStart).split(/\r?\n/);
+        const tail = after.slice(searchLineCount).join("\n");
+        writeFileSync(abs, content.slice(0, lineStart) + b.replace + (tail ? "\n" + tail : ""));
+        results.push({ path: b.path, status: "edited (fuzzy)" });
+        continue;
+      }
+    }
+    results.push({ path: b.path, status: "SEARCH text not found — skipped" });
+  }
+  return results;
+}
+
+// Buffered (non-streaming) turn: collect the full reply text, with the same
+// transient-failure retry on a fresh key. Used by Edit mode.
+async function collectTurn(queryOptions, model) {
+  for (let attempt = 0; ; attempt++) {
+    rotateGroqKey(model);
+    let text = "";
+    let error = null;
+    try {
+      for await (const msg of query(queryOptions)) {
+        if (msg.type === "delta" && msg.deltaType !== "thinking") text += msg.content;
+        else if (msg.type === "system" && msg.subtype === "error") error = msg.content || error;
+        else if (msg.type === "assistant" && msg.stopReason === "error") error = msg.errorMessage || error;
+      }
+    } catch (err) {
+      error = err.message || String(err);
+    }
+    if (!text && error && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(error)) continue;
+    return { text, error };
+  }
+}
+
+// Run one Edit-mode turn over a WebSocket: gather files → ask for SEARCH/REPLACE
+// → apply → report. The model never calls a tool, so it can't garble a call.
+async function runEditModeWS(ws, dir, message, model) {
+  const files = await gatherEditFiles(dir, message);
+  if (files.length === 0) {
+    ws.send(JSON.stringify({ type: "delta", content: "I couldn't find the files to change for that request. Try naming a file or feature, e.g. \"make the header in app/page.tsx dark\"." }));
+    ws.send(JSON.stringify({ type: "complete", content: "" }));
+    return;
+  }
+  const { text, error } = await collectTurn({
+    prompt: buildEditPrompt(files, message),
+    dir,
+    model,
+    replaceBuiltinTools: true,
+    allowedTools: [],
+    constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+  }, model);
+
+  if (error && !text) {
+    ws.send(JSON.stringify({ type: "error", content: error }));
+    ws.send(JSON.stringify({ type: "complete", content: "" }));
+    return;
+  }
+
+  const blocks = parseEditBlocks(text);
+  if (blocks.length === 0) {
+    // Model didn't follow the format — surface its text so the turn isn't silent.
+    ws.send(JSON.stringify({ type: "delta", content: text || "No changes were produced." }));
+    ws.send(JSON.stringify({ type: "complete", content: "" }));
+    return;
+  }
+
+  const results = applyEditBlocks(dir, blocks);
+  const changed = results.filter((r) => r.status === "edited" || r.status === "edited (fuzzy)" || r.status === "created");
+  if (changed.length > 0) ws.send(JSON.stringify({ type: "file_changed", content: "" }));
+
+  const summary =
+    `Applied ${changed.length} change(s):\n` +
+    results.map((r) => `- \`${r.path}\` — ${r.status}`).join("\n") +
+    (changed.length ? "\n\nThe preview will reload with your changes." : "\n\nNo edits matched — the model's SEARCH text didn't line up with the file. Try rephrasing or naming the exact file.");
+  ws.send(JSON.stringify({ type: "delta", content: summary }));
   ws.send(JSON.stringify({ type: "complete", content: "" }));
 }
 
@@ -430,6 +672,32 @@ app.post("/agent/chat", async (req, res) => {
 
   const model = modelFor(provider);
   const mode = resolveTurnMode(req.body.mode, message);
+
+  // Edit mode: generate-then-apply, return a summary of what changed.
+  if (mode === "edit") {
+    const files = await gatherEditFiles(session.dir, message);
+    if (files.length === 0) {
+      return res.json({ response: "I couldn't find the files to change for that request. Name a file or feature and try again." });
+    }
+    const { text, error } = await collectTurn({
+      prompt: buildEditPrompt(files, message),
+      dir: session.dir,
+      model,
+      replaceBuiltinTools: true,
+      allowedTools: [],
+      constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+    }, model);
+    if (error && !text) return res.status(502).json({ error });
+    const blocks = parseEditBlocks(text);
+    if (blocks.length === 0) return res.json({ response: text || "No changes were produced." });
+    const results = applyEditBlocks(session.dir, blocks);
+    const changed = results.filter((r) => r.status.startsWith("edited") || r.status === "created");
+    return res.json({
+      response: `Applied ${changed.length} change(s):\n` + results.map((r) => `- ${r.path} — ${r.status}`).join("\n"),
+      file_changed: changed.length > 0,
+    });
+  }
+
   // Ask mode does retrieval up front and runs toolless; agentic drives tools.
   const queryOptions = mode === "ask"
     ? {
@@ -542,8 +810,13 @@ wss.on("connection", (ws) => {
           allowedTools: [],          // …and nothing survives the filter → toolless
           constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
         }, model);
+      } else if (mode === "edit") {
+        // Toolless generate-then-apply: the model outputs edits, the backend
+        // writes them — so llama-3.3 never has to call a tool.
+        await runEditModeWS(ws, session.dir, message, model);
       } else {
-        // Agentic path: the model drives cli/read/write/search_code itself.
+        // Legacy agentic path: the model drives cli/read/write/search_code itself
+        // (only reliable with a strong tool-calling model).
         await streamTurn(ws, {
           prompt: message,
           dir: session.dir,
@@ -564,7 +837,10 @@ wss.on("connection", (ws) => {
   });
 });
 
-export { makeSearchCodeTool, resolveTurnMode, extractSearchTerms, buildAskPrompt };
+export {
+  makeSearchCodeTool, resolveTurnMode, extractSearchTerms, buildAskPrompt,
+  parseEditBlocks, applyEditBlocks, gatherEditFiles, buildEditPrompt,
+};
 
 // Skip binding a port when imported for tests (AGENT_NO_LISTEN=1).
 if (!process.env.AGENT_NO_LISTEN) {
