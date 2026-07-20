@@ -212,6 +212,141 @@ function makeSearchCodeTool(dir) {
   };
 }
 
+// ── Ask mode: retrieve-then-generate (toolless) ──────────────────────────────
+// llama-3.3 is weak at function-calling, so *questions* about the repo don't go
+// through the agentic tool loop (where it garbles calls). Instead the backend
+// does the retrieval — repo map (already always-loaded via knowledge) + a
+// server-side search_code on the question's key terms — and hands the model a
+// plain, toolless prompt. The model only has to WRITE an answer, which it does
+// well. Edits still use the agentic path (writing files needs the write tool).
+
+// Clear file-modification intent → agentic/edit path. Everything else defaults
+// to the safe, reliable read-only Ask mode. Deliberately excludes ambiguous
+// verbs like "make"/"generate"/"build" (as in "make a summary").
+const EDIT_INTENT = /\b(add|create|write|edit|change|modif(?:y|ies|ied)|fix|update|refactor|implement|rename|delete|remove|replace|insert|append|scaffold|install|integrate|rewrite|convert|migrate|set up|setup|wire up)\b/i;
+
+const ASK_STOPWORDS = new Set([
+  "the", "a", "an", "of", "to", "in", "on", "is", "are", "and", "or", "how", "what",
+  "where", "why", "who", "does", "do", "did", "this", "that", "these", "those",
+  "code", "file", "files", "repo", "repository", "project", "app", "application",
+  "summarize", "summary", "explain", "explanation", "tell", "me", "about", "show",
+  "which", "for", "with", "it", "its", "use", "used", "using", "can", "you", "give",
+  "please", "there", "here", "was", "were", "has", "have", "into", "from", "then",
+  "work", "works", "working", "understand", "overview", "describe", "list", "all",
+  // code-generic words that would return noisy matches if searched literally
+  "function", "functions", "method", "methods", "class", "classes", "variable",
+  "component", "components", "const", "let", "var", "import", "export", "return",
+  "defined", "definition", "handler", "handlers", "called", "call", "calls",
+  "value", "values", "data", "type", "types", "page", "pages", "when", "does",
+]);
+
+// Pull a few salient search terms from a question, preferring identifier-like
+// tokens (camelCase / has an uppercase letter) and longer words.
+function extractSearchTerms(message) {
+  const words = message.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) || [];
+  const seen = new Set();
+  const uniq = [];
+  for (const w of words) {
+    const lw = w.toLowerCase();
+    if (ASK_STOPWORDS.has(lw) || seen.has(w)) continue;
+    seen.add(w);
+    uniq.push(w);
+  }
+  const score = (w) => w.length + (/[A-Z]/.test(w.slice(1)) ? 6 : 0) + (/_/.test(w) ? 3 : 0);
+  uniq.sort((a, b) => score(b) - score(a));
+  return uniq.slice(0, 4);
+}
+
+// Build the toolless Ask-mode prompt: inject search_code hits for the question's
+// terms as grounding context. The repo map is already in the model's context via
+// gitclaw's always-loaded knowledge doc, so we only add the question-specific bits.
+async function buildAskPrompt(dir, message) {
+  const terms = extractSearchTerms(message);
+  const tool = makeSearchCodeTool(dir);
+  const snippets = [];
+  const seenLines = new Set();
+  for (const term of terms) {
+    if (snippets.length >= 18) break;
+    let res;
+    try {
+      res = await tool.handler({ query: term, max_results: 6 });
+    } catch {
+      continue;
+    }
+    if (!res || res.startsWith("No matches")) continue;
+    for (const line of res.split("\n").slice(1)) {
+      if (!line.trim() || seenLines.has(line)) continue;
+      seenLines.add(line);
+      snippets.push(line);
+      if (snippets.length >= 18) break;
+    }
+  }
+  const context = snippets.length
+    ? `Relevant code found by searching the repository${terms.length ? ` for: ${terms.join(", ")}` : ""}:\n\n<search_results>\n${snippets.join("\n")}\n</search_results>\n\n`
+    : "";
+  return (
+    `${context}You are answering a question about THIS repository. Use the repository map already in your context and the search results above. ` +
+    `Be concrete: cite \`file:line\` for specifics. If a file you need isn't shown, name it and say what you'd look for. Do not invent files or code.\n\n` +
+    `Question: ${message}`
+  );
+}
+
+// Decide Ask vs agentic. An explicit client mode ("ask"/"agent") wins; otherwise
+// auto-detect from the message. AGENT_ASK_MODE=off disables Ask mode entirely.
+function resolveTurnMode(explicit, message) {
+  if (process.env.AGENT_ASK_MODE === "off") return "agent";
+  if (explicit === "ask" || explicit === "agent") return explicit;
+  return EDIT_INTENT.test(message) ? "agent" : "ask";
+}
+
+// Shared stream+retry loop for one turn. Streams delta/tool/file_changed frames,
+// retries a transient pre-output failure on a fresh key, and always ends with a
+// single `complete`. Works for both agentic (tools) and Ask (toolless) turns.
+async function streamTurn(ws, queryOptions, model) {
+  let streamedAny = false;
+  let attempt = 0;
+  while (true) {
+    rotateGroqKey(model);
+    let turnError = null;
+    try {
+      for await (const msg of query(queryOptions)) {
+        if (msg.type === "delta") {
+          if (msg.deltaType === "thinking") continue;
+          streamedAny = true;
+          ws.send(JSON.stringify({ type: "delta", content: msg.content }));
+        } else if (msg.type === "tool_use") {
+          streamedAny = true;
+          ws.send(JSON.stringify({ type: "tool", content: `${msg.toolName}(${JSON.stringify(msg.args)})` }));
+        } else if (msg.type === "tool_result") {
+          if (WRITE_TOOLS.has(msg.toolName)) ws.send(JSON.stringify({ type: "file_changed", content: "" }));
+        } else if (msg.type === "assistant") {
+          if (msg.stopReason === "error") turnError = msg.errorMessage || "The model returned an error.";
+          else ws.send(JSON.stringify({ type: "message_end", content: "" }));
+        } else if (msg.type === "system") {
+          if (msg.subtype === "error") {
+            console.error(`[agent] LLM error (${msg.metadata?.provider || "?"}/${msg.metadata?.model || "?"}): ${msg.content}`);
+            turnError = msg.content || "The AI request failed.";
+          } else {
+            console.log(`[agent] ${msg.subtype || "system"}`);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[agent] stream error:", err);
+      turnError = err.message || String(err);
+    }
+
+    if (turnError && !streamedAny && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(turnError)) {
+      attempt++;
+      console.log(`[agent] retrying turn (attempt ${attempt + 1}/${AGENT_TOOLCALL_RETRIES + 1}) after: ${String(turnError).slice(0, 100)}`);
+      continue;
+    }
+    if (turnError) ws.send(JSON.stringify({ type: "error", content: turnError }));
+    break;
+  }
+  ws.send(JSON.stringify({ type: "complete", content: "" }));
+}
+
 // Cap the model's *output* reservation. Groq's free-tier 12k tokens-per-minute
 // (TPM) limit counts input PLUS reserved output (max_completion_tokens). pi-ai
 // otherwise reserves Math.min(model.maxTokens, 32000) = 32000 for Groq, so even a
@@ -294,6 +429,25 @@ app.post("/agent/chat", async (req, res) => {
   }
 
   const model = modelFor(provider);
+  const mode = resolveTurnMode(req.body.mode, message);
+  // Ask mode does retrieval up front and runs toolless; agentic drives tools.
+  const queryOptions = mode === "ask"
+    ? {
+        prompt: await buildAskPrompt(session.dir, message),
+        dir: session.dir,
+        model,
+        replaceBuiltinTools: true,
+        allowedTools: [],
+        constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+      }
+    : {
+        prompt: message,
+        dir: session.dir,
+        model,
+        allowedTools: AGENT_ALLOWED_TOOLS,
+        tools: [makeSearchCodeTool(session.dir)],
+        constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+      };
   let fullResponse = "";
   let errText = "";
   // Same transient-failure retry as the WS path (buffered, so no partial-reply
@@ -303,14 +457,7 @@ app.post("/agent/chat", async (req, res) => {
     fullResponse = "";
     errText = "";
     try {
-      for await (const msg of query({
-        prompt: message,
-        dir: session.dir,
-        model,
-        allowedTools: AGENT_ALLOWED_TOOLS,
-        tools: [makeSearchCodeTool(session.dir)],
-        constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
-      })) {
+      for await (const msg of query(queryOptions)) {
         if (msg.type === "delta" && msg.deltaType !== "thinking") fullResponse += msg.content;
         else if (msg.type === "system" && msg.subtype === "error") errText = msg.content || errText;
         else if (msg.type === "assistant" && msg.stopReason === "error") errText = msg.errorMessage || errText;
@@ -380,80 +527,32 @@ wss.on("connection", (ws) => {
       }
 
       const model = modelFor(provider);
-      console.log(`[agent] chat container=${targetContainer} model=${model}`);
+      const mode = resolveTurnMode(payload.mode, message);
+      console.log(`[agent] chat container=${targetContainer} model=${model} mode=${mode}`);
       ws.send(JSON.stringify({ type: "thinking", content: "" }));
 
-      // Retry loop: a transient failure (e.g. llama-3.3's malformed tool call)
-      // that happens before any output is re-run on a fresh key. streamedAny
-      // guards against duplicating a partial reply.
-      let streamedAny = false;
-      let attempt = 0;
-      while (true) {
-        rotateGroqKey(model); // fresh org/key per attempt
-        let turnError = null;
-        try {
-          for await (const msg of query({
-            prompt: message,
-            dir: session.dir,
-            model,
-            allowedTools: AGENT_ALLOWED_TOOLS,
-            tools: [makeSearchCodeTool(session.dir)],
-            constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
-          })) {
-            if (msg.type === "delta") {
-              // Stream only the visible answer; don't leak chain-of-thought.
-              if (msg.deltaType === "thinking") continue;
-              streamedAny = true;
-              ws.send(JSON.stringify({ type: "delta", content: msg.content }));
-            } else if (msg.type === "tool_use") {
-              streamedAny = true;
-              ws.send(JSON.stringify({
-                type: "tool",
-                content: `${msg.toolName}(${JSON.stringify(msg.args)})`,
-              }));
-            } else if (msg.type === "tool_result") {
-              // Only a workspace-mutating tool means the UI needs to reload.
-              if (WRITE_TOOLS.has(msg.toolName)) {
-                ws.send(JSON.stringify({ type: "file_changed", content: "" }));
-              }
-            } else if (msg.type === "assistant") {
-              // A failed model call arrives as an assistant message with
-              // stopReason "error" — capture it (may be retried) rather than
-              // sending inline. Otherwise emit the soft per-message boundary.
-              if (msg.stopReason === "error") {
-                turnError = msg.errorMessage || "The model returned an error.";
-              } else {
-                ws.send(JSON.stringify({ type: "message_end", content: "" }));
-              }
-            } else if (msg.type === "system") {
-              // gitclaw reports LLM failures as system/error messages.
-              if (msg.subtype === "error") {
-                console.error(`[agent] LLM error (${msg.metadata?.provider || "?"}/${msg.metadata?.model || "?"}): ${msg.content}`);
-                turnError = msg.content || "The AI request failed.";
-              } else {
-                console.log(`[agent] ${msg.subtype || "system"}`);
-              }
-            }
-          }
-        } catch (err) {
-          console.error("[agent] stream error:", err);
-          turnError = err.message || String(err);
-        }
-
-        // Retry a transient failure that produced NO client output yet.
-        if (turnError && !streamedAny && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(turnError)) {
-          attempt++;
-          console.log(`[agent] retrying turn (attempt ${attempt + 1}/${AGENT_TOOLCALL_RETRIES + 1}) after: ${String(turnError).slice(0, 100)}`);
-          continue;
-        }
-        if (turnError) {
-          ws.send(JSON.stringify({ type: "error", content: turnError }));
-        }
-        break;
+      if (mode === "ask") {
+        // Toolless retrieve-then-generate: reliable on weak-tool-calling models.
+        const askPrompt = await buildAskPrompt(session.dir, message);
+        await streamTurn(ws, {
+          prompt: askPrompt,
+          dir: session.dir,
+          model,
+          replaceBuiltinTools: true, // no built-in tools…
+          allowedTools: [],          // …and nothing survives the filter → toolless
+          constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+        }, model);
+      } else {
+        // Agentic path: the model drives cli/read/write/search_code itself.
+        await streamTurn(ws, {
+          prompt: message,
+          dir: session.dir,
+          model,
+          allowedTools: AGENT_ALLOWED_TOOLS,
+          tools: [makeSearchCodeTool(session.dir)],
+          constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+        }, model);
       }
-      // Definitive end-of-turn: the UI finalizes (reload tree/editors/preview,
-      // re-enable input) only on this frame.
-      ws.send(JSON.stringify({ type: "complete", content: "" }));
     }
   });
 
@@ -465,7 +564,7 @@ wss.on("connection", (ws) => {
   });
 });
 
-export { makeSearchCodeTool };
+export { makeSearchCodeTool, resolveTurnMode, extractSearchTerms, buildAskPrompt };
 
 // Skip binding a port when imported for tests (AGENT_NO_LISTEN=1).
 if (!process.env.AGENT_NO_LISTEN) {
