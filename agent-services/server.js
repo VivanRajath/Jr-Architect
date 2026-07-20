@@ -31,11 +31,14 @@ const sessions = new Map();
 // env so operators can point a provider at whatever model their gitclaw build
 // supports without a code change.
 const PROVIDER_MODELS = {
-  // Kimi K2 is the most reliable tool-caller on Groq. llama-3.3-70b-versatile
-  // frequently emits malformed tool calls ("cli {json}" as the function NAME),
-  // which Groq rejects with "tool call ... not in request.tools" — so it can't
-  // drive an agent that must use tools. Override with AGENT_MODEL_GROQ.
-  groq: process.env.AGENT_MODEL_GROQ || "groq:moonshotai/kimi-k2-instruct",
+  // llama-3.3-70b-versatile is the tool-capable model available on Groq's free
+  // tier. It occasionally emits a malformed tool call ("cli {json}" as the
+  // function NAME) that Groq rejects with "tool call ... not in request.tools" —
+  // this is intermittent (the model samples differently each run), so the WS
+  // handler retries the turn on a fresh key when it fails before producing output.
+  // Override with AGENT_MODEL_GROQ (e.g. groq:meta-llama/llama-4-scout-17b-16e-instruct
+  // if your account has it — Llama 4 is steadier at tool calls).
+  groq: process.env.AGENT_MODEL_GROQ || "groq:llama-3.3-70b-versatile",
   anthropic: process.env.AGENT_MODEL_ANTHROPIC || "anthropic:claude-sonnet-4-5",
   openai: process.env.AGENT_MODEL_OPENAI || "openai:gpt-4.1",
   gemini: process.env.AGENT_MODEL_GEMINI || "google:gemini-2.0-flash",
@@ -75,6 +78,14 @@ const GROQ_KEYS = (() => {
 // or comma-separated forms were set.
 if (!process.env.GROQ_API_KEY && GROQ_KEYS.length) process.env.GROQ_API_KEY = GROQ_KEYS[0];
 if (GROQ_KEYS.length > 1) console.log(`[agent] Groq key pool: ${GROQ_KEYS.length} keys (round-robin per turn)`);
+
+// llama-3.3 on Groq intermittently produces a malformed tool call that Groq
+// rejects. It's non-deterministic (the model samples differently each run), so
+// re-running the turn on a fresh key usually succeeds. We retry ONLY when the
+// turn failed before any output reached the client, so a partial reply is never
+// duplicated. Total attempts = AGENT_TOOLCALL_RETRIES + 1.
+const AGENT_TOOLCALL_RETRIES = Number(process.env.AGENT_TOOLCALL_RETRIES) || 2;
+const RETRIABLE_TURN_ERROR = /tool call validation|not in request\.tools|malformed|Connection error|rate limit|\b429\b|temporarily|ECONNRESET|fetch failed/i;
 
 let groqCursor = 0;
 // Point process.env.GROQ_API_KEY at the next key in the pool before a Groq turn,
@@ -178,29 +189,38 @@ app.post("/agent/chat", async (req, res) => {
     return res.status(400).json({ error: NO_KEY_MESSAGE });
   }
 
+  const model = modelFor(provider);
   let fullResponse = "";
   let errText = "";
-  const model = modelFor(provider);
-  rotateGroqKey(model);
-  try {
-    for await (const msg of query({
-      prompt: message,
-      dir: session.dir,
-      model,
-      allowedTools: AGENT_ALLOWED_TOOLS,
-      constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
-    })) {
-      if (msg.type === "delta" && msg.deltaType !== "thinking") fullResponse += msg.content;
-      else if (msg.type === "system" && msg.subtype === "error") errText = msg.content || errText;
-      else if (msg.type === "assistant" && msg.stopReason === "error") errText = msg.errorMessage || errText;
+  // Same transient-failure retry as the WS path (buffered, so no partial-reply
+  // concern): re-run on a fresh key until we get output or exhaust attempts.
+  for (let attempt = 0; ; attempt++) {
+    rotateGroqKey(model);
+    fullResponse = "";
+    errText = "";
+    try {
+      for await (const msg of query({
+        prompt: message,
+        dir: session.dir,
+        model,
+        allowedTools: AGENT_ALLOWED_TOOLS,
+        constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+      })) {
+        if (msg.type === "delta" && msg.deltaType !== "thinking") fullResponse += msg.content;
+        else if (msg.type === "system" && msg.subtype === "error") errText = msg.content || errText;
+        else if (msg.type === "assistant" && msg.stopReason === "error") errText = msg.errorMessage || errText;
+      }
+    } catch (err) {
+      errText = err.message || String(err);
+    }
+    if (!fullResponse && errText && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(errText)) {
+      console.log(`[agent] REST retry (attempt ${attempt + 2}/${AGENT_TOOLCALL_RETRIES + 1}) after: ${String(errText).slice(0, 100)}`);
+      continue;
     }
     if (!fullResponse && errText) {
       return res.status(502).json({ error: errText });
     }
-    res.json({ response: fullResponse });
-  } catch (err) {
-    console.error("[agent] query error:", err);
-    res.status(500).json({ error: err.message });
+    return res.json({ response: fullResponse });
   }
 });
 
@@ -255,60 +275,79 @@ wss.on("connection", (ws) => {
       }
 
       const model = modelFor(provider);
-      rotateGroqKey(model);
       console.log(`[agent] chat container=${targetContainer} model=${model}`);
       ws.send(JSON.stringify({ type: "thinking", content: "" }));
 
-      try {
-        for await (const msg of query({
-          prompt: message,
-          dir: session.dir,
-          model,
-          allowedTools: AGENT_ALLOWED_TOOLS,
-          constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
-        })) {
-          if (msg.type === "delta") {
-            // Stream only the visible answer; don't leak chain-of-thought.
-            if (msg.deltaType === "thinking") continue;
-            ws.send(JSON.stringify({ type: "delta", content: msg.content }));
-          } else if (msg.type === "tool_use") {
-            ws.send(JSON.stringify({
-              type: "tool",
-              content: `${msg.toolName}(${JSON.stringify(msg.args)})`,
-            }));
-          } else if (msg.type === "tool_result") {
-            // Only a workspace-mutating tool means the UI needs to reload.
-            if (WRITE_TOOLS.has(msg.toolName)) {
-              ws.send(JSON.stringify({ type: "file_changed", content: "" }));
-            }
-          } else if (msg.type === "assistant") {
-            // A failed model call still arrives as an assistant message with
-            // stopReason "error" — surface it instead of ending silently.
-            if (msg.stopReason === "error") {
-              ws.send(JSON.stringify({ type: "error", content: msg.errorMessage || "The model returned an error." }));
-            }
-            // Soft boundary between the agent's assistant messages within one
-            // turn (a multi-step agent emits several). NOT the end of the turn.
-            ws.send(JSON.stringify({ type: "message_end", content: "" }));
-          } else if (msg.type === "system") {
-            // gitclaw reports LLM failures as system/error messages — WITHOUT
-            // handling these the panel would just spin forever on a failed call.
-            if (msg.subtype === "error") {
-              console.error(`[agent] LLM error (${msg.metadata?.provider || "?"}/${msg.metadata?.model || "?"}): ${msg.content}`);
-              ws.send(JSON.stringify({ type: "error", content: msg.content || "The AI request failed." }));
-            } else {
-              console.log(`[agent] ${msg.subtype || "system"}`);
+      // Retry loop: a transient failure (e.g. llama-3.3's malformed tool call)
+      // that happens before any output is re-run on a fresh key. streamedAny
+      // guards against duplicating a partial reply.
+      let streamedAny = false;
+      let attempt = 0;
+      while (true) {
+        rotateGroqKey(model); // fresh org/key per attempt
+        let turnError = null;
+        try {
+          for await (const msg of query({
+            prompt: message,
+            dir: session.dir,
+            model,
+            allowedTools: AGENT_ALLOWED_TOOLS,
+            constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+          })) {
+            if (msg.type === "delta") {
+              // Stream only the visible answer; don't leak chain-of-thought.
+              if (msg.deltaType === "thinking") continue;
+              streamedAny = true;
+              ws.send(JSON.stringify({ type: "delta", content: msg.content }));
+            } else if (msg.type === "tool_use") {
+              streamedAny = true;
+              ws.send(JSON.stringify({
+                type: "tool",
+                content: `${msg.toolName}(${JSON.stringify(msg.args)})`,
+              }));
+            } else if (msg.type === "tool_result") {
+              // Only a workspace-mutating tool means the UI needs to reload.
+              if (WRITE_TOOLS.has(msg.toolName)) {
+                ws.send(JSON.stringify({ type: "file_changed", content: "" }));
+              }
+            } else if (msg.type === "assistant") {
+              // A failed model call arrives as an assistant message with
+              // stopReason "error" — capture it (may be retried) rather than
+              // sending inline. Otherwise emit the soft per-message boundary.
+              if (msg.stopReason === "error") {
+                turnError = msg.errorMessage || "The model returned an error.";
+              } else {
+                ws.send(JSON.stringify({ type: "message_end", content: "" }));
+              }
+            } else if (msg.type === "system") {
+              // gitclaw reports LLM failures as system/error messages.
+              if (msg.subtype === "error") {
+                console.error(`[agent] LLM error (${msg.metadata?.provider || "?"}/${msg.metadata?.model || "?"}): ${msg.content}`);
+                turnError = msg.content || "The AI request failed.";
+              } else {
+                console.log(`[agent] ${msg.subtype || "system"}`);
+              }
             }
           }
+        } catch (err) {
+          console.error("[agent] stream error:", err);
+          turnError = err.message || String(err);
         }
-        // Definitive end-of-turn: the agent's generator has drained. The UI waits
-        // for this to finalize (reload tree/editors/preview, re-enable input).
-        ws.send(JSON.stringify({ type: "complete", content: "" }));
-      } catch (err) {
-        console.error("[agent] stream error:", err);
-        ws.send(JSON.stringify({ type: "error", content: err.message }));
-        ws.send(JSON.stringify({ type: "complete", content: "" }));
+
+        // Retry a transient failure that produced NO client output yet.
+        if (turnError && !streamedAny && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(turnError)) {
+          attempt++;
+          console.log(`[agent] retrying turn (attempt ${attempt + 1}/${AGENT_TOOLCALL_RETRIES + 1}) after: ${String(turnError).slice(0, 100)}`);
+          continue;
+        }
+        if (turnError) {
+          ws.send(JSON.stringify({ type: "error", content: turnError }));
+        }
+        break;
       }
+      // Definitive end-of-turn: the UI finalizes (reload tree/editors/preview,
+      // re-enable input) only on this frame.
+      ws.send(JSON.stringify({ type: "complete", content: "" }));
     }
   });
 

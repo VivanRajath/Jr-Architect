@@ -39,7 +39,7 @@ GROQ_API_KEY=gsk_...
 # first provider that has a key, preferring Groq — so a Groq-only setup needs
 # none of these. GITCLAW_MODEL can force one model but is ignored if its
 # provider has no key.
-# AGENT_MODEL_GROQ=groq:moonshotai/kimi-k2-instruct
+# AGENT_MODEL_GROQ=groq:llama-3.3-70b-versatile
 # AGENT_MODEL_ANTHROPIC=anthropic:claude-sonnet-4-5
 # AGENT_MODEL_OPENAI=openai:gpt-4.1
 # AGENT_MODEL_GEMINI=google:gemini-2.0-flash
@@ -131,7 +131,7 @@ The agent panel talks to the Node agent service over a WebSocket at `/agent/ws`,
 
 **`413 Request too large ... tokens per minute (TPM): Limit 12000, Requested 33889`:** Groq's free tier counts input **plus reserved output** against a 12k-tokens/minute limit. The actual prompt here is only ~1.9k tokens — the culprit was the agent stack reserving the model's full 32k output window, so a turn billed ~34k/min. The service now caps output at `AGENT_MAX_OUTPUT_TOKENS` (default 3000) via the model registry, so a turn bills ~input+3000. Raise `AGENT_MAX_OUTPUT_TOKENS` on a paid Groq tier for longer replies. (A large repo `AGENTS.md` is also moved aside as `AGENTS.md.sandbox-bak` to keep the prompt itself small.)
 
-**`tool call validation failed: attempted to call tool 'cli {...}' which was not in request.tools`:** the model produced a malformed tool call (arguments jammed into the tool name) and Groq rejected it. `llama-3.3-70b-versatile` does this often, so the agent defaults to `groq:moonshotai/kimi-k2-instruct`, a reliable tool-caller. If you still see it, set `AGENT_MODEL_GROQ` to another tool-capable Groq model (e.g. `groq:openai/gpt-oss-120b`).
+**`tool call validation failed: attempted to call tool 'cli {...}' which was not in request.tools`:** `llama-3.3-70b-versatile` (the tool-capable model on Groq's free tier) intermittently produces a malformed tool call — arguments jammed into the tool name — which Groq rejects. Because it's non-deterministic, the agent **retries the turn on a fresh key** (up to `AGENT_TOOLCALL_RETRIES`, default 2), so it usually recovers within a couple of attempts; the retries also spread across your Groq keys/orgs. If it persists, set `AGENT_MODEL_GROQ` to a steadier tool model your account has (e.g. `groq:meta-llama/llama-4-scout-17b-16e-instruct`).
 
 ---
 
