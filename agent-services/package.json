@@ -9,10 +9,10 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "express": "^5.2.1",
-    "gitclaw": "^1.1.6",
+    "gitclaw": "^0.5.0",
     "ws": "^8.20.0"
   }
 }

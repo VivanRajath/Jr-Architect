@@ -1,4 +1,4 @@
-# Jr Architect 🚀
+# Jr Architect
 
 Jr Architect is a sandbox-based development environment that automatically runs GitHub repositories.This was Inspired by Architect by Lyzr not a viable product just a Learning product. The goal of the project was to run Apps built by Architect by Lyzr and stress test them and also  simulate a lightweight AI-assisted developer workspace that can analyze a repository, determine how to run it, and execute the application inside an isolated sandbox which I think would be an extension of Architect.
 
@@ -50,6 +50,17 @@ Dev mode behaves like a lightweight cloud IDE.
 *   Background sandbox execution
 *   Live preview of the application
 *   Interactive development environment
+
+### AI Agent (Agentic)
+The IDE ships with a built-in coding agent that works *inside* the running sandbox — not a chat sidebar that only suggests code.
+*   **Live streaming** — responses stream token-by-token over a WebSocket (`/agent/ws`), reverse-proxied through the Go server so it shares the IDE's origin.
+*   **Visible tool use** — every action the agent takes renders as its own row (edit, run, read, search, delete) with the target file/command, so you can watch it work.
+*   **Self-updating IDE** — when the agent edits files, the file tree, open editor tabs, and the live preview refresh automatically at the end of the turn (unsaved edits in open tabs are never clobbered).
+*   **Provider selector** — Anthropic (default), OpenAI, or Gemini, mapped to a model per provider.
+*   **Graceful fallback** — if the streaming socket can't connect, it falls back to a single-shot REST chat with "Apply to file" buttons.
+
+### Build Mode
+Describe an app in plain language and Jr Architect scaffolds a working, **fully-local** Next.js app (no backend, no third-party services). It answers a few clarifying questions, generates a PRD, then generates and runs the app in a sandbox. Generated apps persist user data in the browser (`localStorage`) and are guarded against pulling in third-party integrations (Gmail, OAuth, Stripe, external APIs) — ideal for local tools like a resume builder, invoice generator, or habit tracker.
 
 ## Instruction System
 
@@ -122,11 +133,18 @@ Execution process:
     git clone https://github.com/VivanRajath/Jr-Architect.git
     cd Jr-Architect
     ```
-2.  Configure environment variables if required (e.g., `OPENAI_API_KEY`, `CLAUDE_API_KEY`).
-3.  Run the application:
+2.  Copy `.env.example` to `.env` and set the keys you have (e.g. `ANTHROPIC_API_KEY` for the AI agent, `GROQ_API_KEY` / `GROQ_API_KEYS` for Build Mode).
+3.  Install the AI agent service dependencies (needed for the agent panel):
     ```bash
-    go run main.go
+    cd agent-services && npm install && cd ..
     ```
+4.  Run the application (Docker Desktop must be running):
+    ```bash
+    go run .
+    ```
+    The Go server starts on port `9000` and launches the Node agent service on `8001` automatically.
+
+> **Note:** the frontend (`index.html`, `ide.js`, `ide.css`, `ide-agent.js`, `ide-agent.css`) is embedded into the Go binary with `go:embed`, so any frontend change requires a rebuild (`go run .` / `go build`) and a browser hard-refresh.
 
 ## Goals of the Project
 

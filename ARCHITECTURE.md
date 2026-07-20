@@ -213,6 +213,8 @@ All files are generated from **Go text/template** strings with a `FuncMap` provi
 
 After generation, `RegisterWithAgentService()` notifies the Node.js agent service via `POST /agent/register` with the container name, workdir path, and stack.
 
+**Token-budget guard:** gitclaw splices repo-root `AGENTS.md` / `DUTIES.md` verbatim into the agent's system prompt. AI-generated app repos (e.g. Lyzr) ship a very large `AGENTS.md` (30k+ tokens), which alone exceeds a free-tier budget — Groq's free tier caps at 12k tokens/minute, so the first agent request `413`s before it can answer. `GenerateAgentSpec()` moves any such doc over `maxInjectedDocBytes` (8 KB) aside to `*.sandbox-bak` (kept, not deleted). gitclaw's base prompt is only ~600 tokens, so with our small generated `SOUL.md`/`RULES.md` the agent request stays well within budget.
+
 ---
 
 ### 3.4 Agent Service — Node.js (`agent-services/server.js`)
@@ -222,28 +224,37 @@ A lightweight **Express + WebSocket** server that drives the `gitclaw` agentic e
 | Endpoint | Method | Description |
 |---|---|---|
 | `/agent/register` | POST | Stores a `container → { dir, stack, clients }` session map entry |
-| `/agent/chat` | POST | Single-shot REST chat — streams `gitclaw.query()` and returns full response |
-| WebSocket | WS | Persistent connection for streaming agent responses |
+| `/agent/chat` | POST | Single-shot REST chat — streams `gitclaw.query()` and returns full response (used as a fallback when the WebSocket can't be established) |
+| `/agent/ws` | WS | **Primary path.** Persistent connection that streams the agent's work live |
 
 **WebSocket protocol:**
 
 ```
 Client → Server:
-  { type: "bind",  container: "sandbox-abc" }          // attach to a sandbox
-  { type: "chat",  container: "sandbox-abc", message: "..." }  // send a prompt
+  { type: "bind",  container: "sandbox-abc" }                       // attach to a sandbox
+  { type: "chat",  container: "sandbox-abc", message: "...",        // send a prompt
+                   provider: "anthropic" }                          //   (provider selects the model)
 
 Server → Client:
+  { type: "ready"       }        // bind acknowledged
   { type: "thinking"    }        // agent started
-  { type: "delta",      content: "partial text..." }   // streaming token
-  { type: "tool",       content: "write_file({...})" } // tool invocation
-  { type: "file_changed" }       // triggers UI to refresh preview iframe
-  { type: "done"        }        // turn complete
-  { type: "error",      content: "..." }
+  { type: "delta",       content: "partial text..." }   // streaming token
+  { type: "tool",        content: "write({\"path\":\"app/page.tsx\"})" } // tool invocation
+  { type: "file_changed" }       // a file was written this turn
+  { type: "message_end" }        // soft boundary between the agent's assistant messages (turn continues)
+  { type: "complete"    }        // DEFINITIVE end of turn — the generator drained
+  { type: "error",       content: "..." }
 ```
+
+> **Why `message_end` + `complete` instead of a single `done`:** a multi-step agent emits several `assistant` messages in one turn (think → tool → think → …). The old code sent `done` on each, so the UI finalized prematurely. `message_end` is now the soft per-message boundary (the UI just closes the current bubble), and `complete` — sent once, after `gitclaw.query()`'s generator drains — is the only end-of-turn signal the UI acts on (reload tree/editors/preview, re-enable input).
 
 The `gitclaw` library reads `agent.yaml` from the workspace and runs the full agentic loop (read → think → tool calls → commit → respond).
 
-**Default model:** `anthropic:claude-sonnet-4-6` (overridable via `GITCLAW_MODEL` env var)
+**Model selection:** `modelFor(provider)` resolves the model from the UI's provider dropdown (`groq` | `anthropic` | `openai` | `gemini`) but **only ever returns a provider that actually has an API key in the environment** (`providerHasKey()` mirrors pi-ai's env var names). Resolution order: `GITCLAW_MODEL` (if its provider has a key) → the selected provider (if it has a key) → the first configured provider, **preferring Groq**. If no provider is configured, the request is rejected up front with a clear message instead of letting the agent loop crash. This is why a machine with only `GROQ_API_KEY` runs the agent on `groq:llama-3.3-70b-versatile` with no extra config. Per-provider defaults are overridable via `AGENT_MODEL_GROQ` / `AGENT_MODEL_ANTHROPIC` / `AGENT_MODEL_OPENAI` / `AGENT_MODEL_GEMINI`.
+
+The service also installs `unhandledRejection` / `uncaughtException` handlers so a single failing turn (e.g. an async provider error) logs and keeps the service alive rather than terminating the whole process.
+
+**Tool scope & error surfacing:** the agent is restricted to the core coding tools (`allowedTools: cli, read, write, memory`, overridable via `AGENT_ALLOWED_TOOLS`). gitclaw otherwise injects extra built-ins (`capture_photo`, `task_tracker`, `skill_learner`) plus a system prompt that pushes the model through skill/task rituals — noise that bloats the request and derails smaller models (Groq's llama-3.3-70b would loop on bookkeeping and never answer). gitclaw reports a failed model call as a `{type:"system", subtype:"error"}` message (and as an `assistant` message with `stopReason:"error"`); the server maps **both** to a client `error` frame, so a failed call shows the reason instead of the panel spinning forever. Chain-of-thought (`deltaType:"thinking"`) deltas are dropped, and only workspace-mutating tools (`write`/`edit`/`create`/`cli`) trigger a `file_changed`.
 
 ---
 
@@ -273,7 +284,7 @@ The main UI is a single-page application embedded in the Go binary. It provides:
 | Panel | Features |
 |---|---|
 | **Sandbox Launcher** | Input fields for GitHub repo URL and optional instructions. Mode selector (dev / prompt). One-click launch. Real-time setup log streaming via polling `/logs/:id`. |
-| **Live Preview** | `<iframe>` pointed at `http://localhost:<dynamic-port>`. Reload button. Status indicator. |
+| **Live Preview** | `<iframe>` pointed at `http://localhost:<dynamic-port>`. **Readiness-aware:** the dev server in a fresh sandbox isn't up for a while (npm install + build), so the preview waits for the app to report `running` (status polling only returns `running` once the app's port actually answers), shows a "Starting your app…" state until then, and loads/auto-opens the iframe once ready instead of showing a dead connection error. **Live reload:** containers run with polling watchers (`WATCHPACK_POLLING`, `CHOKIDAR_USEPOLLING`) so Next.js fast-refresh / CRA HMR pick up IDE edits despite inotify not crossing the Docker bind mount; for non-HMR stacks (Vite, static) the preview auto-reloads on save (a full reload re-reads files from disk). **Locate UI code:** a floating control on the preview — hover reveals the app's UI file's folder in the tree, click opens it in the editor (entry file resolved by `GET /sandbox/entry`). Reload button, open-in-new-tab, status indicator. |
 | **File Explorer** | Tree view of the workspace fetched from `/files`. Expand/collapse directories. Click to open files. |
 | **Monaco Editor** | Full VS Code-grade editor embedded via CDN. Language auto-detection from file extension. Syntax highlighting. Save with `Ctrl+S` → `POST /file/save`. |
 | **Terminal** | xterm.js WebSocket terminal connected to `/terminal/ws`. Full PTY — interactive shells, autocomplete, color output. |
@@ -283,14 +294,15 @@ The main UI is a single-page application embedded in the Go binary. It provides:
 
 ### 3.7 AI Agent Chat Panel (`ide-agent.js`, `ide-agent.css`)
 
-A collapsible side panel that provides the AI coding assistant UI:
+A collapsible side panel that provides the AI coding assistant UI. It is a **live agentic stream**, not a request/response chatbot:
 
-- Connects to the agent service over WebSocket (`/agent/ws` proxied through Go)
-- Sends `bind` message on sandbox load to attach to the correct session
-- Streams token-by-token responses with a typing indicator
-- Shows tool invocations (file reads/writes) in a distinct "tool call" bubble
-- Triggers preview iframe reload on `file_changed` events
-- Supports dark/light mode toggle
+- Connects to the agent service over a persistent WebSocket (`/agent/ws`, reverse-proxied through the Go server — the upgrade is tunnelled transparently, so the stream shares the IDE's origin).
+- Reuses one socket across turns; sends `bind` only when the active sandbox changes, then `chat` (with the selected `provider`).
+- Streams tokens into the assistant bubble as they arrive; renders **each tool call as its own row** (edit, run, read, search, delete) with the target file/command, producing an interleaved transcript (text → tool → text …).
+- On end of turn (`complete`), reflects the agent's filesystem changes back into the IDE automatically: **refreshes the file tree, reloads open editor tabs from disk** (without clobbering unsaved user edits), and **reloads the live preview** if it's open. Changed paths are collected from write-like tool calls during the turn.
+- Only one turn streams at a time — the input is disabled while the agent works and re-enabled on `complete`/`error`.
+- Falls back to the single-shot REST endpoint (`POST /agent/chat`, with "Apply to …" buttons) if the WebSocket can't be established, so the panel degrades gracefully.
+- All streamed model/file content is HTML-escaped before the lightweight markdown pass (no markup injection).
 
 ---
 
@@ -439,7 +451,8 @@ When a sandbox is created, Jr Architect writes an agent specification into the c
 | GET | `/list` | — | `{ [container]: Sandbox }` |
 | POST | `/stop/:container` | — | `{ status: "stopped" }` |
 | GET | `/logs/:container` | — | Plain text log |
-| GET | `/status` | `?container=` | `{ container, port, repo, status, url }` |
+| GET | `/status` | `?container=` | `{ container, port, repo, status, url, framework }` |
+| GET | `/sandbox/entry` | `?container=` | `{ path, dir }` — best-guess main UI file for the preview's "locate UI code" control |
 
 ### File Operations
 
@@ -538,8 +551,16 @@ Copy `.env.example` to `.env` in the project root:
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
 
-# Agent model override (optional)
+# Agent model override (optional) — global default for every provider
 GITCLAW_MODEL=anthropic:claude-sonnet-4-6
+
+# Per-provider model overrides (optional) — map the UI's provider selector to a
+# gitclaw model id. The agent auto-selects the first provider that has a key,
+# preferring Groq, so with only GROQ_API_KEY set it uses the Groq model below.
+AGENT_MODEL_GROQ=groq:llama-3.3-70b-versatile
+AGENT_MODEL_ANTHROPIC=anthropic:claude-sonnet-4-5
+AGENT_MODEL_OPENAI=openai:gpt-4.1
+AGENT_MODEL_GEMINI=google:gemini-2.0-flash
 
 # Go backend URL for Python agent (default: http://127.0.0.1:9000)
 GO_BACKEND_URL=http://127.0.0.1:9000
@@ -577,6 +598,8 @@ AGENT_PORT=8001
 | Deno | INSTRUCTIONS keyword | `sandbox-deno` | 8000 |
 | Bun | INSTRUCTIONS keyword | `sandbox-bun` | 3000 |
 | Lyzr Apps | `workflow.json` / `response_schemas/` | `sandbox-react` | 3000 |
+
+Lyzr Apps are recognized by `detectLyzrRepo()` and run as **Next.js** projects (installs deps, runs the Next.js dev server bound to `0.0.0.0`). The detected framework is carried on `RuntimeConfig.Framework` → `Sandbox.Framework`, surfaced via `/sandbox/status`, and shown in the IDE as a badge next to the repo name (e.g. "Next.js (Lyzr App)"). Other stacks get a friendly label from `frameworkFromImage()`.
 
 ---
 

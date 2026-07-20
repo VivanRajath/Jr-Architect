@@ -23,8 +23,8 @@ version: 1.0.0
 description: AI agent for {{.ProjectName}} ({{.Stack}} project)
 
 model:
-  preferred: "anthropic:claude-sonnet-4-6"
-  fallback: ["openai:gpt-4o"]
+  preferred: "groq:llama-3.3-70b-versatile"
+  fallback: ["anthropic:claude-sonnet-4-5", "openai:gpt-4o"]
   constraints:
     temperature: 0.3
     max_tokens: 4096
@@ -125,9 +125,30 @@ func uiFilePaths(stack string) string {
 	return "any .css, .html, or component files in the project root"
 }
 
+// maxInjectedDocBytes caps repo-root docs that gitclaw would splice verbatim into
+// the agent's system prompt. AI-generated app repos (e.g. Lyzr) ship a very large
+// AGENTS.md — 30k+ tokens — which alone busts a free-tier budget (Groq free tier
+// is 12k tokens/min), so the very first agent request 413s before it can answer.
+const maxInjectedDocBytes = 8000
+
 func GenerateAgentSpec(workdir string, stack string) error {
 	projectName := filepath.Base(workdir)
 	projectName = strings.ReplaceAll(projectName, " ", "-")
+
+	// gitclaw injects repo-root AGENTS.md / DUTIES.md straight into the system
+	// prompt. Move oversized ones aside (kept as *.sandbox-bak — nothing is
+	// deleted) so the agent prompt stays small; our generated SOUL.md/RULES.md
+	// already give the agent its guidance.
+	for _, name := range []string{"AGENTS.md", "DUTIES.md"} {
+		p := filepath.Join(workdir, name)
+		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Size() > maxInjectedDocBytes {
+			bak := p + ".sandbox-bak"
+			_ = os.Remove(bak) // tolerate a re-run
+			if err := os.Rename(p, bak); err == nil {
+				fmt.Printf("[gitagent] moved large %s (%d bytes) aside to keep the agent prompt within the model token budget\n", name, info.Size())
+			}
+		}
+	}
 
 	spec := AgentSpec{
 		Stack:       stack,

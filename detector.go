@@ -16,11 +16,12 @@ import (
 // "&&" to form the Docker startup command.
 //
 // The image and port are inferred from the commands themselves:
-//   npm / node / yarn / pnpm / npx / bun  → sandbox-react  (port varies)
-//   python / pip / uvicorn / gunicorn      → sandbox-python
-//   go                                     → sandbox-go
-//   cargo                                  → sandbox-rust
-//   everything else                        → sandbox-node
+//
+//	npm / node / yarn / pnpm / npx / bun  → sandbox-react  (port varies)
+//	python / pip / uvicorn / gunicorn      → sandbox-python
+//	go                                     → sandbox-go
+//	cargo                                  → sandbox-rust
+//	everything else                        → sandbox-node
 //
 // If a Vite dev server is detected the port defaults to 5173 and --host
 // 0.0.0.0 is appended when missing. Next.js dev gets -H 0.0.0.0.
@@ -341,6 +342,7 @@ type RuntimeConfig struct {
 	Image          string
 	Port           int
 	StartupCommand string
+	Framework      string // human-friendly label shown in the IDE, e.g. "Next.js"
 }
 
 type PackageJSON struct {
@@ -481,6 +483,7 @@ func detectNodeFramework(path string, pkg PackageJSON) RuntimeConfig {
 			Image:          "sandbox-react",
 			Port:           3000,
 			StartupCommand: "npm install && npm run dev -- -H 0.0.0.0",
+			Framework:      "Next.js",
 		}
 	}
 
@@ -490,6 +493,7 @@ func detectNodeFramework(path string, pkg PackageJSON) RuntimeConfig {
 			Image:          "sandbox-react",
 			Port:           5173,
 			StartupCommand: "npm install && npm run dev -- --host 0.0.0.0",
+			Framework:      "React (Vite)",
 		}
 	}
 	if _, ok := pkg.Dependencies["vite"]; ok {
@@ -497,6 +501,7 @@ func detectNodeFramework(path string, pkg PackageJSON) RuntimeConfig {
 			Image:          "sandbox-react",
 			Port:           5173,
 			StartupCommand: "npm install && npm run dev -- --host 0.0.0.0",
+			Framework:      "React (Vite)",
 		}
 	}
 
@@ -509,6 +514,7 @@ func detectNodeFramework(path string, pkg PackageJSON) RuntimeConfig {
 				Image:          "sandbox-react",
 				Port:           5173,
 				StartupCommand: "npm install && npm run dev -- --host 0.0.0.0",
+				Framework:      "React (Vite)",
 			}
 		}
 
@@ -518,6 +524,7 @@ func detectNodeFramework(path string, pkg PackageJSON) RuntimeConfig {
 				Image:          "sandbox-react",
 				Port:           3000,
 				StartupCommand: "npm install && HOST=0.0.0.0 npm start",
+				Framework:      "React (CRA)",
 			}
 		}
 	}
@@ -528,6 +535,7 @@ func detectNodeFramework(path string, pkg PackageJSON) RuntimeConfig {
 			Image:          "sandbox-node",
 			Port:           3000,
 			StartupCommand: "npm install && npm run dev -- --host 0.0.0.0",
+			Framework:      "Node.js",
 		}
 	}
 
@@ -536,6 +544,7 @@ func detectNodeFramework(path string, pkg PackageJSON) RuntimeConfig {
 			Image:          "sandbox-node",
 			Port:           3000,
 			StartupCommand: "npm install && HOST=0.0.0.0 npm start",
+			Framework:      "Node.js",
 		}
 	}
 
@@ -630,6 +639,9 @@ func detectLyzrRepo(path string) (RuntimeConfig, bool) {
 
 	pkg, err := readPackageJSON(filepath.Join(path, "package.json"))
 
+	// Lyzr apps are Next.js projects. Install deps and run the Next.js dev server
+	// (bound to 0.0.0.0 so the host can reach it), preferring the repo's own dev
+	// script when present.
 	startupCommand := "npm install --no-audit --no-fund && npx next dev -H 0.0.0.0"
 	if err == nil {
 		if _, ok := pkg.Scripts["dev"]; ok {
@@ -641,7 +653,41 @@ func detectLyzrRepo(path string) (RuntimeConfig, bool) {
 		Image:          "sandbox-react",
 		Port:           3000,
 		StartupCommand: startupCommand,
+		Framework:      "Next.js (Lyzr App)",
 	}, true
+}
+
+// frameworkFromImage gives a friendly framework label for the IDE when a more
+// specific one wasn't set during detection. Derived from the sandbox image.
+func frameworkFromImage(image string) string {
+	switch image {
+	case "sandbox-react":
+		return "React"
+	case "sandbox-node":
+		return "Node.js"
+	case "sandbox-python":
+		return "Python"
+	case "sandbox-go":
+		return "Go"
+	case "sandbox-java":
+		return "Java"
+	case "sandbox-php":
+		return "PHP"
+	case "sandbox-ruby":
+		return "Ruby"
+	case "sandbox-rust":
+		return "Rust"
+	case "sandbox-dotnet":
+		return ".NET"
+	case "sandbox-deno":
+		return "Deno"
+	case "sandbox-bun":
+		return "Bun"
+	case "sandbox-static":
+		return "Static site"
+	default:
+		return strings.TrimPrefix(image, "sandbox-")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -652,6 +698,7 @@ func detectLyzrRepo(path string) (RuntimeConfig, bool) {
 //  2. Lyzr Apps repository detection
 //  3. File-based detection at discovered project root (may be nested)
 //  4. README/INSTRUCTIONS keyword hints (fallback)
+//
 // ---------------------------------------------------------------------------
 func detectRuntimeConfig(path string) (RuntimeConfig, error) {
 

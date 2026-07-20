@@ -306,7 +306,12 @@
     .mode-option.active {
       background: #6B3E1A;
       color: #ffffff;
-      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.2);
+      box-shadow: 0 2px 8px var(--accent-glow);
+    }
+
+
+    .mode-option[data-mode="build"] .build-sparkle {
+      font-size: 13px;
     }
 
     .mode-option .mode-desc {
@@ -330,7 +335,7 @@
       cursor: pointer;
       white-space: nowrap;
       transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
-      box-shadow: 0 4px 15px rgba(124, 58, 237, 0.35);
+      box-shadow: 0 4px 15px var(--accent-glow);
     }
 
     .btn:hover {
@@ -352,7 +357,7 @@
       font-size: 12px;
       padding: 6px 12px;
       border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.3);
+      box-shadow: 0 2px 8px var(--accent-glow);
     }
 
     .btn-danger {
@@ -495,7 +500,7 @@
     }
 
     .status-bar.loading {
-      border-color: rgba(124, 58, 237, 0.3);
+      border-color: var(--accent-glow);
       background: var(--accent-soft);
     }
 
@@ -510,9 +515,9 @@
     .sandbox-link {
       font-family: var(--mono);
       font-size: 12px;
-      color: #a78bfa;
-      background: rgba(124, 58, 237, 0.15);
-      border: 1px solid rgba(124, 58, 237, 0.25);
+      color: var(--accent2);
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-glow);
       padding: 4px 10px;
       border-radius: 6px;
       text-decoration: none;
@@ -520,7 +525,7 @@
     }
 
     .sandbox-link:hover {
-      background: rgba(124, 58, 237, 0.25);
+      background: var(--accent-glow);
     }
 
     /* Tag for runtime */
@@ -594,8 +599,8 @@
 
     .count-badge {
       background: var(--accent-soft);
-      color: #a78bfa;
-      border: 1px solid rgba(124, 58, 237, 0.25);
+      color: var(--accent2);
+      border: 1px solid var(--accent-glow);
       font-size: 11px;
       font-weight: 700;
       padding: 2px 8px;
@@ -865,6 +870,557 @@
       border-color: rgba(239, 68, 68, 0.4);
     }
 
+    /* ── Builder Modal ── */
+    .builder-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(6px);
+      z-index: 150;
+      display: none;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    .builder-overlay.show {
+      display: flex;
+    }
+
+    .builder-modal {
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      border-radius: 20px;
+      width: 100%;
+      max-width: 680px;
+      margin: 40px auto;
+      max-height: calc(100vh - 80px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(107, 62, 26, 0.1);
+      animation: modalSlideUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    @keyframes modalSlideUp {
+      from {
+        opacity: 0;
+        transform: translateY(30px) scale(0.97);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    .builder-header {
+      padding: 20px 24px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .builder-header-icon {
+      width: 36px;
+      height: 36px;
+      background: #6B3E1A;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .builder-header-text {
+      flex: 1;
+    }
+
+    .builder-header-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .builder-header-sub {
+      font-size: 12px;
+      color: var(--text3);
+      margin-top: 1px;
+    }
+
+    .builder-close {
+      background: none;
+      border: none;
+      color: var(--text3);
+      cursor: pointer;
+      font-size: 22px;
+      line-height: 1;
+      padding: 2px 6px;
+      border-radius: 6px;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .builder-close:hover {
+      background: var(--surface2);
+      color: var(--text);
+    }
+
+    /* Progress stepper */
+    .builder-steps {
+      display: flex;
+      align-items: center;
+      padding: 16px 24px;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .bstep {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text3);
+      flex: 1;
+      transition: color 0.2s;
+    }
+
+    .bstep.active {
+      color: #6B3E1A;
+    }
+
+    .bstep.done {
+      color: var(--green);
+    }
+
+    .bstep-num {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--surface2);
+      border: 1.5px solid var(--border2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      flex-shrink: 0;
+      transition: all 0.2s;
+    }
+
+    .bstep.active .bstep-num {
+      background: #6B3E1A;
+      border-color: #6B3E1A;
+      color: #fff;
+    }
+
+    .bstep.done .bstep-num {
+      background: var(--green);
+      border-color: var(--green);
+      color: #fff;
+    }
+
+    .bstep-connector {
+      flex: 1;
+      height: 1.5px;
+      background: var(--border);
+      margin: 0 4px;
+      transition: background 0.3s;
+    }
+
+    .bstep-connector.done {
+      background: var(--green);
+    }
+
+    /* Modal body */
+    .builder-body {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 24px;
+    }
+
+    /* Q&A step */
+    .qa-question-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text3);
+      margin-bottom: 4px;
+    }
+
+    .qa-question-text {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 16px;
+      line-height: 1.4;
+    }
+
+    .qa-progress {
+      font-size: 11px;
+      color: var(--text3);
+      margin-bottom: 20px;
+    }
+
+    .qa-progress-bar {
+      height: 3px;
+      background: var(--surface2);
+      border-radius: 9999px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+
+    .qa-progress-fill {
+      height: 100%;
+      background: #6B3E1A;
+      border-radius: 9999px;
+      transition: width 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    .qa-input {
+      width: 100%;
+      background: var(--surface2);
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      padding: 12px 14px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      resize: vertical;
+      min-height: 52px;
+    }
+
+    .qa-input:focus {
+      border-color: #6B3E1A;
+      box-shadow: 0 0 0 3px rgba(107, 62, 26, 0.15);
+    }
+
+    /* ── Q&A Chip Options ── */
+    .qa-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .qa-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: 100px;
+      border: 1.5px solid var(--border2);
+      background: var(--surface2);
+      color: var(--text2);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.18s;
+      user-select: none;
+    }
+
+    .qa-chip:hover {
+      border-color: #6B3E1A;
+      color: var(--text);
+      background: rgba(107, 62, 26, 0.06);
+    }
+
+    .qa-chip.selected {
+      background: rgba(107, 62, 26, 0.12);
+      border-color: #6B3E1A;
+      color: #6B3E1A;
+      font-weight: 600;
+    }
+
+    .qa-chip.selected::before {
+      content: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='%236B3E1A' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><polyline points='20 6 9 17 4 12'/></svg>");
+      font-size: 11px;
+    }
+
+    .qa-freetext-toggle {
+      font-size: 12px;
+      color: var(--text3);
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      margin-bottom: 10px;
+      display: inline-block;
+      transition: color 0.15s;
+    }
+
+    .qa-freetext-toggle:hover {
+      color: var(--text2);
+    }
+
+    .qa-freetext-area {
+      display: none;
+      margin-top: 8px;
+    }
+
+    .qa-freetext-area.show {
+      display: block;
+    }
+
+    .qa-nav {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    /* PRD Review step */
+    .prd-section {
+      margin-bottom: 20px;
+    }
+
+    .prd-section-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text3);
+      margin-bottom: 6px;
+    }
+
+    .prd-section-value {
+      font-size: 14px;
+      color: var(--text);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      line-height: 1.6;
+    }
+
+    .prd-section-value[contenteditable="true"]:focus {
+      outline: none;
+      border-color: #6B3E1A;
+      box-shadow: 0 0 0 3px rgba(107, 62, 26, 0.12);
+    }
+
+    .prd-features-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .prd-features-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .prd-features-list li::before {
+      content: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 24 24' fill='%236B3E1A'><path d='M12 2 22 12 12 22 2 12Z'/></svg>");
+      color: #6B3E1A;
+      font-size: 10px;
+      flex-shrink: 0;
+      margin-top: 3px;
+    }
+
+    .prd-chip {
+      display: inline-block;
+      background: rgba(107, 62, 26, 0.12);
+      border: 1px solid rgba(107, 62, 26, 0.25);
+      color: #6B3E1A;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 3px 10px;
+      border-radius: 100px;
+      margin: 2px;
+    }
+
+    .prd-entity {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .prd-entity-name {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text2);
+    }
+
+    .prd-entity-fields {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .prd-field-tag {
+      font-family: var(--mono);
+      font-size: 11px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      padding: 2px 7px;
+      border-radius: 4px;
+      color: var(--text3);
+    }
+
+    .prd-edit-hint {
+      font-size: 11px;
+      color: var(--text3);
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Building step */
+    .build-progress-log {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text2);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      min-height: 180px;
+      max-height: 300px;
+      overflow-y: auto;
+      line-height: 1.8;
+      white-space: pre-wrap;
+    }
+
+    .build-log-line {
+      display: flex;
+      gap: 10px;
+    }
+
+    .build-log-time {
+      color: var(--text3);
+      flex-shrink: 0;
+    }
+
+    .build-log-msg {
+      color: var(--text2);
+    }
+
+    .build-log-line.success .build-log-msg {
+      color: var(--green);
+    }
+
+    .build-log-line.error .build-log-msg {
+      color: var(--red);
+    }
+
+    .build-ready-banner {
+      background: var(--green-soft);
+      border: 1px solid rgba(45, 106, 79, 0.3);
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-top: 16px;
+      display: none;
+    }
+
+    .build-ready-banner.show {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .build-ready-icon {
+      font-size: 28px;
+    }
+
+    .build-ready-text {
+      flex: 1;
+    }
+
+    .build-ready-title {
+      font-weight: 700;
+      color: var(--green);
+      font-size: 15px;
+    }
+
+    .build-ready-sub {
+      font-size: 12px;
+      color: var(--text2);
+      margin-top: 2px;
+    }
+
+    /* Build history panel */
+    .build-history-item {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      transition: border-color 0.2s;
+      animation: slideIn 0.3s ease-out;
+    }
+
+    .build-history-item:hover {
+      border-color: var(--border2);
+    }
+
+    .build-history-icon {
+      width: 36px;
+      height: 36px;
+      background: #6B3E1A;
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    .build-history-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .build-history-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .build-history-meta {
+      font-size: 11px;
+      color: var(--text3);
+      margin-top: 2px;
+    }
+
+    .build-status-dot-building {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #f59e0b;
+      box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
+      animation: pulse 1.5s infinite;
+    }
+
+    .build-status-dot-ready {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(45, 106, 79, 0.5);
+    }
+
+    .build-status-dot-error {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--red);
+    }
+
     /* Responsive */
     @media (max-width: 560px) {
       .input-row {
@@ -900,24 +1456,6 @@
           </svg>
           Launch Sandbox
         </div>
-        <div class="input-row">
-          <div class="input-wrap">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path
-                d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />
-            </svg>
-            <input id="repoInput" type="text" placeholder="https://github.com/user/repo" autocomplete="off"
-              spellcheck="false" />
-          </div>
-          <button id="runBtn" class="btn" onclick="runSandbox()">
-            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="15"
-              height="15">
-              <path d="M5 3l14 9-14 9V3z" />
-            </svg>
-            <div class="spinner"></div>
-            Run
-          </button>
-        </div>
 
         <!-- Mode Toggle -->
         <div class="mode-toggle" id="modeToggle">
@@ -927,14 +1465,38 @@
           <div class="mode-option" data-mode="dev" onclick="setMode('dev')">
             Dev Mode
           </div>
+          <div class="mode-option" data-mode="build" onclick="setMode('build')">
+            <span class="build-sparkle"><svg style="vertical-align:middle" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg></span> Build Mode
+          </div>
         </div>
 
-        <div class="instructions-wrap">
-          <div class="instructions-label">
-            <span>Optional INSTRUCTIONS.md</span>
-            <small>Paste install &amp; run commands if not in repo</small>
+        <!-- Repo input row (Prompt / Dev Mode) -->
+        <div id="repoSection">
+          <div class="input-row">
+            <div class="input-wrap">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path
+                  d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />
+              </svg>
+              <input id="repoInput" type="text" placeholder="https://github.com/user/repo" autocomplete="off"
+                spellcheck="false" />
+            </div>
+            <button id="runBtn" class="btn" onclick="runSandbox()">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="15"
+                height="15">
+                <path d="M5 3l14 9-14 9V3z" />
+              </svg>
+              <div class="spinner"></div>
+              Run
+            </button>
           </div>
-          <textarea id="instructionsInput" placeholder="Paste your setup commands, one per line:
+
+          <div class="instructions-wrap">
+            <div class="instructions-label">
+              <span>Optional INSTRUCTIONS.md</span>
+              <small>Paste install &amp; run commands if not in repo</small>
+            </div>
+            <textarea id="instructionsInput" placeholder="Paste your setup commands, one per line:
 
 npm install
 npm run dev
@@ -942,11 +1504,47 @@ npm run dev
 Or any shell commands:
 npm install
 node server.js"></textarea>
+          </div>
         </div>
-        <div id="runStatus" class="status-bar">
-          <div class="status-icon"></div>
-          <div class="status-content"></div>
+
+        <!-- Build Mode prompt field -->
+        <div id="buildSection" style="display:none; margin-top:16px;">
+          <div class="instructions-label" style="margin-bottom:8px;">
+            <span><svg style="vertical-align:middle" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg> Describe the app you want to build</span>
+            <small>Be as specific or as vague as you like</small>
+          </div>
+          <textarea id="buildPromptInput" class="qa-input" rows="4"
+            placeholder="e.g. A Kanban board for dev teams where users can create tickets, assign them, drag between columns, and leave comments. Dark mode, purple accent."
+            style="min-height:100px;"></textarea>
+          <div style="margin-top:12px;">
+            <button class="btn" onclick="startBuilder()">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+              </svg>
+              Start Building
+            </button>
+          </div>
         </div>
+
+        <div id="runStatus" class="status-bar"></div>
+      </div>
+
+      <!-- Build History -->
+      <div class="card" id="buildHistoryCard" style="display:none;">
+        <div class="sandboxes-header">
+          <div class="section-title">
+            <svg style="vertical-align:middle" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg> Recent Builds
+            <span class="count-badge" id="buildHistoryCount">0</span>
+          </div>
+          <button class="btn btn-sm btn-ghost" onclick="loadBuildHistory()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+              <path d="M1 4v6h6M23 20v-6h-6" />
+              <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+            </svg>
+            Refresh
+          </button>
+        </div>
+        <div id="buildHistoryList"></div>
       </div>
 
       <!-- Active Sandboxes -->
@@ -1034,6 +1632,49 @@ node server.js"></textarea>
       </div>
     </div>
 
+    <!-- ═══ Builder Modal ═══ -->
+    <div class="builder-overlay" id="builderOverlay" onclick="closeBuilderIfOverlay(event)">
+      <div class="builder-modal">
+        <!-- Header -->
+        <div class="builder-header">
+          <div class="builder-header-icon"><svg style="vertical-align:middle" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg></div>
+          <div class="builder-header-text">
+            <div class="builder-header-title" id="builderHeaderTitle">What do you want to build?</div>
+            <div class="builder-header-sub" id="builderHeaderSub">Powered by Groq + llama-3.3-70b</div>
+          </div>
+          <button class="builder-close" onclick="closeBuilder()">&times;</button>
+        </div>
+
+        <!-- Steps -->
+        <div class="builder-steps">
+          <div class="bstep active" id="bstep-1">
+            <div class="bstep-num">1</div>
+            <span>Q&amp;A</span>
+          </div>
+          <div class="bstep-connector" id="bconn-1"></div>
+          <div class="bstep" id="bstep-2">
+            <div class="bstep-num">2</div>
+            <span>PRD</span>
+          </div>
+          <div class="bstep-connector" id="bconn-2"></div>
+          <div class="bstep" id="bstep-3">
+            <div class="bstep-num">3</div>
+            <span>Build</span>
+          </div>
+          <div class="bstep-connector" id="bconn-3"></div>
+          <div class="bstep" id="bstep-4">
+            <div class="bstep-num">4</div>
+            <span>Launch</span>
+          </div>
+        </div>
+
+        <!-- Body -->
+        <div class="builder-body" id="builderBody">
+          <!-- Injected dynamically per step -->
+        </div>
+      </div>
+    </div>
+
     <!-- Toast container -->
     <div class="toast-container" id="toastContainer"></div>
   </div><!-- end landing-page -->
@@ -1044,12 +1685,9 @@ node server.js"></textarea>
     <div class="ide-topbar">
       <span class="logo">Jr Architect</span>
       <span class="repo-name"></span>
+      <span class="framework-badge" id="framework-badge" style="display:none;"></span>
       <span class="mode-badge">DEV MODE</span>
       <div class="spacer"></div>
-      <div class="ide-status-indicator" id="ide-status-indicator">
-        <span class="ide-status-dot"></span>
-        <span class="ide-status-text">Running</span>
-      </div>
       <button class="top-btn" onclick="saveCurrentFile()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
           stroke="currentColor" stroke-width="2">
           <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
@@ -1071,7 +1709,7 @@ node server.js"></textarea>
           viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
         </svg> Dark</button>
-      <button class="top-btn" onclick="backToLl̥anding()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+      <button class="top-btn" onclick="backToLanding()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
           stroke="currentColor" stroke-width="2">
           <line x1="19" y1="12" x2="5" y2="12" />
           <polyline points="12 19 5 12 12 5" />
@@ -1079,6 +1717,36 @@ node server.js"></textarea>
     </div>
     <!-- Main -->
     <div class="ide-main">
+      <!-- Activity Bar -->
+      <div class="ide-activitybar">
+        <div class="activity-top">
+          <button class="activity-btn active" id="act-explorer" title="Explorer" onclick="toggleSidebar(this)">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+              <polyline points="13 2 13 9 20 9" />
+            </svg>
+          </button>
+          <button class="activity-btn" id="act-agent" title="AI Agent" onclick="toggleAgentPanel()">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
+          <button class="activity-btn" id="act-preview" title="Live Preview" onclick="openLivePreview()">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <circle cx="12" cy="12" r="9" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <path d="M12 3a14 14 0 0 1 4 9 14 14 0 0 1-4 9 14 14 0 0 1-4-9 14 14 0 0 1 4-9z" />
+            </svg>
+          </button>
+        </div>
+        <div class="activity-bottom">
+          <button class="activity-btn" title="Toggle theme" onclick="toggleDarkMode()">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+          </button>
+        </div>
+      </div>
       <!-- Sidebar -->
       <div class="ide-sidebar">
         <div class="sidebar-header">
@@ -1120,43 +1788,49 @@ node server.js"></textarea>
             <div class="panel-tab active" data-tab="terminal" onclick="switchPanelTab('terminal')">Terminal</div>
             <div class="panel-tab" data-tab="logs" onclick="switchPanelTab('logs')">Logs</div>
             <div class="panel-tab" data-tab="status" onclick="switchPanelTab('status')">Status</div>
-            <div class="panel-tab" data-tab="agent" onclick="switchPanelTab('agent')"> Agent</div>
           </div>
           <div class="panel-content">
             <div class="terminal-pane active" data-tab="terminal">
               <div class="terminal-tabs-bar" id="terminal-tab-bar"></div>
-              <div class="terminal-output" id="terminal-instances"></div>
-              <div class="terminal-input-row">
-                <span>$</span>
-                <input type="text" id="terminal-input" placeholder="Type command here and press Enter..." autocomplete="off" spellcheck="false" />
-              </div>
+              <div class="terminal-output" id="terminal-instances" onclick="focusActiveTerminal()"></div>
             </div>
             <div class="panel-pane" data-tab="logs" id="logs-output"></div>
             <div class="panel-pane" data-tab="status" id="status-output">
               <div class="status-panel-content" id="status-panel-content">Loading status...</div>
             </div>
-            <div class="panel-pane agent-pane" data-tab="agent" id="agent-pane">
-              <div class="agent-chat" id="agent-chat">
-                <div class="agent-messages" id="agent-messages">
-                  <div class="agent-welcome">
-                    <div style="font-size:16px;margin-bottom:8px;font-weight:700;color:var(--accent)">AI</div>
-                    <div style="font-weight:600;margin-bottom:4px">AI Coding Agent</div>
-                    <div style="font-size:12px;color:var(--text3)">Ask me to explain code, suggest edits, create files,
-                      or run commands.</div>
-                  </div>
-                </div>
-                <div class="agent-input-row">
-                  <select id="agent-provider" class="agent-provider-select">
-                    <option value="gemini">Gemini</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="anthropic">Anthropic</option>
-                  </select>
-                  <input type="text" id="agent-input" placeholder="Ask the AI agent..." autocomplete="off"
-                    spellcheck="false" />
-                  <button class="agent-send-btn" onclick="sendAgentMessage()">Send</button>
-                </div>
-              </div>
+          </div>
+        </div>
+      </div>
+      <!-- AI Agent Side Panel (VS Code-style chat dock) -->
+      <div class="ide-agent-panel" id="ide-agent-panel" style="display:none;">
+        <div class="agent-panel-header">
+          <span class="agent-panel-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            AI Agent
+          </span>
+          <button onclick="toggleAgentPanel()" title="Close">&times;</button>
+        </div>
+        <div class="agent-chat" id="agent-chat">
+          <div class="agent-messages" id="agent-messages">
+            <div class="agent-welcome">
+              <div style="font-size:16px;margin-bottom:8px;font-weight:700;color:var(--accent)">AI</div>
+              <div style="font-weight:600;margin-bottom:4px">AI Coding Agent</div>
+              <div style="font-size:12px;color:var(--text3)">Ask me to explain code, suggest edits, create files,
+                or run commands.</div>
             </div>
+          </div>
+          <div class="agent-input-row">
+            <select id="agent-provider" class="agent-provider-select">
+              <option value="groq">Groq</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+            </select>
+            <input type="text" id="agent-input" placeholder="Ask the AI agent..." autocomplete="off"
+              spellcheck="false" />
+            <button class="agent-send-btn" onclick="sendAgentMessage()">Send</button>
           </div>
         </div>
       </div>
@@ -1179,8 +1853,44 @@ node server.js"></textarea>
             <button onclick="closePreview()" title="Close">&times;</button>
           </div>
         </div>
-        <iframe id="preview-iframe" class="preview-iframe"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+        <div id="preview-loading" class="preview-loading" style="display:none;">
+          <div class="preview-loading-spinner"></div>
+          <div class="preview-loading-title">Starting your app…</div>
+          <div class="preview-loading-sub">Installing dependencies and booting the dev server. This can take a minute on first run — the preview loads automatically once it's ready.</div>
+        </div>
+        <button class="preview-locate-btn" id="preview-locate-btn" type="button"
+          onmouseenter="locateUISource(false)" onclick="locateUISource(true)"
+          aria-label="Show this app's UI code in the editor">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/><line x1="12" y1="4" x2="10" y2="20"/>
+          </svg>
+          <span class="preview-locate-tip" id="preview-locate-tip">Show this app's UI code in the editor</span>
+        </button>
+        <iframe id="preview-iframe" class="preview-iframe"></iframe>
+      </div>
+    </div>
+    <!-- Status Bar -->
+    <div class="ide-statusbar">
+      <div class="statusbar-left">
+        <span class="statusbar-item" id="ide-status-indicator">
+          <span class="ide-status-dot"></span>
+          <span class="ide-status-text">Running</span>
+        </span>
+        <span class="statusbar-item statusbar-branch" title="Sandbox branch">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="6" y1="3" x2="6" y2="15" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="6" cy="18" r="3" />
+            <path d="M18 9a9 9 0 0 1-9 9" />
+          </svg>
+          main
+        </span>
+      </div>
+      <div class="statusbar-right">
+        <span class="statusbar-item">Spaces: 2</span>
+        <span class="statusbar-item">UTF-8</span>
+        <span class="statusbar-item">LF</span>
+        <span class="statusbar-item statusbar-mode">Jr Architect</span>
       </div>
     </div>
     <div class="ide-toast" id="ide-toast"></div>
@@ -1195,6 +1905,19 @@ node server.js"></textarea>
       document.querySelectorAll('.mode-option').forEach(el => {
         el.classList.toggle('active', el.dataset.mode === mode);
       });
+      // Show/hide the correct input section
+      const repoSection = document.getElementById('repoSection');
+      const buildSection = document.getElementById('buildSection');
+      const runStatus = document.getElementById('runStatus');
+      if (mode === 'build') {
+        repoSection.style.display = 'none';
+        buildSection.style.display = 'block';
+        runStatus.className = 'status-bar';
+        runStatus.innerHTML = '';
+      } else {
+        repoSection.style.display = 'block';
+        buildSection.style.display = 'none';
+      }
     }
 
     function toast(msg, type = 'success') {
@@ -1222,8 +1945,7 @@ node server.js"></textarea>
     function setRunStatus(type, icon, html) {
       const bar = document.getElementById('runStatus');
       bar.className = `status-bar show ${type}`;
-      bar.querySelector('.status-icon').textContent = icon;
-      bar.querySelector('.status-content').innerHTML = html;
+      bar.innerHTML = `<div class="status-icon">${icon}</div><div class="status-content">${html}</div>`;
     }
 
     async function runSandbox() {
@@ -1360,13 +2082,493 @@ node server.js"></textarea>
       if (e.key === 'Enter') runSandbox();
     });
 
+    // ════════════════════════════════════════════
+    //  BUILD MODE — Multi-step state machine
+    // ════════════════════════════════════════════
+
+    let builderState = {
+      step: 1,            // 1=Q&A, 2=PRD, 3=Building, 4=Launch
+      prompt: '',
+      questions: [],
+      qIndex: 0,
+      answers: {},
+      freetextAnswers: {},
+      prd: null,
+      container: null,
+      buildId: null,
+      url: null,
+    };
+
+    function startBuilder() {
+      const prompt = document.getElementById('buildPromptInput').value.trim();
+      if (!prompt) {
+        document.getElementById('buildPromptInput').focus();
+        toast('Please describe your app first', 'error');
+        return;
+      }
+      builderState = { step: 1, prompt, questions: [], qIndex: 0, answers: {}, freetextAnswers: {}, prd: null, container: null, buildId: null, url: null };
+      document.getElementById('builderOverlay').classList.add('show');
+      fetchQuestions(prompt);
+    }
+
+    function closeBuilder() {
+      document.getElementById('builderOverlay').classList.remove('show');
+    }
+
+    function closeBuilderIfOverlay(e) {
+      if (e.target === document.getElementById('builderOverlay') && builderState.step !== 3) {
+        closeBuilder();
+      }
+    }
+
+    function setBuilderStep(n) {
+      builderState.step = n;
+      for (let i = 1; i <= 4; i++) {
+        const el = document.getElementById(`bstep-${i}`);
+        el.className = 'bstep' + (i < n ? ' done' : i === n ? ' active' : '');
+      }
+      for (let i = 1; i <= 3; i++) {
+        const conn = document.getElementById(`bconn-${i}`);
+        conn.className = 'bstep-connector' + (i < n ? ' done' : '');
+      }
+    }
+
+    // ── Step 1: Q&A ──────────────────────────────
+
+    async function fetchQuestions(prompt) {
+      renderQALoading();
+      try {
+        const res = await fetch('/build/questions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to get questions');
+        builderState.questions = data.questions || [];
+        builderState.qIndex = 0;
+        renderCurrentQuestion();
+      } catch (err) {
+        toast('Error: ' + err.message, 'error');
+        closeBuilder();
+      }
+    }
+
+    function renderQALoading() {
+      setBuilderStep(1);
+      document.getElementById('builderHeaderTitle').textContent = 'Generating questions…';
+      document.getElementById('builderBody').innerHTML = `
+        <div style="text-align:center;padding:40px 0;color:var(--text3);">
+          <div style="font-size:32px;margin-bottom:12px;animation:spin 1s linear infinite;display:inline-block;"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg></div>
+          <div style="font-size:13px;">Analyzing your idea with Groq AI…</div>
+        </div>`;
+    }
+
+    function renderCurrentQuestion() {
+      const qs = builderState.questions;
+      const i = builderState.qIndex;
+      const q = qs[i];
+      if (!q) { submitAnswers(); return; }
+
+      setBuilderStep(1);
+      document.getElementById('builderHeaderTitle').textContent = 'Quick Questions';
+      document.getElementById('builderHeaderSub').textContent = 'Help us understand what you need';
+
+      const pct = Math.round((i / qs.length) * 100);
+      const hasOptions = q.options && q.options.length > 0;
+
+      // Build chips HTML
+      let chipsHTML = '';
+      if (hasOptions) {
+        chipsHTML = `
+          <div class="qa-chips" id="qaChips">
+            ${q.options.map(opt => {
+              const saved = builderState.answers[q.id] || '';
+              const isSelected = saved.split('|||').map(s => s.trim()).includes(opt);
+              return `<div class="qa-chip${isSelected ? ' selected' : ''}" data-value="${escHtml(opt)}" onclick="toggleChip(this, ${q.multi})">${escHtml(opt)}</div>`;
+            }).join('')}
+          </div>
+          <span class="qa-freetext-toggle" onclick="toggleFreetext()"><svg style="vertical-align:middle" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg> Something else in mind?</span>
+          <div class="qa-freetext-area" id="qaFreetextArea">
+            <textarea id="qaAnswer" class="qa-input" rows="2"
+              placeholder="Type your own answer…">${builderState.freetextAnswers?.[q.id] || ''}</textarea>
+          </div>`;
+      } else {
+        // No options — fall back to pure textarea
+        chipsHTML = `<textarea id="qaAnswer" class="qa-input" rows="3"
+          placeholder="Your answer… (press Enter to continue, Tab to skip)">${builderState.answers[q.id] || ''}</textarea>`;
+      }
+
+      document.getElementById('builderBody').innerHTML = `
+        <div class="qa-question-label">Question ${i + 1} of ${qs.length}</div>
+        <div class="qa-progress">
+          <div class="qa-progress-bar"><div class="qa-progress-fill" style="width:${pct}%"></div></div>
+        </div>
+        <div class="qa-question-text">${escHtml(q.text)}</div>
+        ${chipsHTML}
+        <div class="qa-nav" style="margin-top:16px;">
+          ${i > 0 ? `<button class="btn btn-ghost" onclick="qaBack()">← Back</button>` : ''}
+          <button class="btn" style="background:#6B3E1A;" onclick="qaNext()">
+            ${i < qs.length - 1 ? 'Next →' : 'Generate PRD →'}
+          </button>
+          <button class="btn btn-ghost" style="margin-left:auto;" onclick="qaSkip()">Skip</button>
+        </div>`;
+
+      // For pure textarea mode — attach keyboard shortcuts
+      const ta = document.getElementById('qaAnswer');
+      if (ta && !hasOptions) {
+        ta.focus();
+        ta.addEventListener('keydown', e => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); qaNext(); }
+          if (e.key === 'Tab') { e.preventDefault(); qaSkip(); }
+        });
+      }
+    }
+
+    function toggleChip(el, multi) {
+      if (!multi) {
+        // Single select — deselect all others
+        document.querySelectorAll('#qaChips .qa-chip').forEach(c => c.classList.remove('selected'));
+      }
+      el.classList.toggle('selected');
+    }
+
+    function toggleFreetext() {
+      const area = document.getElementById('qaFreetextArea');
+      if (area) {
+        area.classList.toggle('show');
+        if (area.classList.contains('show')) {
+          const ta = area.querySelector('textarea');
+          if (ta) ta.focus();
+        }
+      }
+    }
+
+    function collectCurrentAnswer(q) {
+      const hasOptions = q.options && q.options.length > 0;
+      if (hasOptions) {
+        // Collect selected chips
+        const chips = document.querySelectorAll('#qaChips .qa-chip.selected');
+        const chipAnswers = Array.from(chips).map(c => c.dataset.value).filter(Boolean);
+        // Also collect any free-text
+        const ta = document.getElementById('qaAnswer');
+        const freeText = ta ? ta.value.trim() : '';
+        // Merge: chips first, then freetext if provided
+        const parts = [...chipAnswers];
+        if (freeText) parts.push(freeText);
+        // Save freetext separately so Back can restore it
+        if (!builderState.freetextAnswers) builderState.freetextAnswers = {};
+        builderState.freetextAnswers[q.id] = freeText;
+        return parts.join(', ');
+      } else {
+        const ta = document.getElementById('qaAnswer');
+        return ta ? ta.value.trim() : '';
+      }
+    }
+
+    function qaNext() {
+      const q = builderState.questions[builderState.qIndex];
+      if (q) builderState.answers[q.id] = collectCurrentAnswer(q);
+      builderState.qIndex++;
+      renderCurrentQuestion();
+    }
+
+    function qaBack() {
+      if (builderState.qIndex > 0) builderState.qIndex--;
+      renderCurrentQuestion();
+    }
+
+    function qaSkip() {
+      builderState.qIndex++;
+      renderCurrentQuestion();
+    }
+
+    // ── Step 2: PRD ──────────────────────────────
+
+    async function submitAnswers() {
+      setBuilderStep(2);
+      document.getElementById('builderHeaderTitle').textContent = 'Generating PRD…';
+      document.getElementById('builderHeaderSub').textContent = 'Crafting your product requirements';
+      document.getElementById('builderBody').innerHTML = `
+        <div style="text-align:center;padding:40px 0;color:var(--text3);">
+          <div style="font-size:32px;margin-bottom:12px;animation:spin 1s linear infinite;display:inline-block;"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg></div>
+          <div style="font-size:13px;">Synthesizing your answers into a PRD…</div>
+        </div>`;
+
+      try {
+        const res = await fetch('/build/prd', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: builderState.prompt, answers: builderState.answers }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'PRD generation failed');
+        builderState.prd = data.prd;
+        renderPRD(data.prd);
+      } catch (err) {
+        toast('Error: ' + err.message, 'error');
+        closeBuilder();
+      }
+    }
+
+    function renderPRD(prd) {
+      setBuilderStep(2);
+      document.getElementById('builderHeaderTitle').textContent = prd.name || 'PRD Review';
+      document.getElementById('builderHeaderSub').textContent = prd.tagline || 'Review and edit before building';
+
+      const featuresHTML = (prd.features || []).map(f =>
+        `<li>${escHtml(f)}</li>`
+      ).join('');
+
+      const pagesHTML = (prd.pages || []).map(p =>
+        `<span class="prd-chip">${escHtml(p)}</span>`
+      ).join('');
+
+      const outHTML = (prd.out_of_scope || []).map(o =>
+        `<span class="prd-chip" style="opacity:.6;">${escHtml(o)}</span>`
+      ).join('');
+
+      let dataModelHTML = '';
+      if (prd.data_model && typeof prd.data_model === 'object') {
+        for (const [entity, fields] of Object.entries(prd.data_model)) {
+          const fieldsHTML = (fields || []).map(f =>
+            `<span class="prd-field-tag">${escHtml(f)}</span>`
+          ).join('');
+          dataModelHTML += `
+            <div class="prd-entity">
+              <div class="prd-entity-name">${escHtml(entity)}</div>
+              <div class="prd-entity-fields">${fieldsHTML}</div>
+            </div>`;
+        }
+      }
+
+      document.getElementById('builderBody').innerHTML = `
+        <div class="prd-edit-hint"><svg style="vertical-align:middle" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg> Click any field to edit it before building.</div>
+
+        <div class="prd-section">
+          <div class="prd-section-label">Target Users</div>
+          <div class="prd-section-value" contenteditable="true" id="prd-users">${escHtml(prd.target_users || '')}</div>
+        </div>
+
+        <div class="prd-section">
+          <div class="prd-section-label">Core Features</div>
+          <div class="prd-section-value">
+            <ul class="prd-features-list">${featuresHTML}</ul>
+          </div>
+        </div>
+
+        <div class="prd-section">
+          <div class="prd-section-label">Pages & Routes</div>
+          <div class="prd-section-value">${pagesHTML}</div>
+        </div>
+
+        ${prd.ui_note ? `<div class="prd-section">
+          <div class="prd-section-label">UI / Style Notes</div>
+          <div class="prd-section-value" contenteditable="true" id="prd-ui">${escHtml(prd.ui_note)}</div>
+        </div>` : ''}
+
+        ${dataModelHTML ? `<div class="prd-section">
+          <div class="prd-section-label">Data Model</div>
+          <div class="prd-section-value">${dataModelHTML}</div>
+        </div>` : ''}
+
+        ${outHTML ? `<div class="prd-section">
+          <div class="prd-section-label">Out of Scope (v1)</div>
+          <div class="prd-section-value">${outHTML}</div>
+        </div>` : ''}
+
+        <div style="display:flex;gap:10px;margin-top:8px;">
+          <button class="btn btn-ghost" onclick="() => { builderState.qIndex = builderState.questions.length - 1; renderCurrentQuestion(); }">← Back</button>
+          <button class="btn" style="background:#6B3E1A;box-shadow:0 4px 16px rgba(107,62,26,0.4);"
+            onclick="triggerScaffold()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+            Build it!
+          </button>
+        </div>`;
+    }
+
+    // ── Step 3: Building ─────────────────────────
+
+    async function triggerScaffold() {
+      // Capture any inline edits
+      const usersEl = document.getElementById('prd-users');
+      const uiEl = document.getElementById('prd-ui');
+      if (usersEl) builderState.prd.target_users = usersEl.textContent.trim();
+      if (uiEl) builderState.prd.ui_note = uiEl.textContent.trim();
+
+      setBuilderStep(3);
+      document.getElementById('builderHeaderTitle').textContent = `Building ${builderState.prd.name}…`;
+      document.getElementById('builderHeaderSub').textContent = 'Generating code and spinning up sandbox';
+
+      document.getElementById('builderBody').innerHTML = `
+        <div class="build-progress-log" id="buildLog">Starting scaffolder…
+</div>
+        <div class="build-ready-banner" id="buildReadyBanner">
+          <div class="build-ready-icon"></div>
+          <div class="build-ready-text">
+            <div class="build-ready-title" id="buildReadyTitle">App is ready!</div>
+            <div class="build-ready-sub" id="buildReadySub"></div>
+          </div>
+          <button class="btn" style="background:#6B3E1A;"
+            id="openIDEBtn" onclick="openBuiltApp()">
+            Open IDE →
+          </button>
+        </div>`;
+
+      try {
+        const res = await fetch('/build/scaffold', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prd: builderState.prd }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Scaffold failed');
+
+        builderState.container = data.container;
+        builderState.buildId = data.build_id;
+        builderState.url = data.url;
+
+        appendBuildLog('Scaffold request accepted. Generating code…');
+        pollBuildStatus();
+        pollBuildLogs();
+        loadBuildHistory();
+      } catch (err) {
+        appendBuildLog('Error: ' + err.message, 'error');
+        toast('Build failed: ' + err.message, 'error');
+      }
+    }
+
+    function appendBuildLog(msg, type = '') {
+      const logEl = document.getElementById('buildLog');
+      if (!logEl) return;
+      const now = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      logEl.innerHTML += `<div class="build-log-line ${type}"><span class="build-log-time">${now}</span><span class="build-log-msg">${escHtml(msg)}</span></div>`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    let buildPollTimer = null;
+    let logPollTimer = null;
+    let lastLogLen = 0;
+
+    function pollBuildStatus() {
+      buildPollTimer = setInterval(async () => {
+        try {
+          const res = await fetch(`/sandbox/status?container=${builderState.container}`);
+          if (!res.ok) return;
+          const d = await res.json();
+          if (d.status === 'running') {
+            clearInterval(buildPollTimer);
+            clearInterval(logPollTimer);
+            setBuilderStep(4);
+            document.getElementById('builderHeaderTitle').textContent = `${builderState.prd.name} is Live!`;
+            document.getElementById('builderHeaderSub').textContent = d.url;
+            const banner = document.getElementById('buildReadyBanner');
+            if (banner) {
+              banner.classList.add('show');
+              document.getElementById('buildReadySub').textContent = d.url;
+            }
+            loadSandboxes();
+            loadBuildHistory();
+            toast(`${builderState.prd.name} is ready!`, 'success');
+          }
+        } catch (_) { }
+      }, 3000);
+    }
+
+    function pollBuildLogs() {
+      logPollTimer = setInterval(async () => {
+        try {
+          const res = await fetch(`/logs/${builderState.container}`);
+          if (!res.ok) return;
+          const text = await res.text();
+          const lines = text.split('\n').filter(l => l.trim());
+          for (let i = lastLogLen; i < lines.length; i++) {
+            const line = lines[i];
+            const type = line.includes('Error') || line.includes('failed') ? 'error'
+              : line.includes('ready') || line.includes('Ready') ? 'success' : '';
+            appendBuildLog(line.replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, ''), type);
+          }
+          lastLogLen = lines.length;
+        } catch (_) { }
+      }, 2000);
+    }
+
+    function openBuiltApp() {
+      if (!builderState.container) return;
+      const port = builderState.url ? builderState.url.split(':').pop() : '';
+      closeBuilder();
+      setTimeout(() => {
+        initIDE(builderState.container, `generated:${builderState.prd.name}`, port);
+      }, 150);
+    }
+
+    // ── Build History ─────────────────────────────
+
+    async function loadBuildHistory() {
+      try {
+        const res = await fetch('/build/history');
+        if (!res.ok) return;
+        const records = await res.json();
+        if (!Array.isArray(records) || records.length === 0) return;
+
+        document.getElementById('buildHistoryCard').style.display = '';
+        document.getElementById('buildHistoryCount').textContent = records.length;
+
+        const list = document.getElementById('buildHistoryList');
+        list.innerHTML = records.map(r => {
+          const statusDot = r.status === 'ready' ? 'build-status-dot-ready'
+            : r.status === 'error' ? 'build-status-dot-error'
+              : 'build-status-dot-building';
+          const timeAgo = formatTimeAgo(r.createdAt);
+          return `
+            <div class="build-history-item">
+              <div class="build-history-icon"><svg style="vertical-align:middle" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg></div>
+              <div class="build-history-info">
+                <div class="build-history-name">${escHtml(r.appName || 'Untitled App')}</div>
+                <div class="build-history-meta">${timeAgo} · ${escHtml(r.status)}</div>
+              </div>
+              <div class="${statusDot}"></div>
+              ${r.status === 'ready' && r.container ? `
+                <button class="btn btn-sm btn-success" onclick="initIDE('${r.container}','generated:${escHtml(r.appName)}','${(r.url || '').split(':').pop()}')">
+                  IDE
+                </button>` : ''}
+            </div>`;
+        }).join('');
+      } catch (_) { }
+    }
+
+    function formatTimeAgo(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      const secs = Math.floor((Date.now() - d) / 1000);
+      if (secs < 60) return 'just now';
+      if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+      return `${Math.floor(secs / 3600)}h ago`;
+    }
+
+    function escHtml(s) {
+      if (!s) return '';
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
     // Initial load
     loadSandboxes();
+    loadBuildHistory();
     setInterval(loadSandboxes, 5000);
+    setInterval(loadBuildHistory, 10000);
   </script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+  <!-- Load xterm (UMD) BEFORE Monaco's AMD loader. Monaco's loader.min.js
+       installs a global AMD define(); if xterm loads after it, xterm's UMD
+       wrapper registers as an anonymous AMD module instead of setting
+       window.Terminal — which threw "Can only have one anonymous define call
+       per script file" and left the terminal (and FitAddon) undefined. Loading
+       xterm first makes it attach to window normally; Monaco's loader then only
+       governs Monaco's own modules. -->
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
   <script src="/ide.js"></script>
   <script src="/ide-agent.js"></script>
 </body>
