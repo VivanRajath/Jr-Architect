@@ -223,7 +223,12 @@ function makeSearchCodeTool(dir) {
 // Clear file-modification intent → agentic/edit path. Everything else defaults
 // to the safe, reliable read-only Ask mode. Deliberately excludes ambiguous
 // verbs like "make"/"generate"/"build" (as in "make a summary").
-const EDIT_INTENT = /\b(add|create|write|edit|change|modif(?:y|ies|ied)|fix|update|refactor|implement|rename|delete|remove|replace|insert|append|scaffold|install|integrate|rewrite|convert|migrate|set up|setup|wire up)\b/i;
+const EDIT_INTENT = /\b(add|create|write|edit|change|modif(?:y|ies|ied)|fix|update|refactor|implement|rename|rebrand|relabel|retitle|reword|delete|remove|replace|insert|append|scaffold|install|integrate|rewrite|convert|migrate|set up|setup|wire up)\b/i;
+
+// Imperative "make it look…" verbs. On their own these are ambiguous ("make a
+// summary" is a question), so they only count as an edit when paired with a
+// style/UI target — e.g. "make the ui dark red", "turn the theme purple".
+const EDIT_IMPERATIVE = /\b(make|turn|give|switch|apply|paint|recolou?r|restyle|redesign)\b/i;
 
 const ASK_STOPWORDS = new Set([
   "the", "a", "an", "of", "to", "in", "on", "is", "are", "and", "or", "how", "what",
@@ -285,20 +290,37 @@ async function buildAskPrompt(dir, message) {
     ? `Relevant code found by searching the repository${terms.length ? ` for: ${terms.join(", ")}` : ""}:\n\n<search_results>\n${snippets.join("\n")}\n</search_results>\n\n`
     : "";
 
-  // For overview/summary questions, inject the actual UI entry file so the model
-  // can describe real code instead of guessing from the map alone.
-  let entryBlock = "";
-  if (/\b(summar|overview|understand|explain|architecture|structure|how does|what is this|walk me through)\b/i.test(message)) {
-    const entry = firstExistingFile(dir, EDIT_ENTRY_CANDIDATES);
-    if (entry) {
-      const body = readFileCapped(join(dir, entry), 3500);
-      if (body) entryBlock = `Contents of the main UI entry \`${entry}\`:\n\n<file path="${entry}">\n${body}\n</file>\n\n`;
+  // For overview/summary questions, feed the model REAL substance so it can
+  // synthesize instead of hedging: the repo map plus the entry, layout, and a
+  // couple of top-level files it can actually read here.
+  const isOverview = /\b(summar|overview|understand|explain (?:the|this)|architecture|structure|how does|what is this|what does this|walk me through)\b/i.test(message);
+  let contextBlock = "";
+  if (isOverview) {
+    const wanted = [
+      firstExistingFile(dir, ["knowledge/repo-map.md"]),
+      firstExistingFile(dir, EDIT_ENTRY_CANDIDATES),
+      firstExistingFile(dir, ["app/layout.tsx", "src/app/layout.tsx", "src/main.tsx", "src/index.tsx"]),
+      firstExistingFile(dir, ["README.md", "package.json"]),
+    ].filter((p, i, a) => p && a.indexOf(p) === i);
+    const parts = [];
+    for (const p of wanted) {
+      const body = readFileCapped(join(dir, p), 3000);
+      if (body) parts.push(`<file path="${p}">\n${body}\n</file>`);
     }
+    if (parts.length) contextBlock = `Key project files:\n\n${parts.join("\n\n")}\n\n`;
   }
 
+  const instruction = isOverview
+    ? `Write a concrete summary of what this project IS and DOES, using the files above. ` +
+      `Cover: what the app does, its stack/framework, the main screens or sections, and how the code is organized. ` +
+      `Write it NOW in 4-8 sentences. Do NOT say you would look at files, do NOT say you need more information, ` +
+      `do NOT describe your process — just give the summary. Do not invent files or features.`
+    : `Be concrete and answer directly, citing \`file:line\` for specifics. ` +
+      `If a needed file isn't shown, name it briefly, but still give your best answer from what's here. Do not invent files or code.`;
+
   return (
-    `${searchBlock}${entryBlock}You are answering a question about THIS repository. Use the repository map already in your context, the file contents, and the search results above. ` +
-    `Be concrete: cite \`file:line\` for specifics. If a file you need isn't shown, name it and say what you'd look for. Do not invent files or code.\n\n` +
+    `${searchBlock}${contextBlock}You are answering a question about THIS repository, using the repository map, ` +
+    `the file contents, and the search results above. ${instruction}\n\n` +
     `Question: ${message}`
   );
 }
@@ -309,12 +331,31 @@ async function buildAskPrompt(dir, message) {
 //   "ask"   — toolless Q&A (retrieve-then-generate)
 //   "edit"  — toolless code change (generate SEARCH/REPLACE, backend applies)
 //   "agent" — legacy agentic loop (model calls tools itself)
+// Confident question openers — clearly read-only, so no LLM router call needed.
+const ASK_OPENER = /^\s*(what|why|how|where|which|who|when|whose|is|are|was|were|does|do|did|should|would|explain|summar(?:y|ise|ize|ising|izing)|describe|overview|list|walk me|tell me|show me|give me (?:a|an) (?:summary|overview|explanation))\b/i;
+
+// Fast heuristic router. Returns "edit" | "ask" | null, where null means "not
+// obvious — ask the model" (handled by decideMode). Kept as a pure function so
+// it's unit-testable and free (no LLM call) for the common, unambiguous cases.
+function heuristicMode(message) {
+  const m = (message || "").trim();
+  if (!m) return "ask";
+  // Obvious change: an edit verb, or an imperative styling command that names a
+  // style/UI target ("make the ui dark red") — but not a bare "make a summary".
+  if (EDIT_INTENT.test(m) || (EDIT_IMPERATIVE.test(m) && EDIT_STYLE_INTENT.test(m))) return "edit";
+  // Obvious question.
+  if (ASK_OPENER.test(m)) return "ask";
+  return null;
+}
+
+// Sync router used by tests and as the confident fast-path. Ambiguous messages
+// default to the safe read-only Ask mode here; decideMode() upgrades them with
+// the LLM Orchestrator at request time.
 function resolveTurnMode(explicit, message) {
   if (explicit === "ask" || explicit === "edit" || explicit === "agent") return explicit;
-  if (EDIT_INTENT.test(message)) {
-    return process.env.AGENT_EDIT_STRATEGY === "agentic" ? "agent" : "edit";
-  }
-  return "ask";
+  const mode = heuristicMode(message) || "ask";
+  if (mode === "edit" && process.env.AGENT_EDIT_STRATEGY === "agentic") return "agent";
+  return mode;
 }
 
 // Shared stream+retry loop for one turn. Streams delta/tool/file_changed frames,
@@ -366,10 +407,13 @@ async function streamTurn(ws, queryOptions, model) {
 }
 
 // ── Edit mode: generate-then-apply (toolless code changes) ───────────────────
-// Editing needs a write, but llama-3.3 can't reliably CALL a write tool. So the
-// model never calls a tool: the backend reads the relevant files, asks the model
-// to reply with SEARCH/REPLACE blocks (plain text it's good at), then parses and
-// applies them itself. Mirror of Ask mode, for changes instead of questions.
+// Editing needs a write, but llama-3.3 can't reliably CALL a write tool — and it
+// also can't reliably quote exact lines + emit conflict markers (SEARCH/REPLACE
+// garbles into unparseable junk). So the model never calls a tool AND never
+// patches: the backend picks the right small file(s), the model returns each
+// changed file's COMPLETE new contents in one clean block, and the backend
+// overwrites. Whole-file rewrite is what a weak model does most reliably, and the
+// closing delimiter doubles as a truncation guard (a cut-off reply won't parse).
 
 const EDIT_ENTRY_CANDIDATES = [
   "app/page.tsx", "app/page.jsx", "app/page.js", "src/app/page.tsx",
@@ -384,8 +428,50 @@ const EDIT_STYLE_CANDIDATES = [
   "tailwind.config.ts", "tailwind.config.js",
 ];
 const EDIT_STYLE_INTENT = /\b(theme|dark|light|colou?r|style|styling|css|font|background|ui|layout|design|spacing|padding|margin)\b/i;
-const EDIT_MAX_FILES = 4;
-const EDIT_MAX_FILE_CHARS = 5000;
+// Library/generated boilerplate is never a good edit target even when a keyword
+// search matches it — e.g. shadcn's components/ui/*.tsx contain words like
+// "theme"/"color" but aren't where YOUR page's look is controlled.
+const EDIT_SKIP_PATH = /(?:^|\/)(?:components\/ui|node_modules|\.next|dist|build|out|coverage|vendor|\.git)\//i;
+const EDIT_MAX_FILES = 5;      // how many files to *show* the model as context
+const EDIT_MAX_FILE_CHARS = 6000;
+// A file we're willing to have the model rewrite whole. Kept under the output
+// budget (AGENT_MAX_OUTPUT_TOKENS) so a full rewrite can't get truncated.
+const WHOLE_FILE_MAX_CHARS = 4200;
+const EDIT_MAX_EDITABLE = 3;   // don't offer more than this many rewritable files
+
+// ── Layered agentic edit pipeline (gitagent standard) ────────────────────────
+// The gitagent "repo-sandbox-agent" spec routes a code request through squads:
+//   Orchestrator → Complexity Classifier → Guardrails → Developer.
+// We mirror that here as explicit layers so the engine *decides how to code*
+// (scope, safety) instead of just answering. Each layer's decision is streamed
+// to the chat as a step, so the pipeline reads as agentic.
+
+// Layer: Complexity Classifier (the "Code Editor Squad" tiered dispatch).
+// junior = one focused file; senior = a few related files (multi-file wording).
+function classifyEditComplexity(message, availableFiles) {
+  const senior = /\b(refactor|across|every|all (?:the )?(?:files|pages|components)|multiple files|throughout|whole app|entire app|everywhere|migrate)\b/i.test(message);
+  if (senior && availableFiles > 1) {
+    return { tier: "senior", maxFiles: Math.min(EDIT_MAX_EDITABLE, availableFiles), label: "senior dev · multi-file change" };
+  }
+  return { tier: "junior", maxFiles: Math.min(2, availableFiles), label: "junior dev · focused change" };
+}
+
+// Layer: Guardrails (the "Guardrails Squad"). Blocks edits that touch sensitive
+// or generated files, or that would inject a credential into the codebase.
+const GUARD_SENSITIVE_PATH = /(?:^|\/)(?:\.env(?:\..*)?|.*\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|(?:^|\/)\.git\//i;
+const GUARD_SECRET = /sk-[A-Za-z0-9]{16,}|gsk_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+
+// Partition parsed edit blocks into what's safe to apply and what to refuse.
+function guardEditBlocks(blocks) {
+  const allowed = [];
+  const blocked = [];
+  for (const b of blocks) {
+    if (GUARD_SENSITIVE_PATH.test(b.path)) { blocked.push({ ...b, reason: "sensitive/generated file" }); continue; }
+    if (GUARD_SECRET.test(b.content)) { blocked.push({ ...b, reason: "would introduce a secret" }); continue; }
+    allowed.push(b);
+  }
+  return { allowed, blocked };
+}
 
 // Read a file, truncating to maxChars (keeps the request under the token budget).
 function readFileCapped(abs, maxChars) {
@@ -405,15 +491,29 @@ function firstExistingFile(dir, candidates) {
   return "";
 }
 
-// Choose which files to hand the model for an edit: files matching the request's
-// search terms, plus the UI entry, plus style files for look-and-feel requests.
+// Choose which files to hand the model for an edit. Priority is deliberate: the
+// UI entry and style files come FIRST (they're the real targets for page/look
+// changes), and keyword-matched files only fill the remaining slots — so a search
+// hit on library boilerplate (e.g. components/ui/chart.tsx matching "theme")
+// can't crowd out the file you actually meant. Each file is tagged `whole` if it's
+// small enough to safely rewrite in full.
 async function gatherEditFiles(dir, message) {
   const chosen = [];
   const add = (p) => {
-    if (p && !chosen.includes(p) && existsSync(join(dir, p)) && chosen.length < EDIT_MAX_FILES) chosen.push(p);
+    if (!p || chosen.includes(p)) return;
+    if (EDIT_SKIP_PATH.test(p)) return;              // never edit library boilerplate
+    if (!existsSync(join(dir, p))) return;
+    if (chosen.length >= EDIT_MAX_FILES) return;
+    chosen.push(p);
   };
 
-  // 1. Files that mention the request's key terms.
+  // 1. The UI entry point — the most common target for a UI/page change.
+  add(firstExistingFile(dir, EDIT_ENTRY_CANDIDATES));
+  // 2. Style files, for look-and-feel requests.
+  if (EDIT_STYLE_INTENT.test(message)) {
+    for (const c of EDIT_STYLE_CANDIDATES) add(c);
+  }
+  // 3. Fill any remaining slots with files that mention the request's key terms.
   const tool = makeSearchCodeTool(dir);
   for (const term of extractSearchTerms(message)) {
     if (chosen.length >= EDIT_MAX_FILES) break;
@@ -429,50 +529,77 @@ async function gatherEditFiles(dir, message) {
       if (p) add(p);
     }
   }
-  // 2. The UI entry point (common target for "change the UI").
-  add(firstExistingFile(dir, EDIT_ENTRY_CANDIDATES));
-  // 3. Style files for look-and-feel requests.
-  if (EDIT_STYLE_INTENT.test(message)) {
-    for (const c of EDIT_STYLE_CANDIDATES) add(c);
-  }
 
-  return chosen.map((p) => ({ path: p, content: readFileCapped(join(dir, p), EDIT_MAX_FILE_CHARS) }));
+  return chosen.map((p) => {
+    const content = readFileCapped(join(dir, p), EDIT_MAX_FILE_CHARS);
+    const whole = content.length > 0 && content.length <= WHOLE_FILE_MAX_CHARS && !content.includes("…truncated…");
+    return { path: p, content, whole };
+  });
 }
 
-// The generate-then-apply prompt. Strict format so parsing is reliable.
-function buildEditPrompt(files, message) {
-  const fileBlocks = files
-    .map((f) => `<file path="${f.path}">\n${f.content}\n</file>`)
-    .join("\n\n");
+// The whole-file rewrite prompt. Input files and expected output use the SAME
+// delimiter, so the weak model mirrors the format correctly (the old bug: showing
+// `<file path=...>` but asking for `<file>path</file>` made it copy the wrong one).
+function buildEditPrompt(files, message, cls) {
+  const wrap = (f) => `=== FILE: ${f.path} ===\n${f.content}\n=== END FILE ===`;
+  const fileBlocks = files.map(wrap).join("\n\n");
+  const scopeLine = cls && cls.tier === "junior"
+    ? `- Scope: this is a FOCUSED change — edit the single most relevant file (at most ${files.length}).\n`
+    : `- Scope: edit only the file(s) that must change to satisfy the request.\n`;
   return (
-    `You are editing THIS repository. Current contents of the relevant files:\n\n${fileBlocks}\n\n` +
-    `Apply the requested change by replying with ONE OR MORE edit blocks in EXACTLY this format and NOTHING else:\n\n` +
-    `<file>relative/path</file>\n<<<<<<< SEARCH\n{lines copied verbatim from the file above}\n=======\n{replacement lines}\n>>>>>>> REPLACE\n\n` +
+    `You are the Developer layer of a coding agent. You DO the edit — you never ` +
+    `describe it. Here are the current files:\n\n${fileBlocks}\n\n` +
+    `Apply the requested change by returning, for EACH file you change, its COMPLETE ` +
+    `updated contents wrapped EXACTLY like the files above:\n\n` +
+    `=== FILE: relative/path ===\n{the ENTIRE file, with your change applied}\n=== END FILE ===\n\n` +
     `Rules:\n` +
-    `- SEARCH must match the file contents EXACTLY, including indentation.\n` +
-    `- Keep each block minimal — only the lines that change, with a little surrounding context if needed to be unique.\n` +
-    `- You may output multiple blocks across multiple files.\n` +
-    `- To create a NEW file, use an empty SEARCH section.\n` +
-    `- Output ONLY edit blocks. No prose, no explanation, no code fences.\n\n` +
+    `- Return the WHOLE file, not a snippet — include every line, changed or not.\n` +
+    `- Change ONLY what the request asks for; keep everything else exactly as-is.\n` +
+    `- Do NOT invent features, extra options, comments, or placeholder content.\n` +
+    scopeLine +
+    `- Only edit files shown above. Do not touch any other file.\n` +
+    `- NEVER answer with prose like "I would…" or "First I would look at…". ` +
+    `If you cannot produce the file, output nothing.\n` +
+    `- Output ONLY FILE blocks — no explanation, no code fences.\n\n` +
     `Change requested: ${message}`
   );
 }
 
-// Parse Aider-style SEARCH/REPLACE blocks out of the model's reply.
+// If the model wrapped a file body in a ```lang … ``` fence, strip it.
+function stripFences(body) {
+  const t = body.replace(/^\s+|\s+$/g, "");
+  const m = t.match(/^```[^\n]*\r?\n([\s\S]*?)\r?\n?```$/);
+  return m ? m[1] : body;
+}
+
+// Parse whole-file blocks out of the model's reply. Accepts the `=== FILE: … ===`
+// delimiter we ask for, and also the `<file path="…">…</file>` form the model
+// tends to fall back to. A block only counts if it's properly CLOSED — so a reply
+// truncated by the output cap simply won't parse (no half-written file gets saved).
 function parseEditBlocks(text) {
   const blocks = [];
-  const re = /<file>\s*(.+?)\s*<\/file>\s*<{3,}\s*SEARCH\s*\r?\n([\s\S]*?)\r?\n?={3,}\s*\r?\n([\s\S]*?)\r?\n?>{3,}\s*REPLACE/g;
+  const seen = new Set();
+  const push = (path, body) => {
+    const p = (path || "").trim().replace(/^["']|["']$/g, "");
+    const content = stripFences(body);
+    if (!p || seen.has(p) || !content.trim()) return;
+    seen.add(p);
+    blocks.push({ path: p, content });
+  };
+  const reA = /={3,}\s*FILE:\s*(.+?)\s*={3,}\s*\r?\n([\s\S]*?)\r?\n?={3,}\s*END\s*FILE\s*={3,}/gi;
   let m;
-  while ((m = re.exec(text)) !== null) {
-    blocks.push({ path: m[1].trim(), search: m[2], replace: m[3] });
-  }
+  while ((m = reA.exec(text)) !== null) push(m[1], m[2]);
+  const reB = /<file\s+path=["']([^"']+)["']\s*>\r?\n([\s\S]*?)\r?\n?<\/file>/gi;
+  while ((m = reB.exec(text)) !== null) push(m[1], m[2]);
   return blocks;
 }
 
-// Apply parsed blocks to disk. Path-safe (stays inside dir). Exact match first,
-// then a whitespace-tolerant fallback. Returns per-block status for the summary.
-function applyEditBlocks(dir, blocks) {
+// Apply whole-file blocks to disk. Path-safe (stays inside dir). Only overwrites
+// files we actually showed the model (or brand-new files) — so a hallucinated
+// path can't clobber unrelated code. Returns per-file status for the summary.
+function applyEditBlocks(dir, blocks, offered) {
   const root = resolve(dir);
+  const known = new Set((offered || []).map((f) => f.path));
   const results = [];
   for (const b of blocks) {
     const abs = resolve(dir, b.path);
@@ -480,46 +607,30 @@ function applyEditBlocks(dir, blocks) {
       results.push({ path: b.path, status: "rejected (outside workspace)" });
       continue;
     }
-    // New file: empty SEARCH.
-    if (b.search.trim() === "") {
-      try {
-        writeFileSync(abs, b.replace);
-        results.push({ path: b.path, status: "created" });
-      } catch (e) {
-        results.push({ path: b.path, status: "error: " + e.message });
-      }
+    const existed = existsSync(abs);
+    if (existed && known.size && !known.has(b.path)) {
+      results.push({ path: b.path, status: "skipped (not offered for edit)" });
       continue;
     }
-    let content;
     try {
-      content = readFileSync(abs, "utf8");
-    } catch {
-      results.push({ path: b.path, status: "file not found" });
-      continue;
-    }
-    if (content.includes(b.search)) {
-      writeFileSync(abs, content.replace(b.search, b.replace));
-      results.push({ path: b.path, status: "edited" });
-      continue;
-    }
-    // Whitespace-tolerant fallback: match ignoring leading/trailing space per line.
-    const norm = (s) => s.split(/\r?\n/).map((l) => l.trim()).join("\n");
-    const idx = norm(content).indexOf(norm(b.search));
-    if (idx >= 0 && norm(b.search).length > 0) {
-      // Rebuild by locating the first line of SEARCH in the raw content.
-      const firstLine = b.search.split(/\r?\n/).find((l) => l.trim());
-      const pos = firstLine ? content.indexOf(firstLine.trim()) : -1;
-      if (pos >= 0) {
-        const lineStart = content.lastIndexOf("\n", pos) + 1;
-        const searchLineCount = b.search.split(/\r?\n/).length;
-        const after = content.slice(lineStart).split(/\r?\n/);
-        const tail = after.slice(searchLineCount).join("\n");
-        writeFileSync(abs, content.slice(0, lineStart) + b.replace + (tail ? "\n" + tail : ""));
-        results.push({ path: b.path, status: "edited (fuzzy)" });
+      const prev = existed ? readFileSync(abs, "utf8") : null;
+      const next = b.content.endsWith("\n") ? b.content : b.content + "\n";
+      if (prev !== null && prev === next) {
+        results.push({ path: b.path, status: "unchanged" });
         continue;
       }
+      writeFileSync(abs, next);
+      // Carry before/after so the UI can show a diff on click (cap the payload).
+      const small = (s) => (s != null && s.length <= 60000);
+      results.push({
+        path: b.path,
+        status: existed ? "edited" : "created",
+        before: small(prev) ? (prev || "") : null,
+        after: small(next) ? next : null,
+      });
+    } catch (e) {
+      results.push({ path: b.path, status: "error: " + e.message });
     }
-    results.push({ path: b.path, status: "SEARCH text not found — skipped" });
   }
   return results;
 }
@@ -545,47 +656,127 @@ async function collectTurn(queryOptions, model) {
   }
 }
 
-// Run one Edit-mode turn over a WebSocket: gather files → ask for SEARCH/REPLACE
-// → apply → report. The model never calls a tool, so it can't garble a call.
-async function runEditModeWS(ws, dir, message, model) {
-  const files = await gatherEditFiles(dir, message);
-  if (files.length === 0) {
-    ws.send(JSON.stringify({ type: "delta", content: "I couldn't find the files to change for that request. Try naming a file or feature, e.g. \"make the header in app/page.tsx dark\"." }));
-    ws.send(JSON.stringify({ type: "complete", content: "" }));
-    return;
+// LLM Orchestrator: classify an ambiguous message as "edit" vs "ask" with a
+// single cheap toolless call. This is what makes routing intelligent beyond the
+// keyword heuristic — "rebrand the heading" or "swap the hero copy" have no edit
+// verb but clearly change files. Any failure falls back to the safe Ask mode.
+async function classifyIntentLLM(message, dir, model) {
+  const prompt =
+    `You route messages for a coding agent. Decide whether the user wants to CHANGE ` +
+    `files in the project (rename, rebrand, restyle, add, remove, fix, reword, move ` +
+    `things) or just get an ANSWER (explain, summarize, locate, understand — no file ` +
+    `changes).\nReply with exactly one word: edit OR ask.\n\nMessage: ${message}`;
+  try {
+    const { text } = await collectTurn({
+      prompt, dir, model, replaceBuiltinTools: true, allowedTools: [],
+      constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+    }, model);
+    return /\bedit\b/i.test(text || "") ? "edit" : "ask";
+  } catch {
+    return "ask";
   }
+}
+
+// The Orchestrator layer. Explicit UI mode wins; then the free heuristic; then,
+// for genuinely ambiguous messages, the LLM classifier. Applies the agentic
+// escape hatch for edits.
+async function decideMode(explicit, message, dir, model) {
+  if (explicit === "ask" || explicit === "edit" || explicit === "agent") return explicit;
+  let mode = heuristicMode(message);
+  if (mode === null) mode = await classifyIntentLLM(message, dir, model);
+  if (mode === "edit" && process.env.AGENT_EDIT_STRATEGY === "agentic") return "agent";
+  return mode;
+}
+
+// The layered edit pipeline (gitagent squads): Orchestrator → Classifier →
+// Guardrails → Developer → Guardrails(apply). `onStep(name, detail)` receives each
+// layer's decision so callers can stream it. Returns a structured outcome; the
+// model never calls a tool, so it can't garble a call — the layers do the work.
+async function runEditPipeline(dir, message, model, onStep) {
+  const step = (name, detail) => { if (onStep) onStep(name, detail); };
+
+  // Orchestrator already routed us here (mode=edit).
+  step("Orchestrator", "route → edit");
+
+  // Gather candidate files, keep the ones small enough to rewrite whole.
+  const gathered = await gatherEditFiles(dir, message);
+  const whole = gathered.filter((f) => f.whole);
+  if (whole.length === 0) {
+    return { ok: false, reason: gathered.length ? "too-large" : "not-found" };
+  }
+
+  // Complexity Classifier — decides how many files the Developer may rewrite.
+  const cls = classifyEditComplexity(message, whole.length);
+  step("Classifier", cls.label);
+  const editable = whole.slice(0, cls.maxFiles);
+
+  // Guardrails (pre) — scope is bounded to files we chose and showed the model.
+  step("Guardrails", `scope ok · ${editable.length} file(s)`);
+
+  // Developer — produce the whole-file rewrite.
+  step("Developer", `editing ${editable.map((f) => f.path).join(", ")}`);
   const { text, error } = await collectTurn({
-    prompt: buildEditPrompt(files, message),
+    prompt: buildEditPrompt(editable, message, cls),
     dir,
     model,
     replaceBuiltinTools: true,
     allowedTools: [],
     constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
   }, model);
+  if (error && !text) return { ok: false, reason: "error", error };
 
-  if (error && !text) {
+  const blocks = parseEditBlocks(text);
+  if (blocks.length === 0) return { ok: false, reason: "no-blocks", text };
+
+  // Guardrails (apply) — refuse sensitive files / secret injection.
+  const { allowed, blocked } = guardEditBlocks(blocks);
+  if (blocked.length) step("Guardrails", `blocked ${blocked.length} unsafe edit(s)`);
+
+  const results = applyEditBlocks(dir, allowed, editable);
+  for (const b of blocked) results.push({ path: b.path, status: `blocked by guardrails (${b.reason})` });
+  return { ok: true, results, cls };
+}
+
+// Build the human summary + changed-flag from a pipeline result.
+function summarizeEdit(out) {
+  if (!out.ok) {
+    if (out.reason === "too-large") return { text: "The file(s) for that change are too large to rewrite safely on the free tier. Name a specific smaller file, or split the change into a smaller step.", changed: false, error: null };
+    if (out.reason === "not-found") return { text: "I couldn't find the files to change for that request. Try naming a file or feature, e.g. \"make the header in app/page.tsx dark\".", changed: false, error: null };
+    if (out.reason === "error") return { text: "", changed: false, error: out.error };
+    if (out.reason === "no-blocks") return { text: out.text || "No changes were produced.", changed: false, error: null };
+  }
+  const changed = out.results.filter((r) => r.status === "edited" || r.status === "created");
+  const summary =
+    `Applied ${changed.length} change(s):\n` +
+    out.results.map((r) => `- \`${r.path}\` — ${r.status}`).join("\n") +
+    (changed.length ? "\n\nThe preview will reload with your changes." : "\n\nNo files changed. Try rephrasing, or name the exact file to edit.");
+  return { text: summary, changed: changed.length > 0, error: null };
+}
+
+// Run the layered edit pipeline over a WebSocket, streaming each layer as a step.
+async function runEditModeWS(ws, dir, message, model) {
+  const out = await runEditPipeline(dir, message, model, (name, detail) => {
+    ws.send(JSON.stringify({ type: "tool", content: `${name}(${detail})` }));
+  });
+  const { text, changed, error } = summarizeEdit(out);
+  if (error) {
     ws.send(JSON.stringify({ type: "error", content: error }));
     ws.send(JSON.stringify({ type: "complete", content: "" }));
     return;
   }
-
-  const blocks = parseEditBlocks(text);
-  if (blocks.length === 0) {
-    // Model didn't follow the format — surface its text so the turn isn't silent.
-    ws.send(JSON.stringify({ type: "delta", content: text || "No changes were produced." }));
-    ws.send(JSON.stringify({ type: "complete", content: "" }));
-    return;
+  if (changed) ws.send(JSON.stringify({ type: "file_changed", content: "" }));
+  // Structured, clickable summary: each file row can open a before/after diff.
+  if (out.ok && out.results) {
+    const files = out.results.map((r) => ({
+      path: r.path,
+      status: r.status,
+      before: r.before ?? null,
+      after: r.after ?? null,
+    }));
+    ws.send(JSON.stringify({ type: "edit_summary", files }));
+  } else {
+    ws.send(JSON.stringify({ type: "delta", content: text }));
   }
-
-  const results = applyEditBlocks(dir, blocks);
-  const changed = results.filter((r) => r.status === "edited" || r.status === "edited (fuzzy)" || r.status === "created");
-  if (changed.length > 0) ws.send(JSON.stringify({ type: "file_changed", content: "" }));
-
-  const summary =
-    `Applied ${changed.length} change(s):\n` +
-    results.map((r) => `- \`${r.path}\` — ${r.status}`).join("\n") +
-    (changed.length ? "\n\nThe preview will reload with your changes." : "\n\nNo edits matched — the model's SEARCH text didn't line up with the file. Try rephrasing or naming the exact file.");
-  ws.send(JSON.stringify({ type: "delta", content: summary }));
   ws.send(JSON.stringify({ type: "complete", content: "" }));
 }
 
@@ -671,31 +862,15 @@ app.post("/agent/chat", async (req, res) => {
   }
 
   const model = modelFor(provider);
-  const mode = resolveTurnMode(req.body.mode, message);
+  const mode = await decideMode(req.body.mode, message, session.dir, model);
 
-  // Edit mode: generate-then-apply, return a summary of what changed.
+  // Edit mode: the layered pipeline (Orchestrator → Classifier → Guardrails →
+  // Developer), buffered into a single summary for the REST fallback.
   if (mode === "edit") {
-    const files = await gatherEditFiles(session.dir, message);
-    if (files.length === 0) {
-      return res.json({ response: "I couldn't find the files to change for that request. Name a file or feature and try again." });
-    }
-    const { text, error } = await collectTurn({
-      prompt: buildEditPrompt(files, message),
-      dir: session.dir,
-      model,
-      replaceBuiltinTools: true,
-      allowedTools: [],
-      constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
-    }, model);
-    if (error && !text) return res.status(502).json({ error });
-    const blocks = parseEditBlocks(text);
-    if (blocks.length === 0) return res.json({ response: text || "No changes were produced." });
-    const results = applyEditBlocks(session.dir, blocks);
-    const changed = results.filter((r) => r.status.startsWith("edited") || r.status === "created");
-    return res.json({
-      response: `Applied ${changed.length} change(s):\n` + results.map((r) => `- ${r.path} — ${r.status}`).join("\n"),
-      file_changed: changed.length > 0,
-    });
+    const out = await runEditPipeline(session.dir, message, model, null);
+    const { text, changed, error } = summarizeEdit(out);
+    if (error) return res.status(502).json({ error });
+    return res.json({ response: text, file_changed: changed });
   }
 
   // Ask mode does retrieval up front and runs toolless; agentic drives tools.
@@ -795,7 +970,7 @@ wss.on("connection", (ws) => {
       }
 
       const model = modelFor(provider);
-      const mode = resolveTurnMode(payload.mode, message);
+      const mode = await decideMode(payload.mode, message, session.dir, model);
       console.log(`[agent] chat container=${targetContainer} model=${model} mode=${mode}`);
       ws.send(JSON.stringify({ type: "thinking", content: "" }));
 
@@ -838,8 +1013,9 @@ wss.on("connection", (ws) => {
 });
 
 export {
-  makeSearchCodeTool, resolveTurnMode, extractSearchTerms, buildAskPrompt,
+  makeSearchCodeTool, resolveTurnMode, heuristicMode, extractSearchTerms, buildAskPrompt,
   parseEditBlocks, applyEditBlocks, gatherEditFiles, buildEditPrompt,
+  classifyEditComplexity, guardEditBlocks,
 };
 
 // Skip binding a port when imported for tests (AGENT_NO_LISTEN=1).

@@ -206,28 +206,149 @@
   background: rgba(45, 106, 79, .22);
 }
 
-/* Input row */
+/* Edit-pipeline result: clickable changed-file list */
+.agent-edit-summary {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface2);
+  padding: 8px;
+  margin: 6px 0;
+}
+
+.agent-edit-head {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  padding: 2px 4px 6px;
+}
+
+.agent-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.agent-edit-row.clickable {
+  cursor: pointer;
+}
+
+.agent-edit-row.clickable:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.agent-edit-ico {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text3);
+}
+
+.agent-edit-ico.k-edited { color: #b07d05; }
+.agent-edit-ico.k-created { color: #2d6a4f; }
+.agent-edit-ico.k-blocked, .agent-edit-ico.k-rejected { color: #b3261e; }
+
+.agent-edit-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono, monospace);
+  color: var(--text);
+}
+
+.agent-edit-row.clickable .agent-edit-path {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 2px;
+}
+
+.agent-edit-status {
+  font-size: 10.5px;
+  color: var(--text3);
+  flex-shrink: 0;
+}
+
+.agent-edit-status.k-edited { color: #b07d05; }
+.agent-edit-status.k-created { color: #2d6a4f; }
+.agent-edit-status.k-blocked, .agent-edit-status.k-rejected { color: #b3261e; }
+
+.agent-edit-hint {
+  font-size: 10.5px;
+  color: var(--text3);
+  padding: 6px 4px 2px;
+}
+
+/* Input row — Cursor/ChatGPT-style: multiline textarea on top, controls below,
+   the whole thing framed as one composer box. */
 .agent-input-row {
   display: flex;
-  align-items: stretch;
+  flex-direction: column;
   border-top: 1px solid var(--border);
   background: var(--surface);
   flex-shrink: 0;
-  padding: 6px;
+  padding: 8px;
+  gap: 8px;
+}
+
+/* The composer wraps the textarea + controls in a single focus-ring frame. */
+.agent-input-row {
+  --composer-radius: 12px;
+}
+
+.agent-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  min-height: 40px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--composer-radius);
+  outline: none;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  transition: border-color .12s, box-shadow .12s;
+}
+
+.agent-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.agent-input::placeholder {
+  color: var(--text3);
+}
+
+.agent-input-controls {
+  display: flex;
+  align-items: center;
   gap: 6px;
 }
 
 .agent-provider-select {
   background: var(--surface2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text2);
   font-family: var(--sans);
-  font-size: 11px;
-  padding: 0 6px;
+  font-size: 11.5px;
+  padding: 6px 7px;
   outline: none;
   cursor: pointer;
-  min-width: 84px;
+  min-width: 64px;
+}
+
+/* Send is pushed to the right edge of the controls row. */
+.agent-input-controls .agent-send-btn {
+  margin-left: auto;
 }
 
 .agent-provider-select option {
@@ -235,39 +356,24 @@
   color: var(--text);
 }
 
-.agent-input-row input {
-  flex: 1;
-  min-width: 0;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  outline: none;
-  color: var(--text);
-  font-family: var(--sans);
-  font-size: 12.5px;
-  padding: 7px 10px;
-  transition: border-color .12s;
-}
-
-.agent-input-row input:focus {
-  border-color: var(--accent);
-}
-
-.agent-input-row input::placeholder {
-  color: var(--text3);
-}
-
 .agent-send-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: var(--accent);
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   color: #fff;
-  padding: 0 16px;
+  padding: 7px 16px;
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
   font-family: var(--sans);
   transition: filter .12s, opacity .12s;
+}
+
+.agent-send-btn svg {
+  transform: translateY(-.5px);
 }
 
 .agent-send-btn:hover {

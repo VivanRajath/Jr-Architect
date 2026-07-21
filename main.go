@@ -726,6 +726,58 @@ func fileDeleteHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 }
 
+type FileRenameRequest struct {
+	Container string `json:"container"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+}
+
+// fileRenameHandler moves/renames a file or folder within the workspace. Both
+// paths are resolved inside the workspace, so neither side can escape it.
+func fileRenameHandler(w http.ResponseWriter, r *http.Request) {
+	corsHeaders(w)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	var req FileRenameRequest
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err := json.Unmarshal(body, &req); err != nil {
+		jsonError(w, "invalid JSON", 400)
+		return
+	}
+	if strings.TrimSpace(req.From) == "" || strings.TrimSpace(req.To) == "" {
+		jsonError(w, "from and to required", 400)
+		return
+	}
+	mutex.Lock()
+	sb, ok := sandboxes[req.Container]
+	mutex.Unlock()
+	if !ok {
+		jsonError(w, "sandbox not found", 404)
+		return
+	}
+	fromAbs, ok1 := resolveInWorkspace(sb.Workdir, req.From)
+	toAbs, ok2 := resolveInWorkspace(sb.Workdir, req.To)
+	if !ok1 || !ok2 {
+		jsonError(w, "path outside workspace", 403)
+		return
+	}
+	if _, err := os.Stat(toAbs); err == nil {
+		jsonError(w, "destination already exists", 409)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(toAbs), fs.ModePerm); err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if err := os.Rename(fromAbs, toAbs); err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "renamed"})
+}
+
 func sandboxStatusHandler(w http.ResponseWriter, r *http.Request) {
 	corsHeaders(w)
 	if r.Method == http.MethodOptions {
@@ -1151,6 +1203,7 @@ func main() {
 	http.HandleFunc("/file/save", fileSaveHandler)
 	http.HandleFunc("/file/create", fileCreateHandler)
 	http.HandleFunc("/file/delete", fileDeleteHandler)
+	http.HandleFunc("/file/rename", fileRenameHandler)
 	http.HandleFunc("/terminal/exec", terminalExecHandler)
 	http.HandleFunc("/sandbox/status", sandboxStatusHandler)
 	http.HandleFunc("/sandbox/entry", sandboxEntryHandler)

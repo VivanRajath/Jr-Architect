@@ -1822,15 +1822,30 @@ node server.js"></textarea>
             </div>
           </div>
           <div class="agent-input-row">
-            <select id="agent-provider" class="agent-provider-select">
-              <option value="groq">Groq</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="openai">OpenAI</option>
-              <option value="gemini">Gemini</option>
-            </select>
-            <input type="text" id="agent-input" placeholder="Ask the AI agent..." autocomplete="off"
-              spellcheck="false" />
-            <button class="agent-send-btn" onclick="sendAgentMessage()">Send</button>
+            <textarea id="agent-input" class="agent-input" rows="1"
+              placeholder="Ask the AI agent…  (Enter to send · Shift+Enter for a new line)"
+              spellcheck="false"></textarea>
+            <div class="agent-input-controls">
+              <select id="agent-mode" class="agent-provider-select" title="How the agent handles your message">
+                <option value="auto">Auto</option>
+                <option value="ask">Ask</option>
+                <option value="edit">Edit</option>
+                <option value="agent">Agent</option>
+              </select>
+              <select id="agent-provider" class="agent-provider-select">
+                <option value="groq">Groq</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Gemini</option>
+              </select>
+              <button class="agent-send-btn" onclick="sendAgentMessage()">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+                Send
+              </button>
+            </div>
           </div>
         </div>
       </div>

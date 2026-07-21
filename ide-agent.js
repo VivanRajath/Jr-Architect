@@ -57,6 +57,7 @@ async function sendAgentMessage() {
   if (!msg) return;
   if (agentTurn) return; // a turn is already streaming
   input.value = '';
+  autoGrowAgentInput(input); // collapse the composer back to one line
 
   const messages = document.getElementById('agent-messages');
   const welcome = messages.querySelector('.agent-welcome');
@@ -76,6 +77,8 @@ async function sendAgentMessage() {
   scrollAgent(messages);
 
   const provider = document.getElementById('agent-provider').value;
+  const modeEl = document.getElementById('agent-mode');
+  const mode = modeEl ? modeEl.value : 'auto';
 
   agentTurn = {
     messagesEl: messages,
@@ -94,10 +97,10 @@ async function sendAgentMessage() {
       sock.send(JSON.stringify({ type: 'bind', container: IDE.container }));
       AgentWS.bound = IDE.container;
     }
-    sock.send(JSON.stringify({ type: 'chat', container: IDE.container, message: msg, provider }));
+    sock.send(JSON.stringify({ type: 'chat', container: IDE.container, message: msg, provider, mode }));
   } catch (e) {
     // Streaming transport unavailable — fall back to the single-shot REST path.
-    await sendAgentViaRest(msg, provider, messages);
+    await sendAgentViaRest(msg, provider, messages, mode);
   }
 }
 
@@ -145,6 +148,15 @@ function handleAgentWsMessage(ev) {
       if (t) t.sawFileChange = true;
       break;
 
+    case 'edit_summary': {
+      if (!t) break;
+      clearLoad(t);
+      t.assistantEl = null;
+      renderEditSummary(t.messagesEl, msg.files || [], t);
+      scrollAgent(t.messagesEl);
+      break;
+    }
+
     case 'message_end':
       // Soft boundary between the agent's assistant messages within one turn —
       // just close the current bubble; the turn continues.
@@ -172,6 +184,59 @@ function handleAgentWsMessage(ev) {
 
 function clearLoad(t) {
   if (t && t.loadEl) { t.loadEl.remove(); t.loadEl = null; }
+}
+
+// Render the layered edit pipeline's result as a clickable file list. Rows for
+// edited/created files open a before/after diff on click.
+function renderEditSummary(container, files, turn) {
+  const escLocal = (s) => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+  const changed = files.filter(f => f.status === 'edited' || f.status === 'created');
+  const wrap = document.createElement('div');
+  wrap.className = 'agent-edit-summary';
+
+  const head = document.createElement('div');
+  head.className = 'agent-edit-head';
+  head.textContent = `Applied ${changed.length} change${changed.length === 1 ? '' : 's'}`;
+  wrap.appendChild(head);
+
+  files.forEach(f => {
+    const clickable = (f.status === 'edited' || f.status === 'created');
+    const row = document.createElement('div');
+    row.className = 'agent-edit-row' + (clickable ? ' clickable' : '');
+    const kind = f.status.split(' ')[0]; // edited | created | unchanged | skipped | blocked | rejected
+    row.innerHTML =
+      `<span class="agent-edit-ico k-${kind}">${editStatusIcon(kind)}</span>` +
+      `<span class="agent-edit-path">${escLocal(f.path)}</span>` +
+      `<span class="agent-edit-status k-${kind}">${escLocal(f.status)}</span>`;
+    if (clickable) {
+      if (turn) turn.changedPaths.add(f.path);
+      row.title = 'Click to view the diff';
+      row.onclick = () => {
+        if (f.before != null && f.after != null && typeof showDiffModal === 'function') {
+          showDiffModal(f.path, f.before, f.after);
+        } else if (typeof openFile === 'function') {
+          openFile(f.path, f.path.split('/').pop());
+        }
+      };
+    }
+    wrap.appendChild(row);
+  });
+
+  const hint = document.createElement('div');
+  hint.className = 'agent-edit-hint';
+  hint.textContent = changed.length ? 'Preview reloaded · click a file to see the diff' : 'No files changed — try rephrasing or naming the exact file.';
+  wrap.appendChild(hint);
+
+  container.appendChild(wrap);
+}
+
+function editStatusIcon(kind) {
+  const s = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
+  if (kind === 'edited') return s + '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
+  if (kind === 'created') return s + '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>';
+  if (kind === 'unchanged') return s + '<line x1="5" y1="12" x2="19" y2="12"/></svg>';
+  if (kind === 'blocked' || kind === 'rejected') return s + '<circle cx="12" cy="12" r="10"/><line x1="4.9" y1="4.9" x2="19.1" y2="19.1"/></svg>';
+  return s + '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
 }
 
 // finishAgentTurn finalizes the streaming turn: re-enable input, and reflect any
@@ -298,7 +363,7 @@ async function reloadOpenFileFromDisk(path) {
 
 // ── REST fallback (single-shot, no streaming) ──
 
-async function sendAgentViaRest(msg, provider, messages) {
+async function sendAgentViaRest(msg, provider, messages, mode) {
   try {
     const currentFile = IDE.activeTab ? {
       path: IDE.activeTab.path,
@@ -308,7 +373,7 @@ async function sendAgentViaRest(msg, provider, messages) {
     const res = await fetch('/agent/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, provider, container: IDE.container, current_file: currentFile }),
+      body: JSON.stringify({ message: msg, provider, mode: mode || 'auto', container: IDE.container, current_file: currentFile }),
     });
 
     if (agentTurn) clearLoad(agentTurn);
@@ -395,12 +460,24 @@ async function applyAgentChange(change) {
   }
 }
 
-// Agent input Enter key
+// Grow the composer textarea to fit its content (up to the CSS max-height, then
+// it scrolls). Mirrors the Cursor/ChatGPT input behaviour.
+function autoGrowAgentInput(el) {
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+}
+
+// Agent input: Enter sends, Shift+Enter inserts a newline; textarea auto-grows.
 document.addEventListener('DOMContentLoaded', () => {
   const agentInput = document.getElementById('agent-input');
   if (agentInput) {
     agentInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter') sendAgentMessage();
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        sendAgentMessage();
+      }
     });
+    agentInput.addEventListener('input', () => autoGrowAgentInput(agentInput));
   }
 });

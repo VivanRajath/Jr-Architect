@@ -42,7 +42,14 @@ async function loadFileTree(attempt = 0) {
     const res = await fetch(`/files?container=${IDE.container}`);
     const tree = await res.json();
     if (!Array.isArray(tree)) throw new Error('file tree not ready');
-    renderTree(tree, document.getElementById('file-tree'), 0);
+    const treeEl = document.getElementById('file-tree');
+    renderTree(tree, treeEl, 0);
+    // Right-click on empty space in the explorer → root-level menu.
+    treeEl.oncontextmenu = (e) => {
+      if (e.target.closest('.tree-item')) return; // items handle their own menu
+      e.preventDefault();
+      showContextMenu(e.clientX, e.clientY, rootMenuItems());
+    };
     if (tree.length === 0 && attempt < 40) {
       setTimeout(() => loadFileTree(attempt + 1), 1500);
     }
@@ -78,6 +85,10 @@ function renderTree(nodes, parent, depth) {
         dir.classList.toggle('open');
         item.querySelector('.icon').textContent = dir.classList.contains('open') ? '\u25BE' : '\u25B8';
       };
+      item.oncontextmenu = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        showContextMenu(e.clientX, e.clientY, folderMenuItems(node.path, node.name));
+      };
       const children = document.createElement('div');
       children.className = 'tree-children';
       renderTree(node.children || [], children, depth + 1);
@@ -97,6 +108,10 @@ function renderTree(nodes, parent, depth) {
       item.onclick = (e) => {
         if (e.target.closest('.tree-actions')) return;
         openFile(node.path, node.name);
+      };
+      item.oncontextmenu = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        showContextMenu(e.clientX, e.clientY, fileMenuItems(node.path, node.name));
       };
       parent.appendChild(item);
     }
@@ -168,6 +183,161 @@ async function deleteFileOrFolder(path, isDir) {
       const e = await res.json(); showToast(e.error || 'Delete failed', 'error');
     }
   } catch (e) { showToast('Delete error', 'error'); }
+}
+
+// ── VS Code-style right-click context menu ──
+const CTX_ICON = {
+  open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+  newFile: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>',
+  newFolder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>',
+  rename: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+  ai: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4z"/><path d="M19 15l.7 1.8L21.5 17l-1.8.7L19 19.5l-.7-1.8L16.5 17l1.8-.5z"/></svg>',
+};
+
+let _ctxMenuEl = null;
+function hideContextMenu() {
+  if (_ctxMenuEl) { _ctxMenuEl.remove(); _ctxMenuEl = null; }
+}
+
+function showContextMenu(x, y, items) {
+  hideContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  items.forEach(it => {
+    if (it.separator) {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-sep';
+      menu.appendChild(sep);
+      return;
+    }
+    const row = document.createElement('div');
+    row.className = 'ctx-item' + (it.danger ? ' danger' : '');
+    row.innerHTML = `<span class="ctx-ico">${it.icon || ''}</span><span class="ctx-label">${esc(it.label)}</span>`;
+    row.onclick = (ev) => { ev.stopPropagation(); hideContextMenu(); it.action(); };
+    menu.appendChild(row);
+  });
+  document.body.appendChild(menu);
+  // Flip so the menu never runs off-screen.
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  _ctxMenuEl = menu;
+  setTimeout(() => {
+    document.addEventListener('click', hideContextMenu, { once: true });
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') hideContextMenu();
+    }, { once: true });
+    window.addEventListener('scroll', hideContextMenu, { once: true, capture: true });
+  }, 0);
+}
+
+function fileMenuItems(path, name) {
+  const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+  return [
+    { label: 'Open', icon: CTX_ICON.open, action: () => openFile(path, name) },
+    { separator: true },
+    { label: 'Rename…', icon: CTX_ICON.rename, action: () => renamePath(path, false) },
+    { label: 'Delete', icon: CTX_ICON.trash, danger: true, action: () => deleteFileOrFolder(path, false) },
+    { separator: true },
+    { label: 'New File…', icon: CTX_ICON.newFile, action: () => createInDir(dir, false) },
+    { label: 'New Folder…', icon: CTX_ICON.newFolder, action: () => createInDir(dir, true) },
+    { separator: true },
+    { label: 'Copy Path', icon: CTX_ICON.copy, action: () => copyPath(path) },
+    { label: 'Ask AI about this file', icon: CTX_ICON.ai, action: () => askAIAbout(path) },
+  ];
+}
+
+function folderMenuItems(path, name) {
+  return [
+    { label: 'New File…', icon: CTX_ICON.newFile, action: () => createInDir(path, false) },
+    { label: 'New Folder…', icon: CTX_ICON.newFolder, action: () => createInDir(path, true) },
+    { separator: true },
+    { label: 'Rename…', icon: CTX_ICON.rename, action: () => renamePath(path, true) },
+    { label: 'Delete', icon: CTX_ICON.trash, danger: true, action: () => deleteFileOrFolder(path, true) },
+    { separator: true },
+    { label: 'Copy Path', icon: CTX_ICON.copy, action: () => copyPath(path) },
+  ];
+}
+
+function rootMenuItems() {
+  return [
+    { label: 'New File…', icon: CTX_ICON.newFile, action: () => createInDir('', false) },
+    { label: 'New Folder…', icon: CTX_ICON.newFolder, action: () => createInDir('', true) },
+    { separator: true },
+    { label: 'Refresh Explorer', icon: CTX_ICON.refresh, action: () => loadFileTree() },
+  ];
+}
+
+// Create a file/folder inside `dir` (empty string = workspace root).
+async function createInDir(dir, isDir) {
+  const label = isDir ? 'folder' : 'file';
+  const name = prompt(`New ${label} name` + (dir ? ` in ${dir}/` : '') + ':');
+  if (!name || !name.trim()) return;
+  const path = (dir ? dir.replace(/\/+$/, '') + '/' : '') + name.trim();
+  try {
+    const res = await fetch('/file/create', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ container: IDE.container, path, isDir })
+    });
+    if (res.ok) {
+      showToast('Created ' + path, 'success');
+      loadFileTree();
+      if (!isDir) openFile(path, path.split('/').pop());
+    } else {
+      const e = await res.json(); showToast(e.error || 'Create failed', 'error');
+    }
+  } catch (e) { showToast('Create error', 'error'); }
+}
+
+// Rename/move a file or folder, keeping any open tab pointed at the new path.
+async function renamePath(path, isDir) {
+  const cur = path.split('/').pop();
+  const next = prompt(`Rename "${cur}" to:`, cur);
+  if (!next || !next.trim() || next === cur) return;
+  const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
+  const to = parent + next.trim();
+  try {
+    const res = await fetch('/file/rename', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ container: IDE.container, from: path, to })
+    });
+    if (res.ok) {
+      showToast('Renamed to ' + to, 'success');
+      const wasOpen = !isDir && IDE.tabs.some(t => t.path === path);
+      if (wasOpen) closeTab(path);
+      loadFileTree();
+      if (wasOpen) openFile(to, to.split('/').pop());
+    } else {
+      const e = await res.json(); showToast(e.error || 'Rename failed', 'error');
+    }
+  } catch (e) { showToast('Rename error', 'error'); }
+}
+
+function copyPath(path) {
+  const done = () => showToast('Copied path', 'success');
+  const fail = () => showToast('Copy failed', 'error');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(path).then(done, fail);
+  } else {
+    fail();
+  }
+}
+
+// Open the agent panel and pre-fill a question about the clicked file.
+function askAIAbout(path) {
+  const panel = document.getElementById('ide-agent-panel');
+  if (panel && panel.style.display === 'none' && typeof toggleAgentPanel === 'function') {
+    toggleAgentPanel();
+  }
+  const input = document.getElementById('agent-input');
+  if (input) {
+    input.value = 'Explain what `' + path + '` does and how it fits into the app.';
+    if (typeof autoGrowAgentInput === 'function') autoGrowAgentInput(input);
+    setTimeout(() => input.focus(), 0);
+  }
 }
 
 // ── Monaco ──
@@ -271,6 +441,53 @@ function getLang(name) {
     rb: 'ruby', php: 'php', c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp', cs: 'csharp',
   };
   return map[ext] || 'plaintext';
+}
+
+// ── Diff modal (before/after view of an AI edit) ──
+let _diffEditor = null;
+function showDiffModal(path, before, after) {
+  if (typeof monaco === 'undefined') { openFile(path, path.split('/').pop()); return; }
+  let overlay = document.getElementById('diff-modal');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'diff-modal';
+    overlay.className = 'diff-modal';
+    overlay.innerHTML =
+      '<div class="diff-box">' +
+      '<div class="diff-head"><span class="diff-title"></span>' +
+      '<button class="diff-close" title="Close (Esc)">&times;</button></div>' +
+      '<div class="diff-editor" id="diff-editor-host"></div></div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeDiffModal(); });
+    overlay.querySelector('.diff-close').onclick = closeDiffModal;
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && overlay.style.display === 'flex') closeDiffModal();
+    });
+  }
+  overlay.querySelector('.diff-title').textContent = path;
+  overlay.style.display = 'flex';
+  const host = document.getElementById('diff-editor-host');
+  host.innerHTML = '';
+  if (_diffEditor) { _diffEditor.dispose(); _diffEditor = null; }
+  const lang = getLang(path);
+  _diffEditor = monaco.editor.createDiffEditor(host, {
+    readOnly: true, automaticLayout: true, renderSideBySide: true,
+    theme: IDE.darkMode ? 'jr-architect-dark' : 'jr-architect-light',
+    minimap: { enabled: false }, scrollBeyondLastLine: false, fontSize: 12.5,
+  });
+  _diffEditor.setModel({
+    original: monaco.editor.createModel(before || '', lang),
+    modified: monaco.editor.createModel(after || '', lang),
+  });
+}
+function closeDiffModal() {
+  const overlay = document.getElementById('diff-modal');
+  if (overlay) overlay.style.display = 'none';
+  if (_diffEditor) {
+    const m = _diffEditor.getModel();
+    _diffEditor.dispose(); _diffEditor = null;
+    if (m) { m.original && m.original.dispose(); m.modified && m.modified.dispose(); }
+  }
 }
 
 // ── Tabs ──
