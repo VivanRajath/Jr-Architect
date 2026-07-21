@@ -2,6 +2,9 @@ const IDE = {
   container: null, repoUrl: '', previewUrl: '', port: null, tabs: [], activeTab: null,
   editor: null, models: {}, logsInterval: null, statusInterval: null,
   panelTab: 'terminal',
+  // Live-preview readiness state
+  appReady: false, previewPending: false, previewAutoOpened: false, previewUserClosed: false,
+  framework: '', uiEntry: null, saveRefreshTimer: null,
   // Multi-terminal support
   terminals: [],
   activeTerminalId: null,
@@ -13,6 +16,9 @@ function initIDE(containerId, repoUrl, port) {
   IDE.container = containerId;
   IDE.repoUrl = repoUrl;
   IDE.port = port;
+  // Reset per-sandbox state
+  IDE.appReady = false; IDE.previewPending = false; IDE.previewAutoOpened = false;
+  IDE.previewUserClosed = false; IDE.framework = ''; IDE.uiEntry = null;
   document.body.classList.add('ide-mode');
   document.getElementById('landing-page').style.display = 'none';
   document.getElementById('ide-page').style.display = 'flex';
@@ -20,7 +26,6 @@ function initIDE(containerId, repoUrl, port) {
   loadFileTree();
   initMonaco();
   initTerminal();
-  initTerminalInput();
   startLogsPolling();
   startStatusPolling();
   // Restore dark mode preference
@@ -30,16 +35,29 @@ function initIDE(containerId, repoUrl, port) {
 }
 
 // ── File Tree ──
-async function loadFileTree() {
+// The workspace is populated asynchronously (clone/scaffold), so early calls can
+// come back empty. Poll until files appear so the tree fills in on its own.
+async function loadFileTree(attempt = 0) {
   try {
     const res = await fetch(`/files?container=${IDE.container}`);
     const tree = await res.json();
+    if (!Array.isArray(tree)) throw new Error('file tree not ready');
     renderTree(tree, document.getElementById('file-tree'), 0);
-  } catch (e) { console.error('Failed to load file tree', e); }
+    if (tree.length === 0 && attempt < 40) {
+      setTimeout(() => loadFileTree(attempt + 1), 1500);
+    }
+  } catch (e) {
+    if (attempt < 40) {
+      setTimeout(() => loadFileTree(attempt + 1), 1500);
+    } else {
+      console.error('Failed to load file tree', e);
+    }
+  }
 }
 
 function renderTree(nodes, parent, depth) {
   parent.innerHTML = '';
+  if (!Array.isArray(nodes)) return;
   // Sort: dirs first, then files alphabetically
   nodes.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name));
   nodes.forEach(node => {
@@ -48,8 +66,9 @@ function renderTree(nodes, parent, depth) {
       dir.className = 'tree-dir';
       const item = document.createElement('div');
       item.className = 'tree-item';
+      item.dataset.path = node.path;
       item.style.setProperty('--depth', depth);
-      item.innerHTML = `<span class="icon">\u25B8</span><span class="name">${esc(node.name)}</span>
+      item.innerHTML = `<span class="icon folder-icon">\u25B8</span><span class="name">${esc(node.name)}</span>
         <span class="tree-actions">
           <button onclick="event.stopPropagation(); deleteFileOrFolder('${esc(node.path)}', true)" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
         </span>`;
@@ -68,8 +87,10 @@ function renderTree(nodes, parent, depth) {
     } else {
       const item = document.createElement('div');
       item.className = 'tree-item';
+      item.dataset.path = node.path;
       item.style.setProperty('--depth', depth);
-      item.innerHTML = `<span class="icon">${fileIcon(node.name)}</span><span class="name">${esc(node.name)}</span>
+      const fileExt = node.name.split('.').pop().toLowerCase();
+      item.innerHTML = `<span class="icon" data-ext="${esc(fileExt)}">${fileIcon(node.name)}</span><span class="name">${esc(node.name)}</span>
         <span class="tree-actions">
           <button onclick="event.stopPropagation(); deleteFileOrFolder('${esc(node.path)}', false)" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
         </span>`;
@@ -302,7 +323,8 @@ function renderTabs() {
   IDE.tabs.forEach(tab => {
     const d = document.createElement('div');
     d.className = 'editor-tab' + (tab === IDE.activeTab ? ' active' : '');
-    d.innerHTML = `${esc(tab.name)}${tab.modified ? '<span class="tab-modified">\u25CF</span>' : ''}<span class="tab-close" onclick="closeTab('${tab.path}', event)">\u00D7</span>`;
+    const ext = tab.name.split('.').pop().toLowerCase();
+    d.innerHTML = `<span class="tab-icon icon" data-ext="${esc(ext)}">${fileIcon(tab.name)}</span><span class="tab-label">${esc(tab.name)}</span>${tab.modified ? '<span class="tab-modified">\u25CF</span>' : ''}<span class="tab-close" onclick="closeTab('${tab.path}', event)">\u00D7</span>`;
     d.onclick = () => activateTab(tab);
     el.appendChild(d);
   });
@@ -328,10 +350,30 @@ async function saveCurrentFile() {
     if (res.ok) {
       tab.original = content; tab.modified = false; renderTabs();
       showToast('Saved ' + tab.name, 'success');
+      reflectSaveInPreview();
     } else {
       const e = await res.json(); showToast(e.error || 'Save failed', 'error');
     }
   } catch (e) { showToast('Save error', 'error'); }
+}
+
+// hmrStack reports whether the running app has working hot-reload via the polling
+// env vars (Next.js fast-refresh, CRA/webpack). For those, edits reflect on their
+// own and we must NOT force a reload (it would throw away app state). Vite, static
+// sites, and everything else don't hot-reload through a Docker bind mount, so we
+// reload the iframe on save — a full reload re-reads files from disk and shows the
+// change.
+function hmrStack() {
+  return /next\.js|CRA/i.test(IDE.framework || '');
+}
+
+function reflectSaveInPreview() {
+  if (hmrStack()) return; // hot-reload handles it — don't clobber app state
+  const panel = document.getElementById('ide-preview-panel');
+  if (!panel || panel.style.display === 'none' || !IDE.appReady) return;
+  // Debounce so a burst of saves triggers a single reload.
+  clearTimeout(IDE.saveRefreshTimer);
+  IDE.saveRefreshTimer = setTimeout(() => refreshPreview(), 400);
 }
 
 // ── Multi-Terminal Support ──
@@ -375,20 +417,46 @@ function createTerminal() {
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${window.location.host}/terminal/ws?container=${IDE.container}`);
+  socket.binaryType = 'arraybuffer';
 
   socket.onmessage = (event) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      term.write(new Uint8Array(reader.result));
-    };
-    reader.readAsArrayBuffer(event.data);
+    // Shell output arrives as binary frames; the backend also sends the
+    // occasional plain-text status/error frame (e.g. "Failed to start shell").
+    // Handle both so an error is never silently swallowed into a blank terminal.
+    if (typeof event.data === 'string') {
+      term.write(event.data);
+    } else {
+      term.write(new Uint8Array(event.data));
+    }
+  };
+
+  socket.onclose = () => {
+    term.write('\r\n\x1b[90m[terminal disconnected — reopen the panel or reload]\x1b[0m\r\n');
+  };
+  socket.onerror = () => {
+    term.write('\r\n\x1b[31m[terminal connection error]\x1b[0m\r\n');
+  };
+
+  // Tell the backend our terminal size so column-aware output (ls, wrapping)
+  // lines up. Sent as a JSON text frame; keystrokes go as binary frames.
+  const sendResize = () => {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+    }
+  };
+
+  socket.onopen = () => {
+    termFit.fit();
+    sendResize();
   };
 
   term.onData((data) => {
     if (socket.readyState === WebSocket.OPEN) {
-      socket.send(data);
+      socket.send(new TextEncoder().encode(data)); // binary frame = keystrokes
     }
   });
+
+  term.onResize(() => sendResize());
 
   const terminalObj = { id, term, termFit, socket, name: `Terminal ${id}` };
   IDE.terminals.push(terminalObj);
@@ -447,21 +515,10 @@ function closeTerminal(id, e) {
   renderTerminalTabs();
 }
 
-function initTerminalInput() {
-  const input = document.getElementById('terminal-input');
-  if (!input) return;
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      const active = IDE.terminals.find(t => t.id === IDE.activeTerminalId);
-      if (active && active.socket && active.socket.readyState === WebSocket.OPEN) {
-        // Send command with newline encoded as Uint8Array
-        const cmd = input.value + '\r';
-        const encoder = new TextEncoder();
-        active.socket.send(encoder.encode(cmd));
-        input.value = '';
-      }
-    }
-  });
+// Focus the active xterm terminal (you type directly into it, VS Code-style).
+function focusActiveTerminal() {
+  const active = IDE.terminals.find(t => t.id === IDE.activeTerminalId);
+  if (active && active.term) active.term.focus();
 }
 
 function renderTerminalTabs() {
@@ -498,8 +555,15 @@ async function fetchLogs() {
   try {
     const res = await fetch(`/logs/${IDE.container}`);
     const text = await res.text();
-    document.getElementById('logs-output').textContent = text;
     const el = document.getElementById('logs-output');
+    
+    // Parse URLs into clickable hyperlinks
+    const formattedHtml = esc(text).replace(
+      /(https?:\/\/[^\s&<"']+)/g,
+      '<a href="$1" target="_blank" style="color:var(--accent); text-decoration:underline;">$1</a>'
+    );
+    
+    el.innerHTML = formattedHtml;
     el.scrollTop = el.scrollHeight;
   } catch (e) { }
 }
@@ -514,6 +578,21 @@ async function fetchStatus() {
     const res = await fetch(`/sandbox/status?container=${IDE.container}`);
     const data = await res.json();
     IDE.previewUrl = data.url;
+
+    // The backend reports "running" only once the app's port actually answers
+    // (see sandboxStatusHandler), so it's a real readiness signal. Drive the
+    // preview off the running -> not-running edges.
+    const running = data.status === 'running';
+    if (running && !IDE.appReady) { IDE.appReady = true; onAppReady(); }
+    else if (!running) { IDE.appReady = false; }
+
+    // Framework badge (e.g. "Next.js (Lyzr App)") — set once detection resolves.
+    if (data.framework) IDE.framework = data.framework;
+    const fwBadge = document.getElementById('framework-badge');
+    if (fwBadge && data.framework) {
+      fwBadge.textContent = data.framework;
+      fwBadge.style.display = '';
+    }
 
     // Update status indicator
     const dot = document.querySelector('.ide-status-dot');
@@ -536,6 +615,7 @@ async function fetchStatus() {
     const panel = document.getElementById('status-panel-content');
     panel.innerHTML = `
       <div class="status-row"><span class="status-label">Container:</span><span class="status-value">${data.container}</span></div>
+      ${data.framework ? `<div class="status-row"><span class="status-label">Framework:</span><span class="status-value">${data.framework}</span></div>` : ''}
       <div class="status-row"><span class="status-label">Status:</span><span class="status-value ${data.status === 'running' ? 'running' : (data.status === 'starting' ? 'starting' : 'stopped')}">${data.status}</span></div>
       <div class="status-row"><span class="status-label">Port:</span><span class="status-value">${data.port}</span></div>
       <div class="status-row"><span class="status-label">Preview:</span><span class="status-value"><a href="${data.url}" target="_blank" style="color:var(--accent)">${data.url}</a></span></div>
@@ -545,22 +625,125 @@ async function fetchStatus() {
 }
 
 // ── Live Preview ──
+// The dev server inside a freshly-cloned sandbox isn't up for a while (npm
+// install + build). Loading the iframe before then just shows a connection
+// error that never recovers, so the preview is readiness-aware: it waits for the
+// app to be "running" (per status polling), shows a loading state until then,
+// and loads/auto-opens once ready.
 function openLivePreview() {
   const panel = document.getElementById('ide-preview-panel');
+  panel.style.display = 'flex';
+  IDE.previewUserClosed = false;
+  if (IDE.appReady) {
+    loadPreviewIntoIframe();
+  } else {
+    showPreviewLoading();
+    IDE.previewPending = true;
+  }
+}
+
+// Called when the app first becomes reachable.
+function onAppReady() {
+  const panel = document.getElementById('ide-preview-panel');
+  const open = panel && panel.style.display !== 'none';
+  // Auto-open the preview the first time the app is ready (unless the user
+  // deliberately closed it), so they see their app without hunting for a button.
+  if (!IDE.previewAutoOpened && !IDE.previewUserClosed) {
+    IDE.previewAutoOpened = true;
+    openLivePreview();
+    return;
+  }
+  // Already open and waiting on the app — load it now.
+  if (open && IDE.previewPending) loadPreviewIntoIframe();
+}
+
+function loadPreviewIntoIframe() {
+  IDE.previewPending = false;
+  hidePreviewLoading();
   const iframe = document.getElementById('preview-iframe');
   const url = IDE.previewUrl || `http://127.0.0.1:${IDE.port}`;
-  panel.style.display = 'flex';
+  iframe.style.display = '';
   iframe.src = url;
+}
+
+function showPreviewLoading() {
+  const overlay = document.getElementById('preview-loading');
+  const iframe = document.getElementById('preview-iframe');
+  if (iframe) iframe.style.display = 'none';
+  if (overlay) overlay.style.display = 'flex';
+}
+
+function hidePreviewLoading() {
+  const overlay = document.getElementById('preview-loading');
+  if (overlay) overlay.style.display = 'none';
 }
 
 function closePreview() {
   document.getElementById('ide-preview-panel').style.display = 'none';
   document.getElementById('preview-iframe').src = '';
+  IDE.previewPending = false;
+  IDE.previewUserClosed = true;
 }
 
 function refreshPreview() {
-  const iframe = document.getElementById('preview-iframe');
-  iframe.src = iframe.src;
+  if (!IDE.appReady) {
+    // App isn't up yet — show the waiting state and load automatically once ready.
+    showPreviewLoading();
+    IDE.previewPending = true;
+    return;
+  }
+  loadPreviewIntoIframe();
+}
+
+// ── Locate UI source (from the preview) ──
+// A control floating on the preview reveals where the app's UI code lives in the
+// IDE. Hovering highlights the file's folder in the tree; clicking opens the file.
+async function getUIEntry() {
+  if (IDE.uiEntry) return IDE.uiEntry;
+  try {
+    const res = await fetch(`/sandbox/entry?container=${IDE.container}`);
+    if (!res.ok) return null;
+    IDE.uiEntry = await res.json(); // { path, dir }
+    // Enrich the tooltip with the actual path once we know it.
+    const tip = document.getElementById('preview-locate-tip');
+    if (tip && IDE.uiEntry.path) tip.textContent = 'UI code: ' + IDE.uiEntry.path + '  (click to open)';
+    return IDE.uiEntry;
+  } catch { return null; }
+}
+
+async function locateUISource(open) {
+  const entry = await getUIEntry();
+  if (!entry || !entry.path) {
+    if (open) showToast('Could not find the UI entry file yet', 'error');
+    return;
+  }
+  revealInTree(entry.path);
+  if (open) {
+    openFile(entry.path, entry.path.split('/').pop());
+  }
+}
+
+// revealInTree expands the folders leading to `path`, scrolls it into view, and
+// flashes it — so you can see exactly which folder the UI lives in.
+function revealInTree(path) {
+  const treeRoot = document.getElementById('file-tree');
+  if (!treeRoot) return;
+  let item = null;
+  treeRoot.querySelectorAll('.tree-item').forEach(i => { if (i.dataset.path === path) item = i; });
+  if (!item) return;
+  // Open every ancestor directory so the item is visible.
+  let el = item.parentElement;
+  while (el && el !== treeRoot) {
+    if (el.classList && el.classList.contains('tree-dir')) {
+      el.classList.add('open');
+      const arrow = el.querySelector(':scope > .tree-item .folder-icon');
+      if (arrow) arrow.textContent = '▾';
+    }
+    el = el.parentElement;
+  }
+  item.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  item.classList.add('tree-flash');
+  setTimeout(() => item.classList.remove('tree-flash'), 1600);
 }
 
 function openPreviewExternal() {
@@ -585,6 +768,35 @@ function switchPanelTab(name) {
 // ── Dark Mode ──
 function toggleDarkMode() {
   setDarkMode(!IDE.darkMode);
+}
+
+// ── Sidebar (Explorer) toggle from the activity bar ──
+function toggleSidebar(btn) {
+  const sb = document.querySelector('.ide-sidebar');
+  if (!sb) return;
+  sb.classList.toggle('collapsed');
+  if (btn) btn.classList.toggle('active', !sb.classList.contains('collapsed'));
+  // Monaco needs a relayout when the editor area width changes.
+  if (IDE.editor && typeof IDE.editor.layout === 'function') {
+    setTimeout(() => IDE.editor.layout(), 0);
+  }
+}
+
+// ── AI Agent side panel (VS Code-style chat dock) toggle ──
+function toggleAgentPanel() {
+  const panel = document.getElementById('ide-agent-panel');
+  if (!panel) return;
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'flex';
+  const btn = document.getElementById('act-agent');
+  if (btn) btn.classList.toggle('active', !open);
+  if (!open) {
+    const input = document.getElementById('agent-input');
+    if (input) setTimeout(() => input.focus(), 0);
+  }
+  if (IDE.editor && typeof IDE.editor.layout === 'function') {
+    setTimeout(() => IDE.editor.layout(), 0);
+  }
 }
 
 function setDarkMode(enabled) {
