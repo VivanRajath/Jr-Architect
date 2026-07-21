@@ -7,6 +7,7 @@
 ## Table of Contents
 
 1. [High-Level Overview](#1-high-level-overview)
+1a. [Product Modes: Prompt, Dev, and Build](#product-modes-prompt-dev-and-build)
 2. [System Architecture Diagram](#2-system-architecture-diagram)
 3. [Component Breakdown](#3-component-breakdown)
    - [Go Core Server (`main.go`)](#31-go-core-server-maingo)
@@ -63,6 +64,34 @@ User Browser
 │  Option B: Python FastAPI + multi-provider AI  │
 └────────────────────────────────────────────────┘
 ```
+
+---
+
+## Product Modes: Prompt, Dev, and Build
+
+Jr Architect is an agent-guided cloud IDE. The landing screen offers three top-level modes (selected via `setMode()` in `index.html`), and the AI agent inside Dev Mode further routes each message into one of three prompt modes.
+
+### Top-level modes
+
+| Mode | What it does | IDE shown |
+|---|---|---|
+| **Prompt** | Quick run. Clone the repo, detect or infer run commands, start the app, show the preview. Optimized for getting to a running app fast. | No |
+| **Dev** | Full cloud IDE over the running sandbox: file explorer, Monaco editor, live preview, WebSocket terminal, and the AI agent. | Yes |
+| **Build** | Scaffold a new, fully local app from a plain-language description. Clarifying questions, then a short spec, then generation and a live run. Generated apps persist to the browser and are guarded against third-party integrations. | Yes (after generation) |
+
+Prompt and Dev share the repo input and the same clone plus detect plus run path; they differ only in whether the IDE is revealed. Build swaps the repo input for a description field and drives the multi-step generator in `builder.go`.
+
+### Agent prompt modes (inside Dev Mode)
+
+The agent decides how to handle a message through the Orchestrator layer (`decideMode()` in `agent-services/server.js`), and the user can override it with the Ask, Edit, or Agent dropdown in the composer.
+
+| Prompt mode | For | How it runs |
+|---|---|---|
+| **Ask** | Questions about the repo ("summarize this codespace", "where is X") | Toolless retrieve-then-generate. The backend searches the code, gathers the repo map and key files, and gives the model a grounded prompt. The model only writes the answer. |
+| **Edit** | Code changes ("make the UI dark red", "rebrand the heading", "add a footer") | The layered engine: Orchestrator, Complexity Classifier, Guardrails, Developer. The Developer stage rewrites whole files and the backend applies them. The result is a clickable file list that opens a before/after diff. |
+| **Agent** | Open-ended, multi-file work with a strong tool-calling model | The original tool-driven loop where the model calls read/write/search itself. Opt-in via the dropdown or `AGENT_EDIT_STRATEGY=agentic`. |
+
+The Orchestrator routes with free heuristics for the obvious cases (an edit verb goes to Edit, a question opener goes to Ask) and falls back to a single-word LLM classification for genuinely ambiguous messages such as "rebrand the heading" or "swap the two buttons", which change files without an obvious verb. See section 3.4 for the implementation.
 
 ---
 
@@ -233,18 +262,22 @@ A lightweight **Express + WebSocket** server that drives the `gitclaw` agentic e
 Client → Server:
   { type: "bind",  container: "sandbox-abc" }                       // attach to a sandbox
   { type: "chat",  container: "sandbox-abc", message: "...",        // send a prompt
-                   provider: "anthropic" }                          //   (provider selects the model)
+                   provider: "groq", mode: "auto" }                 //   provider selects the model;
+                                                                    //   mode is auto | ask | edit | agent
 
 Server → Client:
   { type: "ready"       }        // bind acknowledged
   { type: "thinking"    }        // agent started
   { type: "delta",       content: "partial text..." }   // streaming token
-  { type: "tool",        content: "write({\"path\":\"app/page.tsx\"})" } // tool invocation
+  { type: "tool",        content: "Classifier(junior dev)" }        // a layer step, or a tool call
   { type: "file_changed" }       // a file was written this turn
+  { type: "edit_summary", files: [ { path, status, before, after } ] } // clickable result of an edit turn
   { type: "message_end" }        // soft boundary between the agent's assistant messages (turn continues)
-  { type: "complete"    }        // DEFINITIVE end of turn — the generator drained
+  { type: "complete"    }        // DEFINITIVE end of turn, the generator drained
   { type: "error",       content: "..." }
 ```
+
+The `tool` frame carries both real tool invocations (Agent mode) and the layered pipeline's step decisions (Edit mode), so the same UI row renders "Orchestrator", "Classifier", "Guardrails", and "Developer" as the engine works. The `edit_summary` frame replaces the plain text summary for Edit turns: each file row is clickable and opens a before/after diff (`showDiffModal()` in `ide.js`) built from the `before`/`after` fields.
 
 > **Why `message_end` + `complete` instead of a single `done`:** a multi-step agent emits several `assistant` messages in one turn (think → tool → think → …). The old code sent `done` on each, so the UI finalized prematurely. `message_end` is now the soft per-message boundary (the UI just closes the current bubble), and `complete` — sent once, after `gitclaw.query()`'s generator drains — is the only end-of-turn signal the UI acts on (reload tree/editors/preview, re-enable input).
 
@@ -264,10 +297,12 @@ The service also installs `unhandledRejection` / `uncaughtException` handlers so
 - **Layer 2 — `search_code` tool (`agent-services/server.js`).** A ripgrep-style search implemented in pure JS (no external binary; cross-platform), passed to `query()` as an SDK tool bound to the session dir and enabled via `allowedTools`. The agent calls it to find where a symbol/string is defined or used and gets back only ranked `file:line` snippets (capped) — the token-frugal alternative to reading whole files. Case-insensitive; a query is tried as a regex, falling back to a literal match.
 - **Deferred — Layer 3 (vector embeddings).** Only worth adding for semantic search that structure can't answer; needs a local embedding model (Groq can't do it) and more tokens. Not built.
 
-**Toolless modes (the core reliability fix):** agentic retrieval/editing needs the model to reliably *call* tools, and `llama-3.3-70b-versatile` is weak at function-calling (it garbles calls → `tool call validation failed` / `Failed to call a function`). So the default paths **never let the model call a tool** — the backend does the tool-work and the model only generates text, which it does well. `resolveTurnMode()` picks per message (explicit client `mode` wins):
+**Toolless modes (the core reliability fix):** agentic retrieval/editing needs the model to reliably *call* tools, and `llama-3.3-70b-versatile` is weak at function-calling (it garbles calls → `tool call validation failed` / `Failed to call a function`). So the default paths **never let the model call a tool**. The backend does the tool-work and the model only generates text, which it does well.
 
-- **ask** (questions) — `buildAskPrompt()` pulls salient terms, runs `search_code` server-side, injects `file:line` hits (+ the UI entry file's contents for overview questions; the repo map is already always-loaded), then calls the model with `replaceBuiltinTools: true` + `allowedTools: []` → **zero tools**. The model writes a grounded answer. Streams via `streamTurn()`.
-- **edit** (changes — `EDIT_INTENT` regex) — generate-then-apply. `gatherEditFiles()` reads the relevant files (search-term matches + UI entry + style files for look-and-feel requests, capped for the token budget); `buildEditPrompt()` asks for Aider-style `SEARCH/REPLACE` blocks; the model replies with plain text (still toolless); `parseEditBlocks()` + `applyEditBlocks()` write the changes to disk (path-safe: rejects anything resolving outside the workspace; exact match then a whitespace-tolerant fallback). Buffered via `collectTurn()`, then a `file_changed` + a per-file summary are sent. So llama-3.3 never has to call `write`.
+**Orchestrator routing (`decideMode()`):** an explicit client `mode` (`ask` / `edit` / `agent` from the composer dropdown) always wins. Otherwise the Orchestrator routes intelligently. `heuristicMode()` decides the obvious cases for free: an edit verb (`EDIT_INTENT`, which includes `rename`/`rebrand`/`relabel`) or an imperative styling command that names a style target (`EDIT_IMPERATIVE` + `EDIT_STYLE_INTENT`, e.g. "make the ui dark red") routes to Edit, and a question opener (`ASK_OPENER`, e.g. "summarize" / "where" / "how") routes to Ask. For a genuinely ambiguous message that changes files without an obvious verb ("rebrand the heading", "swap the two buttons"), it falls back to `classifyIntentLLM()`, a single one-word toolless call that returns `edit` or `ask`. Only ambiguous messages pay for that call, and any failure falls back to the safe read-only Ask mode. The synchronous `resolveTurnMode()` is retained for tests and as the confident fast-path.
+
+- **ask** (questions) — `buildAskPrompt()` pulls salient terms, runs `search_code` server-side, and injects `file:line` hits. For overview questions it also injects real substance (the repo map plus the entry, layout, and README/package files) with an instruction to write a concrete summary now and not to hedge or narrate a process. It then calls the model with `replaceBuiltinTools: true` + `allowedTools: []` → **zero tools**. The model writes a grounded answer. Streams via `streamTurn()`.
+- **edit** (changes) — a **layered agentic pipeline** modelled on the [gitagent](https://github.com/VivanRajath/gitagent-hackathon) standard's tiered dispatch (`runEditPipeline`): **Orchestrator** (routes here — `EDIT_INTENT`, or an imperative styling command like "make the ui dark red" via `EDIT_IMPERATIVE` + `EDIT_STYLE_INTENT`) → **Complexity Classifier** (`classifyEditComplexity` — junior/single-file vs senior/multi-file, bounding how many files may change) → **Guardrails** (`guardEditBlocks` — refuses edits to `.env`/lockfiles/`.git` and blocks secret injection) → **Developer** (the whole-file rewrite below). Each layer's decision is streamed to the chat as a step, so the engine reads as agentic instead of chatting. The Developer stage is generate-then-apply, **whole-file rewrite**. `gatherEditFiles()` picks the relevant files *UI entry + style files first, then search-term matches, skipping library boilerplate via `EDIT_SKIP_PATH` (e.g. `components/ui/*`)* and tags each `whole` if it's small enough (`WHOLE_FILE_MAX_CHARS`) to rewrite in full within the output budget. `buildEditPrompt()` shows those files and the expected reply in the **same** `=== FILE: path ===` delimiter (so the weak model mirrors the format instead of confusing input vs output) and asks for each changed file's COMPLETE new contents. `parseEditBlocks()` extracts the whole-file blocks (accepts the `=== FILE ===` form and the `<file path="…">…</file>` fallback, strips code fences; an *unclosed* block from a truncated reply won't parse, so no half-written file is saved); `applyEditBlocks()` overwrites (path-safe: rejects anything resolving outside the workspace, and won't clobber an existing file that wasn't offered to the model). Buffered via `collectTurn()`, then a `file_changed` and a structured `edit_summary` frame are sent. The summary is a clickable file list in the chat; clicking an edited or created file opens a before/after diff (the pipeline carries each file's `before`/`after` for this). So llama-3.3 never calls `write` and never emits fragile patch markers. Whole-file rewrite is capped to small files; large-file or multi-file refactors need a stronger model (`AGENT_MODEL_*`).
 - **agent** (legacy) — the original tool-driven loop (`streamTurn()` with tools). Only reliable with a strong tool-calling model; opt in with `AGENT_EDIT_STRATEGY=agentic` or an explicit `mode: "agent"`.
 
 Both toolless modes are covered by `agent-services/server.test.js` (`node --test`). This is the same insight as Ask mode extended to writes: keep the model out of the function-calling path it's bad at.
@@ -314,10 +349,13 @@ The main UI is a single-page application embedded in the Go binary. It provides:
 
 A collapsible side panel that provides the AI coding assistant UI. It is a **live agentic stream**, not a request/response chatbot:
 
-- Connects to the agent service over a persistent WebSocket (`/agent/ws`, reverse-proxied through the Go server — the upgrade is tunnelled transparently, so the stream shares the IDE's origin).
-- Reuses one socket across turns; sends `bind` only when the active sandbox changes, then `chat` (with the selected `provider`).
-- Streams tokens into the assistant bubble as they arrive; renders **each tool call as its own row** (edit, run, read, search, delete) with the target file/command, producing an interleaved transcript (text → tool → text …).
-- On end of turn (`complete`), reflects the agent's filesystem changes back into the IDE automatically: **refreshes the file tree, reloads open editor tabs from disk** (without clobbering unsaved user edits), and **reloads the live preview** if it's open. Changed paths are collected from write-like tool calls during the turn.
+- Connects to the agent service over a persistent WebSocket (`/agent/ws`, reverse-proxied through the Go server; the upgrade is tunnelled transparently, so the stream shares the IDE's origin).
+- Reuses one socket across turns; sends `bind` only when the active sandbox changes, then `chat` with the selected `provider` and `mode` (auto, ask, edit, or agent from the composer dropdown).
+- Composer: a multi-line auto-growing textarea (Enter sends, Shift+Enter for a newline), a prompt-mode dropdown, and a provider dropdown.
+- Streams tokens into the assistant bubble as they arrive; renders **each tool call or layer step as its own row**, producing an interleaved transcript (text, step, text).
+- Renders the `edit_summary` frame as a clickable file list; clicking an edited or created file opens a Monaco before/after diff modal (`showDiffModal()` in `ide.js`).
+- The file explorer has a VS Code style right-click context menu (`showContextMenu()` in `ide.js`): new file, new folder, rename (via `POST /file/rename`), delete, copy path, and "Ask AI about this file", which opens the panel and pre-fills a question.
+- On end of turn (`complete`), reflects the agent's filesystem changes back into the IDE automatically: **refreshes the file tree, reloads open editor tabs from disk** (without clobbering unsaved user edits), and **reloads the live preview** if it's open. Changed paths are collected from write-like tool calls and from the `edit_summary` during the turn.
 - Only one turn streams at a time — the input is disabled while the agent works and re-enabled on `complete`/`error`.
 - Falls back to the single-shot REST endpoint (`POST /agent/chat`, with "Apply to …" buttons) if the WebSocket can't be established, so the panel degrades gracefully.
 - All streamed model/file content is HTML-escaped before the lightweight markdown pass (no markup injection).
