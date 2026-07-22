@@ -1,0 +1,31 @@
+# GitAgent pipeline manifest (example).
+#
+# Drop this at `.gitagent/pipeline.yaml` in any repository you open in Jr
+# Architect to make the built-in edit pipeline run agents installed from the
+# GitAgent registry (https://registry.gitagent.sh) instead of the built-in
+# personas. Referenced agents are resolved from the registry index and
+# `git clone`d live into `.gitagent/agents/` inside the sandbox.
+#
+# Slot mapping (by the agent's registry `category`):
+#   developer-tools / testing        -> Developer slot
+#   security / compliance            -> Guardrails slot (chained, additive)
+#
+# Each ref is `<author>/<name>` as published in the registry. Prefix a slot with
+# `builtin:` to keep Jr Architect's own persona for that slot.
+
+spec_version: 0.1.0
+
+pipeline:
+  # The Developer slot. A registry developer agent drives the whole-file rewrite
+  # via the `system-prompt` adapter (its SOUL/RULES/skill become the persona).
+  developer: shreyas-lyzr/architect
+
+  # The Guardrails slot. Stack one or more registry guardrail agents on top of
+  # the built-in secret/lockfile guard. Deny wins, so this is always additive.
+  guardrails:
+    - builtin:secret-sentinel
+    # - your-author/your-guardrail-agent
+
+# No manifest committed? You can still demo on any repo with env overrides:
+#   GITAGENT_DEVELOPER_AGENT=shreyas-lyzr/architect
+#   GITAGENT_GUARDRAIL_AGENTS=author/guard-a,author/guard-b

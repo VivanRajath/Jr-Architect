@@ -3,8 +3,13 @@ import { WebSocketServer } from "ws";
 import { createServer } from "http";
 import { query } from "gitclaw";
 import { getModels } from "@mariozechner/pi-ai";
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from "fs";
 import { join, extname, resolve, sep } from "path";
+import {
+  resolvePipelineAgents, personaPreamble, fetchRegistryIndex, findAgent,
+  readPipelineManifest, writePipelineManifest, installedAgents,
+  loadSkill, loadComplianceRules, listSkills,
+} from "./registry.js";
 
 // Keep the agent service alive if a single request's agent loop throws
 // asynchronously — e.g. a provider/key error surfaced from a background stream
@@ -318,7 +323,11 @@ async function buildAskPrompt(dir, message) {
     : `Be concrete and answer directly, citing \`file:line\` for specifics. ` +
       `If a needed file isn't shown, name it briefly, but still give your best answer from what's here. Do not invent files or code.`;
 
+  // The Ask persona is the source of truth in .gitagent/skills/ask (built-in
+  // fallback if absent).
+  const askPersona = skillPersona(dir, "ask");
   return (
+    (askPersona ? askPersona + "\n\n" : "") +
     `${searchBlock}${contextBlock}You are answering a question about THIS repository, using the repository map, ` +
     `the file contents, and the search results above. ${instruction}\n\n` +
     `Question: ${message}`
@@ -540,13 +549,29 @@ async function gatherEditFiles(dir, message) {
 // The whole-file rewrite prompt. Input files and expected output use the SAME
 // delimiter, so the weak model mirrors the format correctly (the old bug: showing
 // `<file path=...>` but asking for `<file>path</file>` made it copy the wrong one).
-function buildEditPrompt(files, message, cls) {
+// Built-in fallbacks for the persona skills that now live (source of truth) in the
+// repo's .gitagent/skills/. If a skill file is missing, these keep behavior stable.
+const SKILL_FALLBACK = {
+  "jnr-developer": "You are the Junior Developer. Make the smallest, most focused change that satisfies the request; prefer a single file; do not refactor, rename, or add anything not asked for.",
+  "snr-developer": "You are the Senior Developer. The change spans a few related files; update all that must change together to keep the app consistent, keep the architecture intact, and do not expand scope.",
+  "ask": "Answer concretely and grounded in the actual files; cite real file paths; do not describe what you would look at; never change files in Ask mode.",
+  "build-doctor": "Classify the logs as a real blocker vs. noise; for a real blocker propose the smallest safe fix (one command or one edit); never rewrite lockfiles, run npm audit fix --force, or delete files.",
+};
+
+// Resolve a persona: the repo's own .gitagent/skills/<name>/SKILL.md wins (source
+// of truth — edit it and behavior changes), else the built-in fallback string.
+function skillPersona(dir, name) {
+  return loadSkill(dir, name) || SKILL_FALLBACK[name] || "";
+}
+
+function buildEditPrompt(files, message, cls, persona) {
   const wrap = (f) => `=== FILE: ${f.path} ===\n${f.content}\n=== END FILE ===`;
   const fileBlocks = files.map(wrap).join("\n\n");
   const scopeLine = cls && cls.tier === "junior"
     ? `- Scope: this is a FOCUSED change — edit the single most relevant file (at most ${files.length}).\n`
     : `- Scope: edit only the file(s) that must change to satisfy the request.\n`;
   return (
+    (persona || "") +
     `You are the Developer layer of a coding agent. You DO the edit — you never ` +
     `describe it. Here are the current files:\n\n${fileBlocks}\n\n` +
     `Apply the requested change by returning, for EACH file you change, its COMPLETE ` +
@@ -710,13 +735,41 @@ async function runEditPipeline(dir, message, model, onStep) {
   step("Classifier", cls.label);
   const editable = whole.slice(0, cls.maxFiles);
 
-  // Guardrails (pre) — scope is bounded to files we chose and showed the model.
-  step("Guardrails", `scope ok · ${editable.length} file(s)`);
+  // GitAgent registry — if this workspace declares a pipeline (.gitagent/pipeline
+  // .yaml or env override), install the referenced registry agents (live clone)
+  // and let them drive the Developer/Guardrails slots. No manifest → built-ins.
+  let agents = { enabled: false };
+  try {
+    agents = await resolvePipelineAgents(dir, onStep);
+  } catch (e) {
+    step("GitAgent", `registry unavailable (${e.message}) · using built-ins`);
+  }
 
-  // Developer — produce the whole-file rewrite.
-  step("Developer", `editing ${editable.map((f) => f.path).join(", ")}`);
+  // Developer persona comes from the repo's own .gitagent/skills/ (source of
+  // truth): the Complexity Classifier's tier selects jnr vs snr; the skill file
+  // supplies the text (built-in fallback if the file is absent). Compliance rules
+  // from .gitagent/compliance/ layer on top; a registry agent overlays via
+  // personaPreamble. Deny always wins (code-enforced guards run regardless).
+  const tierSkill = cls.tier === "senior" ? "snr-developer" : "jnr-developer";
+  const devText = skillPersona(dir, tierSkill);
+  const compliance = loadComplianceRules(dir);
+  const persona = [
+    devText,
+    personaPreamble(agents),
+    compliance ? `ADDITIONAL COMPLIANCE RULES (deny always wins):\n${compliance}` : "",
+  ].filter(Boolean).join("\n\n");
+
+  // Guardrails (pre) — scope is bounded to files we chose and showed the model.
+  const guardNote = agents.enabled && agents.guardrails.length
+    ? ` · +${agents.guardrails.length} registry guardrail(s)` : "";
+  const complianceNote = compliance ? " · compliance rules loaded" : "";
+  step("Guardrails", `scope ok · ${editable.length} file(s)${guardNote}${complianceNote}`);
+
+  // Developer — produce the whole-file rewrite, driven by the tier's skill.
+  const devLabel = agents.developer ? ` as ${agents.developer.name}` : ` · skills/${tierSkill}`;
+  step("Developer", `editing ${editable.map((f) => f.path).join(", ")}${devLabel}`);
   const { text, error } = await collectTurn({
-    prompt: buildEditPrompt(editable, message, cls),
+    prompt: buildEditPrompt(editable, message, cls, persona),
     dir,
     model,
     replaceBuiltinTools: true,
@@ -830,6 +883,12 @@ export function modelFor(uiProvider) {
 }
 
 // Register a sandbox dir after Jr Architect clones + generates agent spec
+// The scaffolded spec lives under .gitagent/ (grouped, visible in the explorer),
+// but a standard-pure repo may commit agent.yaml at its root. Accept either.
+function agentSpecPresent(dir) {
+  return existsSync(join(dir, ".gitagent", "agent.yaml")) || existsSync(join(dir, "agent.yaml"));
+}
+
 app.post("/agent/register", (req, res) => {
   const { container, workdir, stack } = req.body;
   if (!container || !workdir) {
@@ -852,8 +911,7 @@ app.post("/agent/chat", async (req, res) => {
     return res.status(404).json({ error: "sandbox not registered" });
   }
 
-  const agentYaml = join(session.dir, "agent.yaml");
-  if (!existsSync(agentYaml)) {
+  if (!agentSpecPresent(session.dir)) {
     return res.status(400).json({ error: "agent.yaml not found — run gitagent_generator first" });
   }
 
@@ -919,6 +977,199 @@ app.post("/agent/chat", async (req, res) => {
   }
 });
 
+// ── Build doctor: diagnose container/terminal issues and propose a fix ────────
+// This is what makes Jr Architect an intelligent IDE rather than a passive one.
+// When the app is slow to boot or the terminal shows errors, the frontend sends
+// the recent container logs here. The model classifies real errors vs. noise
+// (deprecation warnings, audit notices, a slow-but-successful install) and, for a
+// genuine blocker, proposes ONE fix: a shell command to run in the sandbox, or a
+// file edit routed through the guardrailed edit pipeline. Nothing is applied here
+// — the UI shows the proposal with a one-click Apply/Run (the user chose "propose,
+// one-click apply"), so a weak free-tier model can't silently break the repo.
+
+// Pull a JSON object out of a model reply that may be fenced or wrapped in prose.
+function parseJsonLoose(text) {
+  if (!text) return null;
+  const body = stripFences(text);
+  const start = body.indexOf("{");
+  const end = body.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    return JSON.parse(body.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+function buildDiagnosePrompt(stack, logs) {
+  // Keep only the tail — the failure is almost always at the end, and the free
+  // tier has a tight token budget.
+  const tail = String(logs || "").slice(-4000);
+  return (
+    `You are the build doctor for a ${stack || "web"} app running in a sandbox. ` +
+    `Below are the most recent container/terminal logs. Decide whether there is a ` +
+    `GENUINE blocking problem (the app failed to build, crashed, a port is wrong, a ` +
+    `dependency is missing, a syntax/compile error) or just NOISE that needs no fix ` +
+    `(npm deprecation warnings, "npm audit" vulnerability notices, a slow but ` +
+    `successful install, informational logs).\n\n` +
+    `Reply with ONLY a JSON object, no prose, in exactly this shape:\n` +
+    `{"severity":"error|warning|ok","summary":"<=12 words","cause":"one sentence",` +
+    `"fix":{"kind":"command|edit|none","command":"<shell to run in the app dir, if kind=command>",` +
+    `"file":"<repo-relative path, if kind=edit>","instruction":"<plain-language edit to make, if kind=edit>"}}\n\n` +
+    `Rules: if it is just noise or the app actually started, use severity "ok" or ` +
+    `"warning" and fix.kind "none". Never propose "npm audit fix --force" or anything ` +
+    `that rewrites lockfiles or deletes files. Prefer the smallest safe fix. Keep any ` +
+    `command a single line.\n\n--- LOGS ---\n${tail}\n--- END LOGS ---`
+  );
+}
+
+app.post("/agent/diagnose", async (req, res) => {
+  const { container, logs } = req.body;
+  if (!container) return res.status(400).json({ error: "container required" });
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  if (!firstAvailableProvider()) return res.status(400).json({ error: NO_KEY_MESSAGE });
+
+  const model = modelFor(req.body.provider);
+  // The build-doctor persona is the source of truth in .gitagent/skills/build-doctor.
+  const doctorPersona = skillPersona(session.dir, "build-doctor");
+  const { text, error } = await collectTurn({
+    prompt: (doctorPersona ? doctorPersona + "\n\n" : "") + buildDiagnosePrompt(session.stack, logs),
+    dir: session.dir,
+    model,
+    replaceBuiltinTools: true,
+    allowedTools: [],
+    constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+  }, model);
+
+  if (error && !text) return res.status(502).json({ error });
+
+  const parsed = parseJsonLoose(text);
+  if (!parsed) {
+    // Model didn't return usable JSON — treat as "nothing actionable" rather than
+    // surfacing a scary error, but pass the raw note through for context.
+    return res.json({ severity: "ok", summary: "No actionable issue detected", cause: "", fix: { kind: "none" }, raw: (text || "").slice(0, 400) });
+  }
+  const fix = parsed.fix && typeof parsed.fix === "object" ? parsed.fix : { kind: "none" };
+  res.json({
+    severity: ["error", "warning", "ok"].includes(parsed.severity) ? parsed.severity : "warning",
+    summary: String(parsed.summary || "").slice(0, 200),
+    cause: String(parsed.cause || "").slice(0, 400),
+    fix: {
+      kind: ["command", "edit", "none"].includes(fix.kind) ? fix.kind : "none",
+      command: String(fix.command || "").slice(0, 300),
+      file: String(fix.file || "").slice(0, 200),
+      instruction: String(fix.instruction || "").slice(0, 400),
+    },
+  });
+});
+
+// ── GitAgent registry panel ──────────────────────────────────────────────────
+// Powers the IDE's GitAgent panel: browse the registry, see which agents fill
+// the Developer/Guardrails slots for this workspace, and swap them.
+
+// Browse the registry index (community agents).
+app.get("/agent/registry", async (_req, res) => {
+  const index = await fetchRegistryIndex();
+  res.json({
+    agents: index.map((a) => ({
+      ref: `${a.author}/${a.name}`,
+      name: a.name,
+      author: a.author,
+      category: a.category || "other",
+      description: a.description || "",
+      tags: a.tags || [],
+      adapters: a.adapters || [],
+      repository: a.repository || "",
+    })),
+  });
+});
+
+// Which slot a registry category fills. Security/compliance → Guardrails.
+function slotForCategory(category) {
+  return category === "security" || category === "compliance" ? "guardrails" : "developer";
+}
+
+// Compose the pipeline status for a workspace: the assigned agents (enriched from
+// the index) plus whether each is already cloned to disk.
+async function gitagentStatus(dir) {
+  const index = await fetchRegistryIndex();
+  const manifest = readPipelineManifest(dir) || { developer: null, guardrails: [] };
+  const installed = new Set(installedAgents(dir));
+  const enrich = (ref, slot) => {
+    const e = findAgent(index, ref) || {};
+    return {
+      ref, slot,
+      category: e.category || "other",
+      description: e.description || "",
+      repository: e.repository || "",
+      installed: installed.has(ref),
+    };
+  };
+  return {
+    enabled: !!(manifest.developer || (manifest.guardrails || []).length),
+    developer: manifest.developer ? enrich(manifest.developer, "developer") : null,
+    guardrails: (manifest.guardrails || []).map((r) => enrich(r, "guardrails")),
+    // The repo's own .gitagent/skills/ — the built-in personas plus any the user
+    // authored. These drive the chat agent directly (source of truth).
+    skills: listSkills(dir),
+  };
+}
+
+// Create a new skill in the repo's own .gitagent/skills/<slug>/SKILL.md so it
+// shows in the folder and can drive the agent. Intertwined with the registry: a
+// local skill and an installed registry agent both compose through the pipeline.
+app.post("/agent/skill", (req, res) => {
+  const { container, name, description, body } = req.body || {};
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  const slug = String(name || "").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!slug) return res.status(400).json({ error: "a skill name is required" });
+  try {
+    const skillDir = join(session.dir, ".gitagent", "skills", slug);
+    const file = join(skillDir, "SKILL.md");
+    if (existsSync(file)) return res.status(409).json({ error: `skill "${slug}" already exists` });
+    mkdirSync(skillDir, { recursive: true });
+    const content =
+      `---\nname: ${slug}\ndescription: ${String(description || "").replace(/\n/g, " ").slice(0, 200) || "Custom skill"}\n---\n\n` +
+      `# ${slug}\n\n${String(body || "").trim() || "Describe when this skill applies and how the agent should behave."}\n`;
+    writeFileSync(file, content);
+    res.json({ status: "created", slug, skills: listSkills(session.dir) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Read the current pipeline assignment for a workspace.
+app.get("/agent/gitagent", async (req, res) => {
+  const session = sessions.get(req.query.container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  try {
+    res.json(await gitagentStatus(session.dir));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Assign agents to slots: writes .gitagent/pipeline.json, installs (live clone)
+// the referenced agents, and returns the new status plus install steps.
+app.post("/agent/gitagent", async (req, res) => {
+  const { container, developer, guardrails } = req.body;
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  try {
+    writePipelineManifest(session.dir, {
+      developer: developer || null,
+      guardrails: Array.isArray(guardrails) ? guardrails : [],
+    });
+    const steps = [];
+    await resolvePipelineAgents(session.dir, (name, detail) => steps.push(`${name}: ${detail}`));
+    res.json({ status: await gitagentStatus(session.dir), steps });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // WebSocket — one connection per sandbox session
 // Client sends: { type: "chat", container: "...", message: "..." }
 // Server streams back: { type: "delta"|"done"|"tool"|"error", content: "..." }
@@ -957,8 +1208,7 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      const agentYaml = join(session.dir, "agent.yaml");
-      if (!existsSync(agentYaml)) {
+      if (!agentSpecPresent(session.dir)) {
         ws.send(JSON.stringify({ type: "error", content: "agent.yaml missing — generate spec first" }));
         return;
       }
