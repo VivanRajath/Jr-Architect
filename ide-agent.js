@@ -222,12 +222,59 @@ function renderEditSummary(container, files, turn) {
     wrap.appendChild(row);
   });
 
+  // Explicit control so the change is visible and confirmable: re-apply the new
+  // contents to disk and force the preview to show them. Changes are already
+  // written by the pipeline, so this is a safe re-apply that also reveals them.
+  if (changed.length) {
+    const actions = document.createElement('div');
+    actions.className = 'agent-edit-actions';
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'agent-edit-apply';
+    applyBtn.textContent = `Apply changes${changed.length > 1 ? ` (${changed.length})` : ''} & show in preview`;
+    applyBtn.onclick = () => applyEditSummary(changed, applyBtn);
+    actions.appendChild(applyBtn);
+    wrap.appendChild(actions);
+  }
+
   const hint = document.createElement('div');
   hint.className = 'agent-edit-hint';
-  hint.textContent = changed.length ? 'Preview reloaded · click a file to see the diff' : 'No files changed — try rephrasing or naming the exact file.';
+  hint.textContent = changed.length
+    ? 'Changes written to disk. Click a file for its diff, or use Apply changes to reveal them in the preview.'
+    : 'No files changed — try rephrasing or naming the exact file.';
   wrap.appendChild(hint);
 
   container.appendChild(wrap);
+}
+
+// Re-apply the edited files' new contents to disk (idempotent — the pipeline
+// already wrote them) and force the preview to reveal the change. Gives the user
+// a tangible "the code changed and here it is" confirmation.
+async function applyEditSummary(changed, btn) {
+  if (!IDE.container) { showToast('Launch a repo first', 'error'); return; }
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
+  let ok = 0;
+  for (const f of changed) {
+    if (f.after == null) continue;
+    try {
+      const res = await fetch('/file/save', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ container: IDE.container, path: f.path, content: f.after }),
+      });
+      if (res.ok) {
+        ok++;
+        const tab = IDE.tabs && IDE.tabs.find(t => t.path === f.path);
+        if (tab) { tab.model.setValue(f.after); tab.original = f.after; tab.modified = false; }
+      }
+    } catch { /* keep going */ }
+  }
+  if (typeof renderTabs === 'function') renderTabs();
+  if (typeof loadFileTree === 'function') loadFileTree();
+  // /file/save already wrote each file through the container, so the recompile is
+  // in flight — just reveal it (reloads now and after the recompile settles).
+  revealChangesInPreview(changed.map(f => f.path), true);
+  showToast(`Applied ${ok} change${ok === 1 ? '' : 's'} · preview updating`, ok ? 'success' : 'error');
+  if (btn) { btn.disabled = false; btn.textContent = orig; }
 }
 
 function editStatusIcon(kind) {
@@ -253,12 +300,36 @@ function finishAgentTurn() {
     loadFileTree();
     // Reload editors for files the agent touched (without clobbering unsaved edits).
     t.changedPaths.forEach(reloadOpenFileFromDisk);
-    // Reload the live preview if it's showing.
-    const preview = document.getElementById('ide-preview-panel');
-    if (preview && preview.style.display !== 'none') {
-      refreshPreview();
+    // Reveal the change in the preview. The agent's auto-apply writes files
+    // host-side, which the containerized dev server won't notice on its own, so
+    // touch them inside the container to force a recompile, then reload.
+    if (!IDE.previewUserClosed) {
+      revealChangesInPreview(Array.from(t.changedPaths), false);
+    } else {
+      const preview = document.getElementById('ide-preview-panel');
+      if (preview && preview.style.display !== 'none') revealChangesInPreview(Array.from(t.changedPaths), false);
     }
   }
+}
+
+// Make an edit actually show in the live preview. The dev server runs inside the
+// sandbox and doesn't reliably see host-side writes (Docker bind-mount cache), so
+// we ask the backend to re-write the changed files THROUGH the container (unless
+// they were just saved via /file/save, which already does this) — that forces the
+// dev server to recompile. Then we reload the preview twice: once now (catches HMR
+// / an already-compiled route) and once after the recompile settles.
+async function revealChangesInPreview(paths, alreadySynced) {
+  try {
+    if (!alreadySynced && Array.isArray(paths) && paths.length && IDE.container) {
+      await fetch('/sandbox/sync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ container: IDE.container, paths }),
+      });
+    }
+  } catch { /* best-effort */ }
+  if (typeof showChangesInPreview !== 'function') return;
+  showChangesInPreview();
+  setTimeout(() => showChangesInPreview(), 2200);
 }
 
 function setAgentBusy(busy) {
@@ -481,3 +552,399 @@ document.addEventListener('DOMContentLoaded', () => {
     agentInput.addEventListener('input', () => autoGrowAgentInput(agentInput));
   }
 });
+
+// ── GitAgent panel ───────────────────────────────────────────────────────────
+//
+// Browse the GitAgent registry (registry.gitagent.sh), see which community agents
+// fill the Developer and Guardrails slots of the edit pipeline for this workspace,
+// and swap them. Assigning writes .gitagent/pipeline.json and live-clones the
+// agent into the sandbox — so the next edit runs as that agent. See registry.js.
+
+const GitAgent = { status: null, registry: [], busy: false, filter: '' };
+
+// Which slot a registry category fills (mirrors the backend).
+function gaSlotFor(category) {
+  return (category === 'security' || category === 'compliance') ? 'guardrails' : 'developer';
+}
+
+function gaEnsureModal() {
+  let m = document.getElementById('gitagent-modal');
+  if (m) return m;
+  m = document.createElement('div');
+  m.className = 'ga-modal';
+  m.id = 'gitagent-modal';
+  m.style.display = 'none';
+  m.innerHTML = `
+    <div class="ga-box">
+      <div class="ga-head">
+        <div class="ga-title">GitAgent pipeline
+          <a href="https://registry.gitagent.sh" target="_blank" rel="noopener" class="ga-sub">registry.gitagent.sh</a>
+        </div>
+        <button class="ga-close" onclick="closeGitAgentPanel()" title="Close">&times;</button>
+      </div>
+      <div class="ga-slots" id="ga-slots"></div>
+      <div class="ga-skills-strip">
+        <div class="ga-skills-head">
+          <span class="ga-skills-title">Skills <span>the personas in .gitagent/skills — edit a file to change behavior</span></span>
+          <button class="ga-btn" onclick="gaNewSkill()">+ New skill</button>
+        </div>
+        <div class="ga-skills" id="ga-skills"></div>
+      </div>
+      <div class="ga-browser">
+        <div class="ga-browser-head">
+          <input id="ga-search" class="ga-search" placeholder="Search the registry (name, tag, category)…" spellcheck="false" />
+          <span class="ga-manual">
+            <input id="ga-ref" class="ga-search ga-ref-input" placeholder="author/agent-name" spellcheck="false" />
+            <button class="ga-btn dev" onclick="gaAssignManual('developer')">Dev</button>
+            <button class="ga-btn guard" onclick="gaAssignManual('guardrails')">Guard</button>
+          </span>
+        </div>
+        <div class="ga-list" id="ga-list"></div>
+      </div>
+      <div class="ga-steps" id="ga-steps"></div>
+    </div>`;
+  m.addEventListener('click', (e) => { if (e.target === m) closeGitAgentPanel(); });
+  document.body.appendChild(m);
+  const search = m.querySelector('#ga-search');
+  search.addEventListener('input', () => { GitAgent.filter = search.value.trim().toLowerCase(); gaRenderList(); });
+  return m;
+}
+
+async function openGitAgentPanel() {
+  if (!IDE.container) { showToast('Launch a repo first', 'error'); return; }
+  const m = gaEnsureModal();
+  m.style.display = 'flex';
+  gaRenderSlots();   // paint from any cached state immediately
+  gaRenderSkills();
+  gaRenderList();
+  await Promise.all([gaLoadStatus(), gaLoadRegistry()]);
+}
+
+function closeGitAgentPanel() {
+  const m = document.getElementById('gitagent-modal');
+  if (m) m.style.display = 'none';
+}
+
+async function gaLoadStatus() {
+  try {
+    const res = await fetch(`/agent/gitagent?container=${encodeURIComponent(IDE.container)}`);
+    const data = await res.json();
+    if (res.ok) { GitAgent.status = data; gaRenderSlots(); gaRenderSkills(); }
+  } catch { /* offline — slots stay as-is */ }
+}
+
+// The repo's own skills (.gitagent/skills). Built-in personas plus any the user
+// authored. Click one to open its SKILL.md in the editor (it's the source of truth).
+function gaRenderSkills() {
+  const el = document.getElementById('ga-skills');
+  if (!el) return;
+  const skills = (GitAgent.status && GitAgent.status.skills) || [];
+  if (!skills.length) { el.innerHTML = '<span class="ga-empty">No skills yet.</span>'; return; }
+  el.innerHTML = skills.map((s) =>
+    `<button class="ga-skill-chip" title="Open .gitagent/skills/${escapeHtml(s)}/SKILL.md"
+        onclick="gaOpenSkill('${escapeHtml(s)}')">${escapeHtml(s)}</button>`).join('');
+}
+
+function gaOpenSkill(slug) {
+  const path = `.gitagent/skills/${slug}/SKILL.md`;
+  closeGitAgentPanel();
+  if (typeof openFile === 'function') openFile(path, 'SKILL.md');
+}
+
+async function gaNewSkill() {
+  if (!IDE.container) { showToast('Launch a repo first', 'error'); return; }
+  const name = prompt('New skill name (e.g. accessibility-checker):');
+  if (!name || !name.trim()) return;
+  const description = prompt('One-line description (optional):') || '';
+  const body = prompt('When does it apply and how should the agent behave? (optional):') || '';
+  try {
+    const res = await fetch('/agent/skill', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ container: IDE.container, name, description, body }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.error || 'Could not create skill', 'error'); return; }
+    if (GitAgent.status) GitAgent.status.skills = data.skills || GitAgent.status.skills;
+    gaRenderSkills();
+    if (typeof loadFileTree === 'function') loadFileTree();
+    showToast(`Created skill "${data.slug}"`, 'success');
+  } catch (e) {
+    showToast('Create skill failed', 'error');
+  }
+}
+
+async function gaLoadRegistry() {
+  const list = document.getElementById('ga-list');
+  if (list && !GitAgent.registry.length) list.innerHTML = '<div class="ga-empty">Loading registry…</div>';
+  try {
+    const res = await fetch('/agent/registry');
+    const data = await res.json();
+    GitAgent.registry = (data && data.agents) || [];
+  } catch { GitAgent.registry = []; }
+  gaRenderList();
+}
+
+function gaSlotCard(slot, agent) {
+  if (!agent) {
+    return `<div class="ga-slot-agent empty">Built-in ${slot === 'developer' ? 'Developer' : 'Guardrails'}</div>`;
+  }
+  const dot = agent.installed ? 'installed' : 'pending';
+  return `<div class="ga-slot-agent">
+      <span class="ga-dot ${dot}" title="${agent.installed ? 'cloned into the sandbox' : 'clones on next edit'}"></span>
+      <span class="ga-slot-name">${escapeHtml(agent.ref)}</span>
+      <button class="ga-x" title="Remove" onclick="gaRemove('${escapeHtml(agent.ref)}','${slot}')">&times;</button>
+    </div>`;
+}
+
+function gaRenderSlots() {
+  const el = document.getElementById('ga-slots');
+  if (!el) return;
+  const st = GitAgent.status || { developer: null, guardrails: [] };
+  const guards = (st.guardrails || []).map((g) => gaSlotCard('guardrails', g)).join('');
+  el.innerHTML = `
+    <div class="ga-slot">
+      <div class="ga-slot-label">Developer<span>rewrites the code</span></div>
+      <div class="ga-slot-body">${gaSlotCard('developer', st.developer)}</div>
+    </div>
+    <div class="ga-slot">
+      <div class="ga-slot-label">Guardrails<span>can block an edit</span></div>
+      <div class="ga-slot-body">${guards || gaSlotCard('guardrails', null)}</div>
+    </div>`;
+}
+
+function gaRenderList() {
+  const el = document.getElementById('ga-list');
+  if (!el) return;
+  if (!GitAgent.registry.length) {
+    el.innerHTML = '<div class="ga-empty">Registry unavailable. Add an agent by ref above (author/agent-name).</div>';
+    return;
+  }
+  const f = GitAgent.filter;
+  const rows = GitAgent.registry.filter((a) => {
+    if (!f) return true;
+    return (a.ref + ' ' + a.description + ' ' + a.category + ' ' + (a.tags || []).join(' ')).toLowerCase().includes(f);
+  });
+  if (!rows.length) { el.innerHTML = '<div class="ga-empty">No agents match.</div>'; return; }
+  el.innerHTML = rows.map((a) => {
+    const primary = gaSlotFor(a.category);
+    return `<div class="ga-card">
+      <div class="ga-card-main">
+        <div class="ga-card-top">
+          <span class="ga-card-name">${escapeHtml(a.ref)}</span>
+          <span class="ga-tag ${primary}">${escapeHtml(a.category)}</span>
+        </div>
+        <div class="ga-card-desc">${escapeHtml(a.description || '')}</div>
+      </div>
+      <div class="ga-card-actions">
+        <button class="ga-btn dev" onclick="gaAssign('${escapeHtml(a.ref)}','developer')">Developer</button>
+        <button class="ga-btn guard" onclick="gaAssign('${escapeHtml(a.ref)}','guardrails')">+ Guardrail</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function gaRenderSteps(steps) {
+  const el = document.getElementById('ga-steps');
+  if (!el) return;
+  if (!steps || !steps.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div class="ga-steps-title">Install log</div>' +
+    steps.map((s) => `<div class="ga-step">${escapeHtml(s)}</div>`).join('');
+}
+
+function gaCurrent() {
+  const st = GitAgent.status || { developer: null, guardrails: [] };
+  return {
+    developer: st.developer ? st.developer.ref : null,
+    guardrails: (st.guardrails || []).map((g) => g.ref),
+  };
+}
+
+async function gaAssign(ref, slot) {
+  const cur = gaCurrent();
+  if (slot === 'developer') cur.developer = ref;
+  else if (!cur.guardrails.includes(ref)) cur.guardrails.push(ref);
+  await gaSave(cur.developer, cur.guardrails);
+}
+
+function gaAssignManual(slot) {
+  const input = document.getElementById('ga-ref');
+  const ref = (input.value || '').trim();
+  if (!/^[^/\s]+\/[^/\s]+$/.test(ref)) { showToast('Use author/agent-name', 'error'); return; }
+  input.value = '';
+  gaAssign(ref, slot);
+}
+
+async function gaRemove(ref, slot) {
+  const cur = gaCurrent();
+  if (slot === 'developer') cur.developer = null;
+  else cur.guardrails = cur.guardrails.filter((r) => r !== ref);
+  await gaSave(cur.developer, cur.guardrails);
+}
+
+async function gaSave(developer, guardrails) {
+  if (GitAgent.busy) return;
+  GitAgent.busy = true;
+  gaRenderSteps(['GitAgent: installing…']);
+  try {
+    const res = await fetch('/agent/gitagent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ container: IDE.container, developer, guardrails }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.error || 'Update failed', 'error'); gaRenderSteps([]); return; }
+    GitAgent.status = data.status;
+    gaRenderSlots();
+    gaRenderSteps(data.steps);
+    showToast('GitAgent pipeline updated', 'success');
+  } catch (e) {
+    showToast('Update failed', 'error');
+    gaRenderSteps([]);
+  } finally {
+    GitAgent.busy = false;
+  }
+}
+
+// ── Build doctor (intelligent auto-fix) ──────────────────────────────────────
+// Reads the sandbox's container logs and asks the agent to classify real errors
+// vs. noise, then proposes ONE fix (a command to run, or an edit to apply) with a
+// one-click action. Triggered automatically when the app is slow to come up
+// (ide.js fetchStatus) and manually from the "Diagnose" button in the agent panel.
+let doctorBusy = false;
+
+function ensureAgentPanelOpen() {
+  const panel = document.getElementById('ide-agent-panel');
+  if (panel && panel.style.display === 'none' && typeof toggleAgentPanel === 'function') {
+    toggleAgentPanel();
+  }
+}
+
+function doctorProvider() {
+  const el = document.getElementById('agent-provider');
+  return el ? el.value : undefined;
+}
+
+async function runDoctor(auto) {
+  if (!IDE.container) { if (!auto) showToast('Launch a repo first', 'error'); return; }
+  if (doctorBusy) return;
+  doctorBusy = true; IDE.doctorRunning = true;
+  ensureAgentPanelOpen();
+  const messages = document.getElementById('agent-messages');
+  const welcome = messages && messages.querySelector('.agent-welcome');
+  if (welcome) welcome.remove();
+  const statusEl = document.createElement('div');
+  statusEl.className = 'agent-msg loading';
+  statusEl.textContent = auto ? 'The app is taking a while — checking the logs' : 'Diagnosing the app';
+  if (messages) { messages.appendChild(statusEl); scrollAgent(messages); }
+  try {
+    let logs = '';
+    try { logs = await (await fetch(`/logs/${IDE.container}`)).text(); } catch (e) { /* logs optional */ }
+    const res = await fetch('/agent/diagnose', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ container: IDE.container, logs, provider: doctorProvider() }),
+    });
+    statusEl.remove();
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (!auto) showToast(err.error || 'Diagnosis failed', 'error');
+      return;
+    }
+    renderDoctorCard(await res.json(), auto);
+  } catch (e) {
+    statusEl.remove();
+    if (!auto) showToast('Diagnosis error', 'error');
+  } finally {
+    doctorBusy = false; IDE.doctorRunning = false;
+  }
+}
+
+function renderDoctorCard(result, auto) {
+  const messages = document.getElementById('agent-messages');
+  if (!messages) return;
+  const sev = ['error', 'warning', 'ok'].includes(result.severity) ? result.severity : 'warning';
+  const fix = result.fix || { kind: 'none' };
+
+  const card = document.createElement('div');
+  card.className = 'agent-msg doctor-card sev-' + sev;
+  let html = `<div class="doctor-head"><span class="doctor-dot"></span>`
+    + `<span class="doctor-title">Build doctor</span>`
+    + `<span class="doctor-sev">${escapeHtml(sev)}</span></div>`;
+  if (result.summary) html += `<div class="doctor-summary">${escapeHtml(result.summary)}</div>`;
+  if (result.cause) html += `<div class="doctor-cause">${escapeHtml(result.cause)}</div>`;
+  card.innerHTML = html;
+
+  if (fix.kind === 'command' && fix.command) {
+    const box = document.createElement('div');
+    box.className = 'doctor-fix';
+    box.innerHTML = `<div class="doctor-fix-label">Suggested command</div>`
+      + `<pre class="doctor-cmd"><code>${escapeHtml(fix.command)}</code></pre>`;
+    const btn = document.createElement('button');
+    btn.className = 'doctor-btn';
+    btn.textContent = 'Run in terminal';
+    btn.onclick = () => doctorRunCommand(fix.command, btn, card);
+    box.appendChild(btn);
+    card.appendChild(box);
+  } else if (fix.kind === 'edit' && fix.instruction) {
+    const box = document.createElement('div');
+    box.className = 'doctor-fix';
+    box.innerHTML = `<div class="doctor-fix-label">Suggested edit${fix.file ? ' · ' + escapeHtml(fix.file) : ''}</div>`
+      + `<div class="doctor-instruction">${escapeHtml(fix.instruction)}</div>`;
+    const btn = document.createElement('button');
+    btn.className = 'doctor-btn';
+    btn.textContent = 'Apply fix';
+    btn.onclick = () => {
+      doctorApplyEdit(fix.file ? `In ${fix.file}: ${fix.instruction}` : fix.instruction);
+      btn.disabled = true; btn.textContent = 'Applying';
+    };
+    box.appendChild(btn);
+    card.appendChild(box);
+  } else {
+    const ok = document.createElement('div');
+    ok.className = 'doctor-clear';
+    ok.textContent = sev === 'ok'
+      ? 'No blocking problem found. The app is fine — any warnings in the log are safe to ignore.'
+      : 'Nothing to fix automatically right now.';
+    card.appendChild(ok);
+  }
+  messages.appendChild(card);
+  scrollAgent(messages);
+}
+
+async function doctorRunCommand(command, btn, card) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Running'; }
+  try {
+    const res = await fetch('/terminal/exec', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ container: IDE.container, command }),
+    });
+    const out = await res.text();
+    if (card) {
+      const pre = document.createElement('pre');
+      pre.className = 'doctor-output';
+      pre.textContent = (out || '').slice(-2000);
+      card.appendChild(pre);
+      scrollAgent(document.getElementById('agent-messages'));
+    }
+    showToast(res.ok ? 'Command finished' : 'Command failed', res.ok ? 'success' : 'error');
+    if (btn) { btn.textContent = res.ok ? 'Ran' : 'Retry'; btn.disabled = !res.ok; }
+    // Re-arm the doctor and reset the grace window so a follow-up check can run.
+    IDE.doctorRan = false; IDE.launchedAt = Date.now();
+  } catch (e) {
+    showToast('Run error', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Run in terminal'; }
+  }
+}
+
+// Route an edit fix through the existing (guardrailed) edit pipeline by reusing
+// the normal agent send, forced to Edit mode for this one turn.
+function doctorApplyEdit(instruction) {
+  const input = document.getElementById('agent-input');
+  if (!input) return;
+  if (agentTurn) { showToast('Wait for the current turn to finish', 'error'); return; }
+  input.value = instruction;
+  const modeEl = document.getElementById('agent-mode');
+  const prev = modeEl ? modeEl.value : null;
+  if (modeEl) modeEl.value = 'edit';
+  sendAgentMessage();
+  if (modeEl && prev !== null) modeEl.value = prev;
+}

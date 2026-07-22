@@ -1810,7 +1810,13 @@ node server.js"></textarea>
             </svg>
             AI Agent
           </span>
-          <button onclick="toggleAgentPanel()" title="Close">&times;</button>
+          <div class="agent-header-actions">
+            <button class="agent-header-btn" onclick="runDoctor(false)"
+              title="Diagnose the app — read the container logs and propose a fix">Diagnose</button>
+            <button class="agent-header-btn" onclick="openGitAgentPanel()"
+              title="GitAgent pipeline — run community agents from registry.gitagent.sh">GitAgent</button>
+            <button onclick="toggleAgentPanel()" title="Close">&times;</button>
+          </div>
         </div>
         <div class="agent-chat" id="agent-chat">
           <div class="agent-messages" id="agent-messages">

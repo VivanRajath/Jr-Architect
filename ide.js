@@ -10,6 +10,8 @@ const IDE = {
   activeTerminalId: null,
   terminalCounter: 0,
   darkMode: false,
+  // Build doctor (auto issue diagnosis)
+  launchedAt: 0, doctorRan: false, doctorRunning: false,
 };
 
 function initIDE(containerId, repoUrl, port) {
@@ -19,6 +21,7 @@ function initIDE(containerId, repoUrl, port) {
   // Reset per-sandbox state
   IDE.appReady = false; IDE.previewPending = false; IDE.previewAutoOpened = false;
   IDE.previewUserClosed = false; IDE.framework = ''; IDE.uiEntry = null;
+  IDE.launchedAt = Date.now(); IDE.doctorRan = false; IDE.doctorRunning = false;
   document.body.classList.add('ide-mode');
   document.getElementById('landing-page').style.display = 'none';
   document.getElementById('ide-page').style.display = 'flex';
@@ -803,6 +806,18 @@ async function fetchStatus() {
     if (running && !IDE.appReady) { IDE.appReady = true; onAppReady(); }
     else if (!running) { IDE.appReady = false; }
 
+    // Intelligent IDE: if the app is still not answering well after a grace
+    // window (a slow install is normal, a broken build is not), let the agent
+    // read the container logs and decide — reassure if it's just installing,
+    // propose a fix if something is actually wrong. Once, per stuck episode.
+    if (running) {
+      IDE.doctorRan = false; // healthy again → re-arm for a future breakage
+    } else if (!IDE.doctorRan && !IDE.doctorRunning && IDE.launchedAt &&
+               (Date.now() - IDE.launchedAt) > 150000) {
+      IDE.doctorRan = true;
+      if (typeof runDoctor === 'function') runDoctor(true);
+    }
+
     // Framework badge (e.g. "Next.js (Lyzr App)") — set once detection resolves.
     if (data.framework) IDE.framework = data.framework;
     const fwBadge = document.getElementById('framework-badge');
@@ -910,6 +925,32 @@ function refreshPreview() {
     return;
   }
   loadPreviewIntoIframe();
+}
+
+// Force the live preview to reveal a just-applied edit: open the panel if it's
+// closed (so the change is actually visible), then hard-reload with a cache-bust
+// param so a CSS/Tailwind change isn't served from the iframe's cache. Returns
+// false if the app isn't reachable yet (shows the waiting state instead).
+function showChangesInPreview() {
+  const panel = document.getElementById('ide-preview-panel');
+  if (panel && panel.style.display === 'none') {
+    panel.style.display = 'flex';
+    IDE.previewUserClosed = false;
+    if (IDE.editor && typeof IDE.editor.layout === 'function') setTimeout(() => IDE.editor.layout(), 0);
+  }
+  if (!IDE.appReady) {
+    showPreviewLoading();
+    IDE.previewPending = true;
+    return false;
+  }
+  IDE.previewPending = false;
+  hidePreviewLoading();
+  const iframe = document.getElementById('preview-iframe');
+  const base = IDE.previewUrl || `http://127.0.0.1:${IDE.port}`;
+  const bust = (base.includes('?') ? '&' : '?') + '_jr=' + Date.now();
+  iframe.style.display = '';
+  iframe.src = base + bust;
+  return true;
 }
 
 // ── Locate UI source (from the preview) ──
