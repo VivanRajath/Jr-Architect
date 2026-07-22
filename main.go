@@ -324,6 +324,8 @@ func startSandbox(repo string, instructions string, mode string) (Sandbox, error
 			addLog(container, "Runtime detection failed: "+err.Error())
 			return err
 		}
+		// Speed up the dependency install (skip npm audit/fund, prefer the cache).
+		runtimeConfig.StartupCommand = normalizeInstall(runtimeConfig.StartupCommand)
 		addLog(container, fmt.Sprintf("Runtime detected: image=%s, port=%d, cmd=%s", runtimeConfig.Image, runtimeConfig.Port, runtimeConfig.StartupCommand))
 
 		// Record the framework label so the IDE can show what kind of app this is
@@ -638,8 +640,71 @@ func fileSaveHandler(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 500)
 		return
 	}
+	// Also write it through the container so the dev server actually sees it.
+	syncFileToContainer(req.Container, absPath, req.Path)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
+}
+
+// syncFileToContainer re-writes a file's contents from INSIDE the sandbox
+// container, so the running dev server sees the change. On Docker Desktop
+// (Windows/macOS) the workspace is a bind mount, and a HOST-side write does not
+// reliably reach the container's view of that mount — the container's FUSE layer
+// serves cached content/attrs, so Next.js/Vite never recompiles and the live
+// preview stays stale even though the file on disk is already correct. Writing the
+// same bytes back THROUGH the container (`cat > file` over `docker exec`) goes
+// through the very filesystem layer the dev server reads from, which both refreshes
+// the content and bumps the mtime the watcher polls — forcing a recompile.
+// Best-effort: a missing container or unreadable file is ignored.
+func syncFileToContainer(container, hostAbsPath, relPath string) {
+	if container == "" || relPath == "" {
+		return
+	}
+	data, err := os.ReadFile(hostAbsPath)
+	if err != nil {
+		return
+	}
+	cp := "/workspace/" + strings.TrimPrefix(filepath.ToSlash(relPath), "/")
+	// `sh -c 'cat > "$0"' <path>` passes the path as $0 to avoid any shell quoting
+	// issues, and cat writes the piped bytes into it.
+	c := exec.Command("docker", "exec", "-i", container, "sh", "-c", `cat > "$0"`, cp)
+	c.Stdin = strings.NewReader(string(data))
+	_ = c.Run()
+}
+
+type SyncRequest struct {
+	Container string   `json:"container"`
+	Paths     []string `json:"paths"`
+}
+
+// sandboxSyncHandler re-syncs files the agent edited directly on disk (the
+// auto-apply path writes host-side and never hits /file/save) into the container,
+// so the live preview reflects the change.
+func sandboxSyncHandler(w http.ResponseWriter, r *http.Request) {
+	corsHeaders(w)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	var req SyncRequest
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err := json.Unmarshal(body, &req); err != nil {
+		jsonError(w, "invalid JSON", 400)
+		return
+	}
+	mutex.Lock()
+	sb, ok := sandboxes[req.Container]
+	mutex.Unlock()
+	if !ok {
+		jsonError(w, "sandbox not found", 404)
+		return
+	}
+	for _, p := range req.Paths {
+		if abs, ok := resolveInWorkspace(sb.Workdir, p); ok {
+			syncFileToContainer(req.Container, abs, p)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "synced"})
 }
 
 type FileCreateRequest struct {
@@ -1206,6 +1271,7 @@ func main() {
 	http.HandleFunc("/file/rename", fileRenameHandler)
 	http.HandleFunc("/terminal/exec", terminalExecHandler)
 	http.HandleFunc("/sandbox/status", sandboxStatusHandler)
+	http.HandleFunc("/sandbox/sync", sandboxSyncHandler)
 	http.HandleFunc("/sandbox/entry", sandboxEntryHandler)
 	http.Handle("/agent/", agentProxyHandler())
 	http.HandleFunc("/terminal/ws", terminalWSHandler)

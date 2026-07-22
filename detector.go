@@ -460,6 +460,24 @@ func findProjectRoot(root string) (string, string) {
 	return root, ""
 }
 
+// normalizeInstall speeds up dependency installs in the startup command. A cold
+// `npm install` spends a lot of its time on the audit + funding network lookups
+// (see the ~5-minute install in the sandbox logs); `--no-audit --no-fund` drops
+// them and `--prefer-offline` reuses the mounted npm cache, so warm re-runs are
+// fast. Idempotent: only rewrites a bare `npm install` / `pip install` that
+// doesn't already carry the flags, and only the first occurrence per command.
+func normalizeInstall(cmd string) string {
+	if strings.Contains(cmd, "npm install") && !strings.Contains(cmd, "--no-audit") {
+		cmd = strings.Replace(cmd, "npm install",
+			"npm install --prefer-offline --no-audit --no-fund --progress=false --loglevel=error", 1)
+	}
+	if strings.Contains(cmd, "pip install") && !strings.Contains(cmd, "--no-input") {
+		cmd = strings.Replace(cmd, "pip install",
+			"pip install --no-input --disable-pip-version-check", 1)
+	}
+	return cmd
+}
+
 // prefixSubdir prepends "cd <subdir> && " to a startup command when the
 // project root is in a subdirectory.
 func prefixSubdir(cmd, subdir string) string {
