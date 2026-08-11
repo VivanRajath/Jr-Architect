@@ -1,0 +1,66 @@
+/* Self-hosted webfonts.
+ *
+ * These used to come from fonts.googleapis.com, which meant the "self-hosted,
+ * single binary" claim was not literally true and the UI fell back to system
+ * fonts on an offline or air-gapped machine. The woff2 files here ship inside
+ * the Go binary alongside everything else.
+ *
+ * Latin subset only, and only the weights the UI actually uses:
+ *   Inter          300 400 500 600 700
+ *   JetBrains Mono 400 500
+ * Source: @fontsource/inter@5, @fontsource/jetbrains-mono@5 (SIL Open Font License).
+ *
+ * font-display: swap so text paints immediately in the fallback and reflows
+ * once the face arrives, rather than blocking the first render.
+ */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('/vendor/fonts/inter-latin-300-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/vendor/fonts/inter-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/vendor/fonts/inter-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/vendor/fonts/inter-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/vendor/fonts/inter-latin-700-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/vendor/fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/vendor/fonts/jetbrains-mono-latin-500-normal.woff2') format('woff2');
+}
