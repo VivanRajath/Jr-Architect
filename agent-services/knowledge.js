@@ -1,25 +1,9 @@
-// The Knowledge slot: reading the repo once, properly, so every later turn has
-// something real to stand on.
+// Runs once when a workspace opens, on its own key, to write knowledge/overview.md
+// (always_load). repo-map.md says WHERE things are; this says what they do, which
+// needs far more context than a chat turn can afford.
 //
-// WHY THIS EXISTS
-// repomap.go already writes knowledge/repo-map.md at clone time — a file list,
-// directory counts and exported symbol names. That is a MAP: it says where things
-// are and nothing about what they do. Asked to "summarise this repo", the chat
-// agent could only paraphrase a directory listing, because a directory listing was
-// all it had. It cannot fix that itself: a chat turn on a shared free-tier key can
-// afford maybe 6k characters of context, which is not enough to read a codebase.
-//
-// So this runs ONCE when the workspace opens, on its OWN API key, and spends a
-// budget no chat turn could — ~24k characters of actual source — to write
-// knowledge/overview.md: what the project is, how a request flows through it,
-// where things live, and what would waste an hour. That document is registered
-// always_load, so every later turn starts from it.
-//
-// IT IS AN AGENT, NOT A SYSTEM PROMPT
-// The instructions it follows are .gitagent/skills/knowledge-builder/SKILL.md —
-// a real file in the repo, scaffolded by gitagentgenerator.go, editable in the
-// panel, versioned in git. Assign a registry agent to the Knowledge slot and its
-// overlay SKILL.md replaces it. Nothing here hardcodes what the document says.
+// The prompt is .gitagent/skills/knowledge-builder/SKILL.md — a file in the repo,
+// so nothing here hardcodes what the document says.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync } from "node:fs";
 import { join, extname, basename } from "node:path";
@@ -32,8 +16,7 @@ const INDEX_REL = "knowledge/index.yaml";
 const REPO_MAP_REL = "knowledge/repo-map.md";
 const FULL_MAP_REL = "knowledge/repo-map-full.md";
 
-// Total characters of repo handed to the model. A chat turn gets ~6k; this gets
-// four times that, which is the entire reason for the dedicated key.
+// ~4x what a chat turn can afford — the reason for the dedicated key.
 const INPUT_BUDGET = Number(process.env.KNOWLEDGE_INPUT_CHARS) || 24000;
 const CAP_MAP = 3000;
 const CAP_FULL_MAP = 2500;
@@ -53,13 +36,12 @@ const SOURCE_EXT = new Set([
   ".java", ".rs", ".vue", ".svelte", ".cs", ".kt", ".swift",
 ]);
 
-// A file whose name says "this is where things start or are wired together".
+// Names that read like an entry point or a wiring layer.
 const CENTRAL_NAME = /^(index|main|app|server|router|routes|api|store|db|database|schema|config|settings|client|handler|handlers|service|services|core|entry)\b/i;
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec|e2e|fixtures?|mocks?)(\/|$)|\.(test|spec)\.[a-z]+$/i;
 const GENERATED = /(^|\/)(generated|\.generated|migrations?\/\d|dist|build)(\/|$)|\.(min|bundle|generated)\.[a-z]+$/i;
 
-// Same shallow patterns repomap.go uses. Symbol COUNT is the signal here, not the
-// names: a file that exports a lot is usually a file that matters.
+// repomap.go's patterns; here the COUNT is the signal, not the names.
 const SYMBOL_RE = [
   /(?:^|\n)\s*export\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|interface|type|enum)\s+[A-Za-z_$]/g,
   /(?:^|\n)func\s+(?:\([^)]*\)\s+)?[A-Z]/g,
@@ -92,8 +74,7 @@ function firstExisting(dir, names) {
   return "";
 }
 
-// package.json is mostly noise for this purpose; the dependency and script names
-// are the part that says what the project is built out of.
+// Only the dependency and script NAMES say what the project is built out of.
 function summarizeManifest(rel, raw) {
   if (!rel.endsWith("package.json")) return raw.slice(0, CAP_MANIFEST);
   try {
@@ -111,10 +92,8 @@ function summarizeManifest(rel, raw) {
   }
 }
 
-// Walk the repo and score every source file, cheaply and without a model. Score is
-// a sum of three signals: a name that reads like an entry point, how much the file
-// exports, and how shallow it sits. Tests, generated output and vendored code score
-// nothing — they teach the reader least per token.
+// Score every source file without a model: entry-ish name, export count, depth.
+// Tests, generated output and vendored code score nothing.
 export function rankSourceFiles(dir, limit = MAX_SOURCE_FILES) {
   const found = [];
   const walk = (abs, rel, depth) => {
@@ -155,8 +134,7 @@ export function rankSourceFiles(dir, limit = MAX_SOURCE_FILES) {
   return found.slice(0, limit);
 }
 
-// Everything the builder gets to read, already capped to the budget. Pure apart
-// from the filesystem, so it can be tested against a fixture repo with no model.
+// Everything the builder reads, capped to the budget. Testable with no model.
 export function gatherKnowledgeInputs(dir) {
   const sections = [];
   let spent = 0;
@@ -171,8 +149,7 @@ export function gatherKnowledgeInputs(dir) {
   add("Static repo map (already generated — do not repeat it)", REPO_MAP_REL,
     readCapped(join(dir, ...REPO_MAP_REL.split("/")), CAP_MAP));
 
-  // The complete file list. Without it the model cites plausible-sounding files
-  // that do not exist ("morgan.js", "utils.js") because nothing told it otherwise.
+  // Ground truth for citations; without it the model invents plausible filenames.
   add("Complete file list — the ONLY paths that exist. Cite no others", FULL_MAP_REL,
     readCapped(join(dir, ...FULL_MAP_REL.split("/")), CAP_FULL_MAP));
 
@@ -196,17 +173,14 @@ export function gatherKnowledgeInputs(dir) {
   return { sections, chars: spent, files: sections.length };
 }
 
-// Built-in instructions, used only when the skill file is missing (a repo that
-// committed its own .gitagent without one). The real prompt is the SKILL.md that
-// gitagentgenerator.go scaffolds — this is the safety net, not the source.
+// Safety net for a repo whose .gitagent has no knowledge-builder SKILL.md.
 const FALLBACK_PERSONA = `You are the Knowledge Builder. Read the repository below and write
 knowledge/overview.md with these sections, in order: "## What this is",
 "## How it works", "## Where things live", "## Conventions", "## Gotchas",
 "## Key files". Ground every claim in a file you were actually shown, cite paths
 in backticks, and prefer short and true over long and padded.`;
 
-// The prompt is persona + evidence. The persona comes from the repo; this function
-// only assembles it, which is what keeps the agent replaceable.
+// Persona (from the repo) + evidence. Assembly only, so the agent stays replaceable.
 export function buildKnowledgePrompt(persona, inputs, projectName) {
   const body = inputs.sections
     .map((s) => `=== ${s.label}: ${s.path} ===\n${s.text}\n=== END ===`)
@@ -231,8 +205,7 @@ function cleanDocument(text) {
   return t.trim();
 }
 
-// The sections the built-in prompt asks for. Used to tell a partial document from
-// a complete one so a retry can name exactly what is missing.
+// Lets a retry name exactly which sections a partial draft is short of.
 const WANTED_SECTIONS = [
   "What this is", "How it works", "Where things live",
   "Conventions", "Gotchas", "Key files",
@@ -243,14 +216,10 @@ export function missingSections(text) {
   return WANTED_SECTIONS.filter((s) => !new RegExp(`^#{1,3}\\s+${s}\\b`, "im").test(t));
 }
 
-// A path in backticks that does not exist. The document is loaded into EVERY later
-// turn, so an invented file is not a cosmetic error — it becomes a fact the coding
-// agent then acts on, searching for a file that was never there. The skill file
-// forbids it; this is what makes that rule checkable instead of aspirational.
+// A cited path that does not exist. The document rides in every later turn, so an
+// invented file becomes a fact the coding agent then acts on.
 const PATH_LIKE = /`([A-Za-z0-9_@.\-/]+)`/g;
-// A real file extension, not "anything after a dot" — `process.stdout`, `res.end`
-// and `req.url` are JavaScript expressions the model quotes constantly, and
-// treating them as missing files made the check cry wolf.
+// A real extension, not "anything after a dot": process.stdout is not a file.
 const HAS_EXT =
   /\.(js|jsx|mjs|cjs|ts|tsx|go|py|rb|php|java|rs|vue|svelte|cs|kt|swift|css|scss|sass|html|json|md|mdx|ya?ml|toml|txt|sh|sql|env|lock|prisma|graphql|proto)$/i;
 
@@ -272,9 +241,7 @@ export function invalidPaths(dir, text) {
   return [...bad];
 }
 
-// A document must actually be a document. A model that answers "I would start by
-// looking at…" produces something worse than no file at all, because it would then
-// be loaded into every later turn as if it were fact.
+// A model that answers "I would start by looking at..." is worse than no file.
 export function looksLikeDocument(text) {
   const t = String(text || "").trim();
   if (t.length < 400) return false;
@@ -307,9 +274,7 @@ export function knowledgeStatus(dir) {
   }
 }
 
-// Register the document with the knowledge loader so it rides in every turn.
-// Mirrors ensureKnowledgeIndex in repomap.go: splice into an existing index rather
-// than clobber a repo's own knowledge, and no-op if we are already listed.
+// Splice into knowledge/index.yaml rather than clobber a repo's own entries.
 function ensureIndexed(dir) {
   const abs = join(dir, ...INDEX_REL.split("/"));
   const entry = "  - path: overview.md\n    always_load: true\n";
@@ -344,9 +309,7 @@ function writeDocument(dir, body, meta) {
   ensureIndexed(dir);
 }
 
-// Run the build. `model` is a gitclaw model string; the caller is responsible for
-// having put the dedicated key in the environment (see knowledge-worker.js — it
-// runs in its own process precisely so that key is never shared with a chat turn).
+// The caller supplies the dedicated key via the environment (knowledge-worker.js).
 export async function buildKnowledge({ dir, model, agent, maxTokens, onStep } = {}) {
   const step = (m) => { if (onStep) onStep(m); };
   if (!dir || !existsSync(dir)) return { ok: false, reason: "no-workspace" };
@@ -361,12 +324,8 @@ export async function buildKnowledge({ dir, model, agent, maxTokens, onStep } = 
 
   const basePrompt = buildKnowledgePrompt(persona, inputs, basename(dir));
 
-  // llama-3.3 is non-deterministic about long structured output: the same prompt
-  // produces a complete document one run and stops after four sections the next,
-  // or answers with prose about what it WOULD do. server.js already retries chat
-  // turns for the same reason. Retrying here is cheap — the builder owns its key,
-  // so a second call competes with nothing — and each retry names what was wrong,
-  // which is far more effective than repeating the same request.
+  // llama-3.3 drops sections non-deterministically. Retries are cheap here (own
+  // key), and naming the specific fault moves it where repeating the ask does not.
   const attempts = Math.max(1, (Number(process.env.KNOWLEDGE_RETRIES) || 2) + 1);
   const faults = (d) => missingSections(d).length + invalidPaths(dir, d).length;
   let best = "";
@@ -390,7 +349,7 @@ export async function buildKnowledge({ dir, model, agent, maxTokens, onStep } = 
         prompt,
         dir,
         model,
-        // Toolless, like every other path here: the model only has to write.
+        // Toolless: the model only has to write.
         replaceBuiltinTools: true,
         allowedTools: [],
         constraints: { maxTokens: maxTokens || 2500 },
@@ -404,8 +363,7 @@ export async function buildKnowledge({ dir, model, agent, maxTokens, onStep } = 
     }
 
     const doc = cleanDocument(text);
-    // Keep the best attempt: a later run that comes back worse must not lose a
-    // good earlier one. "Better" means fewer missing sections AND fewer invented paths.
+    // Keep the best attempt; a worse later run must not lose a good earlier one.
     if (looksLikeDocument(doc) && (!best || faults(doc) < faults(best))) {
       best = doc;
       error = null;
@@ -433,8 +391,7 @@ export async function buildKnowledge({ dir, model, agent, maxTokens, onStep } = 
   };
 }
 
-// A retry that just repeats the request usually repeats the failure. Naming the
-// specific gap — and handing back what it already wrote — is what actually moves it.
+// Hand back the draft and name the fault; repeating the ask repeats the failure.
 function correctionFor(basePrompt, previous, invented = []) {
   const gaps = missingSections(previous);
   if (!previous) {

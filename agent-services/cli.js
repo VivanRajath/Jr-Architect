@@ -1,15 +1,8 @@
 #!/usr/bin/env node
-// jr-architect — run this repository's own agent from a terminal.
+// jr-architect review --base main
 //
-//   jr-architect review --base main
-//
-// No IDE, no server, no Docker. It reads `.gitagent/pipeline.json`, clones the
-// compliance packs it names, and applies them to a diff. Exit code 1 when a pack
-// denies something, which is all a CI gate needs.
-//
-// This is the difference between "an IDE with a nice agent feature" and "the agent
-// is a property of the repository": clone the repo on any machine, run this, and
-// the same rules apply — because the rules are files in the repo.
+// Reads .gitagent/pipeline.json, clones the packs it names, applies them to a diff.
+// Exit 1 on a denial, which is all a CI gate needs. No IDE, server or Docker.
 
 import { reviewRange } from "./review.js";
 
@@ -60,8 +53,7 @@ function parseArgs(argv) {
   return out;
 }
 
-// Human output. Kept deliberately plain: this runs in CI logs as often as a
-// terminal, and colour codes in a log file help nobody.
+// Plain on purpose: this lands in CI logs as often as a terminal.
 function printHuman(res, opts) {
   const line = (s = "") => process.stdout.write(s + "\n");
 
@@ -73,8 +65,7 @@ function printHuman(res, opts) {
 
   for (const v of res.verdicts) {
     if (v.decision === "deny") line(`  DENY   ${v.path}\n         ${v.reason}`);
-    // "unreviewed" is not "ok". It means the file went through because the review
-    // could not run, and saying so is the whole value of the audit trail.
+    // "unreviewed" is not "ok" — nothing looked at this file.
     else if (v.decision === "unreviewed") line(`  ??     ${v.path}\n         unreviewed — ${v.reason}`);
     else line(`  ok     ${v.path}`);
   }
@@ -97,7 +88,7 @@ function printHuman(res, opts) {
 function printGitHub(res) {
   for (const v of res.verdicts) {
     if (v.decision !== "deny") continue;
-    // GitHub renders this as an annotation on the file in the PR's Files tab.
+    // Renders as an annotation on the file in the PR's Files tab.
     const msg = String(v.reason || "denied by a guardrail").replace(/\r?\n/g, " ");
     process.stdout.write(`::error file=${v.path},title=GitAgent guardrail::${msg}\n`);
   }

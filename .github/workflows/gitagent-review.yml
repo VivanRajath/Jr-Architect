@@ -1,12 +1,5 @@
-# Run this repository's own GitAgent pipeline against every pull request.
-#
-# The rules are not configured here. They live in `.gitagent/` — the repo's own
-# compliance file plus whatever packs `.gitagent/pipeline.json` pulls from the
-# registry. Change the rules by committing a change to those files; this workflow
-# never needs editing.
-#
-# That is the point of the whole design: the agent is a property of the repository,
-# so the same rules apply in the IDE, on a teammate's laptop, and here.
+# Runs this repo's own GitAgent pipeline on every pull request.
+# The rules live in .gitagent/, not here — this workflow never needs editing.
 
 name: GitAgent review
 
@@ -26,9 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The review diffs base...head, so it needs both sides. A shallow clone
-          # has neither merge base nor history and every file reads as new.
-          fetch-depth: 0
+          fetch-depth: 0   # base...head needs both sides; a shallow clone has neither
 
       - uses: actions/setup-node@v4
         with:
@@ -41,13 +32,9 @@ jobs:
       - name: Review the diff against this repo's guardrails
         working-directory: agent-services
         env:
-          # Any one provider is enough. Without a key the code-level floor still
-          # runs and still gates — secrets and protected paths are refused with no
-          # model involved at all.
+          # Without a key the code floor still runs and still gates.
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          # In CI an unreachable pack must NOT wave the change through. The IDE
-          # defaults to fail-open so a provider outage can't wedge someone's
-          # editor; a merge gate has the opposite priority.
+          # A merge gate must not wave a change through when a pack is unreachable.
           GITAGENT_GUARDRAIL_FAIL: closed
         run: |
           node cli.js review \
@@ -57,9 +44,7 @@ jobs:
             --message "${{ github.event.pull_request.title }}" \
             --github
 
-      # The decisions are written to .gitagent/audit/<date>.jsonl. Keeping them as
-      # an artifact means "what was enforced, on which commit, by which pack" is
-      # answerable months later without re-running anything.
+      # Keeps "what was enforced, on which commit, by which pack" answerable later.
       - name: Keep the decision log
         if: always()
         uses: actions/upload-artifact@v4

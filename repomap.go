@@ -49,8 +49,8 @@ var repoMapSymbolPatterns = []*regexp.Regexp{
 }
 
 const (
-	repoMapMaxFiles       = 500       // cap total files indexed
-	repoMapMaxSymbolsFile = 12        // cap symbols listed per file
+	repoMapMaxFiles       = 500        // cap total files indexed
+	repoMapMaxSymbolsFile = 12         // cap symbols listed per file
 	repoMapMaxReadBytes   = 256 * 1024 // don't scan giant/minified files for symbols
 )
 

@@ -2,10 +2,7 @@
 
 import { collectTurn, parseJsonLoose, AGENT_MAX_OUTPUT_TOKENS } from "./llm.js";
 
-// ── Tier 1: the code floor (no model) ────────────────────────────────────────
-// Fixed rules that hold even when every provider is down. This is the difference
-// between a guardrail and a suggestion.
-
+// Tier 1 — fixed rules, no model, so they hold when every provider is down.
 export const GUARD_SENSITIVE_PATH = /(?:^|\/)(?:\.env(?:\..*)?|.*\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|(?:^|\/)\.git\//i;
 export const GUARD_SECRET = /sk-[A-Za-z0-9]{16,}|gsk_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 
@@ -21,17 +18,10 @@ export function guardEditBlocks(blocks) {
   return { allowed, blocked };
 }
 
-// ── Tier 2: the pulled packs (model review) ──────────────────────────────────
-// The regex floor above is fixed. This is the part an installed guardrail agent
-// actually drives: it sees the proposed content and can DENY it. Without this pass
-// a pulled pack is only advice inside the writer's own prompt, which a weak model
-// ignores; here its verdict is enforced in code.
-
+// Tier 2 — the pulled packs read the proposed content and may deny it.
 const GUARD_REVIEW_FILE_CHARS = Number(process.env.GITAGENT_GUARDRAIL_FILE_CHARS) || 1200;
 const GUARD_REVIEW_TOTAL_CHARS = Number(process.env.GITAGENT_GUARDRAIL_TOTAL_CHARS) || 5000;
-// A guardrail that can't be reached must not silently wedge the IDE, so the
-// default is fail-open with a visible warning. Set GITAGENT_GUARDRAIL_FAIL=closed
-// for a workspace where an unreviewed edit is worse than no edit — CI sets this.
+// Fail-open by default so a provider outage can't wedge the IDE; CI sets closed.
 const GUARD_FAIL_CLOSED = process.env.GITAGENT_GUARDRAIL_FAIL === "closed";
 
 export function buildGuardrailPrompt(rules, message, blocks) {
@@ -59,10 +49,8 @@ export function buildGuardrailPrompt(rules, message, blocks) {
   );
 }
 
-// Turn the reviewer's verdicts into the { allowed, blocked } split. Pure, so the
-// deny logic is testable without a model. A file with no verdict is ALLOWED —
-// silence is not a denial, and a model that drops a row from its JSON must not
-// take an unrelated file down with it.
+// Only an explicit allow:false denies: a dropped verdict row must not take an
+// unrelated file down with it.
 export function applyGuardrailVerdicts(blocks, verdicts, names) {
   const denied = new Map();
   for (const v of verdicts) {
@@ -79,13 +67,8 @@ export function applyGuardrailVerdicts(blocks, verdicts, names) {
   return { allowed, blocked };
 }
 
-// Run the guardrail agents over the parsed blocks. Returns the same
-// { allowed, blocked } shape as guardEditBlocks so the caller merges them freely.
-// `reviewed` says whether a verdict was actually obtained. A caller that records
-// evidence MUST distinguish "a pack looked at this and allowed it" from "nothing
-// looked at this and we let it through" — an audit trail that logs the second as
-// the first is worse than no audit trail, because it reads as proof of a check
-// that never happened.
+// `reviewed` says whether a verdict was actually obtained, so an audit trail can
+// tell "a pack cleared this" from "nothing looked at it".
 export async function reviewEditBlocks(dir, agents, message, blocks, model, step) {
   const rules = ((agents && agents.guardrails) || [])
     .map((g) => ({ name: g.name, text: (g.rules || g.soul || "").trim() }))

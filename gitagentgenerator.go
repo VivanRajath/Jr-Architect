@@ -195,10 +195,8 @@ Answer questions about this codebase concretely, grounded in the actual files.
 - Never change files in Ask mode.
 `
 
-// The knowledge builder is a real agent, not a hidden system prompt: this file IS
-// the prompt it runs. Edit it and the next build produces a different document.
-// It runs once when the IDE opens, on its own dedicated API key, so it can afford
-// to read far more of the repo than a chat turn ever could.
+// This file IS the prompt the knowledge builder runs — edit it and the next build
+// produces a different document.
 var knowledgeBuilderSkill = `---
 name: knowledge-builder
 description: Reads the repo once at open and writes knowledge/overview.md — the architectural summary every later turn is grounded in
@@ -547,16 +545,16 @@ func GenerateAgentSpec(workdir string, stack string) error {
 	// seeded only if absent, so a repo that commits its own customized .gitagent
 	// spec (source of truth, versioned in git) is never clobbered on a re-clone.
 	standardFiles := map[string]string{
-		"skills/jnr-developer/SKILL.md": jnrDeveloperSkill,
-		"skills/snr-developer/SKILL.md": snrDeveloperSkill,
-		"skills/architect/SKILL.md":     architectSkill,
-		"skills/ask/SKILL.md":           askSkill,
-		"skills/build-doctor/SKILL.md":  buildDoctorSkill,
+		"skills/jnr-developer/SKILL.md":     jnrDeveloperSkill,
+		"skills/snr-developer/SKILL.md":     snrDeveloperSkill,
+		"skills/architect/SKILL.md":         architectSkill,
+		"skills/ask/SKILL.md":               askSkill,
+		"skills/build-doctor/SKILL.md":      buildDoctorSkill,
 		"skills/knowledge-builder/SKILL.md": knowledgeBuilderSkill,
-		"compliance/RULES.md":           complianceRulesTemplate,
-		"tools/README.md":               toolsReadmeTemplate,
-		"hooks/README.md":               hooksReadmeTemplate,
-		"workflows/README.md":           workflowsReadmeTemplate,
+		"compliance/RULES.md":               complianceRulesTemplate,
+		"tools/README.md":                   toolsReadmeTemplate,
+		"hooks/README.md":                   hooksReadmeTemplate,
+		"workflows/README.md":               workflowsReadmeTemplate,
 	}
 	for rel, tmplStr := range standardFiles {
 		dest := filepath.Join(specDir, filepath.FromSlash(rel))

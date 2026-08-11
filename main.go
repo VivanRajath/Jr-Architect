@@ -114,34 +114,17 @@ func cleanupAllSandboxes() {
 	}
 }
 
-// The entire front end — markup, styles, scripts, and the vendored third-party
-// assets (Monaco, xterm, the webfonts) — is one embedded directory.
-//
-// This replaced five separate //go:embed variables and five near-identical
-// handlers, plus an index.html that carried a 1,400-line inline <style> and a
-// 660-line inline <script>. Adding a stylesheet used to mean editing main.go in
-// three places. Now the directory layout IS the contract:
-//
-//	web/index.html   the shell: markup and load order, nothing else
-//	web/css/         tokens.css first (the only file that may DEFINE a token),
-//	                 then app.css, ide.css, ide-agent.css, which only consume them
-//	web/js/          app.js, ide.js, ide-agent.js
-//	web/vendor/      third-party, version-pinned, never hand-edited
-//
-// `all:` is required — without it embed skips files beginning with "." or "_",
-// and Monaco's build contains some.
+// The whole front end in one embedded directory. `all:` is required — plain embed
+// skips files starting with "." or "_", and Monaco's build has some.
 //
 //go:embed all:web
 var webAssets embed.FS
 
-// webFS roots the embedded assets at web/, so a request for "/css/app.css" maps
-// to "web/css/app.css" without any caller knowing about the prefix.
+// Rooted at web/, so "/css/app.css" maps to "web/css/app.css".
 var webFS = func() fs.FS {
 	sub, err := fs.Sub(webAssets, "web")
 	if err != nil {
-		// Unreachable unless the embed directive and this path disagree, which is
-		// a build-time mistake worth failing loudly on rather than serving 404s.
-		panic("embedded web assets are missing: " + err.Error())
+		panic("embedded web assets are missing: " + err.Error()) // build-time mistake
 	}
 	return sub
 }()
@@ -205,9 +188,7 @@ func output(container, cmd string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// isLoopbackOrigin reports whether an Origin header names this machine. Shared by
-// the CORS layer and the WebSocket upgrade check so both agree on what "local"
-// means and neither can drift.
+// Shared by the CORS layer and the WebSocket upgrade check so they can't drift.
 func isLoopbackOrigin(origin string) bool {
 	u, err := url.Parse(origin)
 	if err != nil {
@@ -217,17 +198,10 @@ func isLoopbackOrigin(origin string) bool {
 	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
-// corsHeaders echoes an allowlisted loopback Origin rather than sending "*".
-//
-// The wildcard was a real hole: this API has no authentication, so any website
-// the developer happened to visit while the IDE was running could call these
-// endpoints cross-origin AND READ THE RESPONSE — enumerate sandboxes, read
-// workspace files, write workspace files. The terminal WebSocket upgrade already
-// checked the origin properly (wsUpgrader.CheckOrigin); the REST surface didn't.
-//
-// A request with no Origin is same-origin or a non-browser client and gets no
-// CORS headers at all — it doesn't need them. Vary: Origin keeps a cached
-// response for one origin from being served to another.
+// Echo an allowlisted loopback Origin, never "*": this API has no auth, so a
+// wildcard let any site the developer visited call it cross-origin and read the
+// response. No Origin means same-origin or a non-browser client, which needs no
+// headers at all. Vary keeps one origin's cached response from reaching another.
 func corsHeaders(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Origin")
 	if r == nil {
@@ -1011,13 +985,8 @@ func terminalExecHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, out)
 }
 
-// registerAssetMIMETypes pins the content types for everything we serve.
-//
-// Go resolves a file's Content-Type from the OS: on Windows that means the
-// registry, where any installer can leave .js or .css mapped to something wrong
-// (text/plain is the common one). The browser then refuses to execute the script
-// and the IDE loads as an unstyled page with no explanation. Registering them
-// explicitly makes the served type a property of this program, not the machine.
+// Go reads Content-Type from the OS — on Windows, a registry any installer can
+// leave with .js as text/plain, which the browser then refuses to execute.
 func registerAssetMIMETypes() {
 	for ext, typ := range map[string]string{
 		".html":  "text/html; charset=utf-8",
@@ -1033,16 +1002,13 @@ func registerAssetMIMETypes() {
 	}
 }
 
-// staticHandler serves the whole front end from the single embedded filesystem.
-// http.FileServer already resolves "/" to index.html and returns 404 for a path
-// that isn't there; the only thing added here is the caching policy.
+// http.FileServer already maps "/" to index.html and 404s a missing path; the only
+// thing added here is the caching policy.
 func staticHandler() http.Handler {
 	files := http.FileServer(http.FS(webFS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Our own assets are compiled into the binary, so a stale browser cache
-		// would silently shadow a fresh build — no-cache keeps a rebuild honest.
-		// Vendored assets are pinned by version in their path and never change
-		// under the same URL, so they can be cached hard.
+		// Our assets are compiled in, so a stale cache would shadow a rebuild.
+		// Vendored ones are version-pinned by path and never change under a URL.
 		if strings.HasPrefix(r.URL.Path, "/vendor/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		} else {
