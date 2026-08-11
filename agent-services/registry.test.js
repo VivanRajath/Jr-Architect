@@ -11,7 +11,7 @@ const {
   loadRepoRootSpec, resolvePipelineAgents, loadSkill, loadComplianceRules, listSkills,
   resolveSpecPath, readSpecFile, writeSpecFile, listSkillsDetailed, deleteSkill,
   parseFrontmatter, installedAgentsDetailed, classifySlot, assignSlot,
-  syncSpecOverlay, overlayPaths, readOverlayBody, upsertManagedBlock,
+  syncSpecOverlay, overlayPaths, readOverlayBody, upsertManagedBlock, writePipelineManifest,
 } = await import("./registry.js");
 
 // A resolved pipeline, as resolvePipelineAgents would hand it to the overlay.
@@ -189,7 +189,7 @@ test("assignSlot fills one slot without disturbing the rest, and one agent holds
   mkdirSync(join(dir, ".gitagent"), { recursive: true });
 
   let p = assignSlot(dir, "acme/dev", "developer");
-  assert.deepEqual(p, { developer: "acme/dev", guardrails: [], knowledge: null });
+  assert.deepEqual(p, { developer: "acme/dev", guardrails: [], knowledge: null, pins: {} });
 
   // A second pull adds a guardrail and leaves the developer alone.
   p = assignSlot(dir, "acme/guard", "guardrails");
@@ -510,4 +510,57 @@ test("loadRepoRootSpec reads memory from the standard memory/ dir, and falls bac
   writeFileSync(join(both, ".gitagent", "memory", "MEMORY.md"), "current memory");
   writeFileSync(join(both, ".gitagent", "MEMORY.md"), "stale memory");
   assert.match(loadRepoRootSpec(both).memory, /current memory/);
+});
+
+// ── Pinning: which version of a pack was in force ───────────────────────────
+
+test("a pin is read from the manifest and garbage is ignored", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ga-pin-"));
+  mkdirSync(join(dir, ".gitagent"), { recursive: true });
+  writeFileSync(join(dir, ".gitagent", "pipeline.json"), JSON.stringify({
+    pipeline: {
+      guardrails: ["acme/soc2", "acme/pci"],
+      pins: { "acme/soc2": "4f2a1c9e", "acme/pci": "not-a-sha", "acme/gone": "abcdef1" },
+    },
+  }));
+  const m = readPipelineManifest(dir);
+  assert.equal(m.pins["acme/soc2"], "4f2a1c9e");
+  assert.equal(m.pins["acme/pci"], undefined, "a malformed sha is not a pin");
+});
+
+test("a manifest written before pinning existed reads with no pins", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ga-pin-old-"));
+  mkdirSync(join(dir, ".gitagent"), { recursive: true });
+  writeFileSync(join(dir, ".gitagent", "pipeline.json"),
+    JSON.stringify({ spec_version: "0.1.0", pipeline: { developer: "a/b", guardrails: [] } }));
+  assert.deepEqual(readPipelineManifest(dir).pins, {});
+});
+
+test("assignSlot records the pin, and removing an agent drops it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ga-pin-write-"));
+  mkdirSync(join(dir, ".gitagent"), { recursive: true });
+
+  assignSlot(dir, "acme/soc2", "guardrails", "4f2a1c9e5b");
+  let saved = JSON.parse(readFileSync(join(dir, ".gitagent", "pipeline.json"), "utf8"));
+  assert.equal(saved.pipeline.pins["acme/soc2"], "4f2a1c9e5b");
+
+  // Moving it to another slot keeps the pin — it is the same code, same version.
+  assignSlot(dir, "acme/soc2", "developer");
+  saved = JSON.parse(readFileSync(join(dir, ".gitagent", "pipeline.json"), "utf8"));
+  assert.equal(saved.pipeline.pins["acme/soc2"], "4f2a1c9e5b");
+
+  // A pin for an agent no longer in the pipeline is a commit nobody can trace
+  // back to a rule, so it goes with the agent.
+  writePipelineManifest(dir, { developer: null, guardrails: [], knowledge: null,
+    pins: { "acme/soc2": "4f2a1c9e5b" } });
+  assert.equal(existsSync(join(dir, ".gitagent", "pipeline.json")), false);
+});
+
+test("an unpinned pack is left unpinned rather than invented", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ga-pin-none-"));
+  mkdirSync(join(dir, ".gitagent"), { recursive: true });
+  assignSlot(dir, "acme/guard", "guardrails");
+  const saved = JSON.parse(readFileSync(join(dir, ".gitagent", "pipeline.json"), "utf8"));
+  assert.equal(saved.pipeline.pins, undefined, "no pins key when nothing is pinned");
+  assert.deepEqual(readPipelineManifest(dir).pins, {});
 });

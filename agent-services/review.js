@@ -1,18 +1,5 @@
-// Headless review: run this repository's own guardrails over a diff, with no IDE.
-//
-// THE POINT
-// Until now a pulled compliance pack only had force while someone had the IDE open
-// and typed into a chat box. That makes it a suggestion — the agent gets blocked
-// and the human typing the same line does not. A rule that only applies when a
-// developer is watching is not compliance.
-//
-// This module runs the IDENTICAL pipeline against a git range instead of an agent's
-// proposed edit: same `.gitagent/pipeline.json`, same pulled packs, same code-level
-// floor, same model review, same deny-wins semantics. The only thing that changes
-// is where the "proposed content" comes from — a diff rather than a rewrite.
-//
-// That is what makes `.gitagent/` a property of the REPOSITORY rather than of a
-// session: clone the repo anywhere, run this, and the same rules apply.
+// Run the repo's own guardrails over a git range instead of an agent's proposed
+// edit — same manifest, same packs, same deny-wins semantics, no IDE.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from "node:fs";
@@ -22,13 +9,8 @@ import { resolvePipelineAgents, loadComplianceRules } from "./registry.js";
 import { guardEditBlocks, reviewEditBlocks } from "./guardrails.js";
 import { modelFor, firstAvailableProvider, toollessAgentHome } from "./llm.js";
 
-// The repo's OWN rules, as an enforcing pack.
-//
-// `.gitagent/compliance/RULES.md` was only ever injected into the Developer's
-// prompt — advice the writer could ignore, with nothing checking afterwards. Only
-// PULLED packs reached the review stage and could actually deny. That is backwards:
-// the rules a team wrote and committed themselves should have at least as much
-// force as one they downloaded. Here they get exactly the same force.
+// The repo's own compliance file, as an enforcing pack. It used to be injected into
+// the writer's prompt only, so a team's own rules had less force than a pulled one.
 export const LOCAL_PACK = ".gitagent/compliance";
 
 export function localPack(dir) {
@@ -40,22 +22,18 @@ const MAX_FILES = Number(process.env.REVIEW_MAX_FILES) || 25;
 const MAX_FILE_CHARS = Number(process.env.REVIEW_MAX_FILE_CHARS) || 12000;
 export const AUDIT_DIR = ".gitagent/audit";
 
-// Reviewing a lockfile or a minified bundle costs the whole token budget and
-// teaches nothing. The tier-1 guard refuses to let an AGENT touch these; for a
-// human diff they are simply not worth a model's attention.
+// Not worth a model's attention, and a lockfile alone would eat the token budget.
 const SKIP_REVIEW = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum|Cargo\.lock|.*\.min\.(?:js|css)|.*\.(?:png|jpe?g|gif|svg|ico|woff2?|ttf|pdf|zip))$/i;
 
 function git(dir, args) {
   return execFileSync("git", args, { cwd: dir, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 }
 
-// The files a range touches, with their status. Renames report the new path,
-// which is the one whose content gets judged.
+// Files a range touches. Renames report the new path — the one that gets judged.
 export function changedFiles(dir, base, head = "HEAD") {
   let out = "";
   try {
-    // Three-dot: what HEAD added since it diverged from base, not everything that
-    // happened on base meanwhile. That is what a pull request actually proposes.
+    // Three-dot: what head added since it diverged, which is what a PR proposes.
     out = git(dir, ["diff", "--name-status", "--find-renames", `${base}...${head}`]);
   } catch (e) {
     throw new Error(`could not diff ${base}...${head} — ${String(e.message).split("\n")[0]}`);
@@ -72,8 +50,7 @@ export function changedFiles(dir, base, head = "HEAD") {
   return files;
 }
 
-// The content a reviewer must judge is the content AFTER the change. Read it from
-// the ref rather than the worktree so a dirty checkout can't change the verdict.
+// Content AFTER the change, read from the ref so a dirty worktree can't sway it.
 function contentAt(dir, head, path) {
   try {
     const body = git(dir, ["show", `${head}:${path}`]);
@@ -89,9 +66,8 @@ function contentAt(dir, head, path) {
   }
 }
 
-// Turn a diff into the same { path, content } blocks the edit pipeline produces,
-// so the guardrails cannot tell the difference between an agent's rewrite and a
-// human's commit. That is the whole trick.
+// The same { path, content } blocks the edit pipeline produces, so the guardrails
+// cannot tell a human's commit from an agent's rewrite.
 export function blocksForRange(dir, base, head = "HEAD") {
   const files = changedFiles(dir, base, head);
   const skipped = [];
@@ -106,12 +82,8 @@ export function blocksForRange(dir, base, head = "HEAD") {
   return { blocks, skipped, total: files.length };
 }
 
-// Append one line per decision to .gitagent/audit/<date>.jsonl.
-//
-// A denial that only ever appears in a chat summary is friction; a denial that
-// lands in a committed, append-only file is EVIDENCE. This is the half that makes
-// the compliance story purchasable: "which pack, which version, which rule, which
-// file, when" is answerable, and the answer is a git diff.
+// One append-only line per decision, so "which pack, which version, which file,
+// when" stays answerable after the run.
 export function writeAudit(dir, records) {
   if (!records.length) return null;
   const day = new Date().toISOString().slice(0, 10);
@@ -126,8 +98,7 @@ function headSha(dir, head) {
   try { return git(dir, ["rev-parse", "--short", head]).trim(); } catch { return ""; }
 }
 
-// Run the repo's guardrails over a range. Returns a structured result; printing and
-// exit codes are the CLI's job, so this stays usable from a server too.
+// Printing and exit codes are the CLI's job, so this stays usable from a server.
 export async function reviewRange({ dir, base, head = "HEAD", message, onStep } = {}) {
   const step = (name, detail) => { if (onStep) onStep(name, detail); };
   const root = resolve(dir || ".");
@@ -139,7 +110,7 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
     return { ok: true, verdicts: [], denied: [], skipped, total, agents: null };
   }
 
-  // Same manifest, same packs, same clone-and-materialise path the IDE uses.
+  // Same manifest and clone-and-materialise path the IDE uses.
   let agents = { enabled: false, guardrails: [] };
   try {
     agents = await resolvePipelineAgents(root, onStep);
@@ -151,8 +122,7 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
   const floor = guardEditBlocks(blocks);
   if (floor.blocked.length) step("Guardrails", `code floor denied ${floor.blocked.length} file(s)`);
 
-  // Tier 2 — the packs. The repo's own committed rules go FIRST, then anything
-  // pulled from the registry. Both are enforced identically.
+  // Tier 2 — the repo's own rules first, then pulled packs. Enforced identically.
   let reviewed = { allowed: floor.allowed, blocked: [], reviewed: false, why: "" };
   const own = localPack(root);
   if (own) step("Guardrails", `loaded the repo's own rules · ${LOCAL_PACK}`);
@@ -168,9 +138,7 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
     reviewed.why = "no provider key configured";
     step("Guardrails", "no provider key · code floor only");
   } else {
-    // The agent home for the review turn is an ephemeral one, NOT the repository
-    // under review — see toollessAgentHome(). The rules come from the packs and the
-    // content comes from the diff; nothing else may influence a verdict.
+    // Ephemeral agent home, not the repo under review — see toollessAgentHome().
     reviewed = await reviewEditBlocks(
       toollessAgentHome(), agents,
       message || `Reviewing the changes in ${base}...${head}`,
@@ -181,11 +149,13 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
   const denied = [...floor.blocked, ...reviewed.blocked];
   const sha = headSha(root, head);
   const at = new Date().toISOString();
-  const packNames = packs.map((p) => p.name);
+  // pack@sha, so a record says WHICH version of a rule set produced the verdict.
+  const packNames = packs.map((p) => (p.sha ? `${p.name}@${p.sha.slice(0, 7)}` : p.name));
+  const unpinned = packs.filter((p) => p.sha && !p.pin).map((p) => p.name);
+  if (unpinned.length) step("Guardrails", `unpinned pack(s): ${unpinned.join(", ")}`);
 
-  // A file the packs genuinely cleared is "allow". A file that went through only
-  // because the review could not run is "unreviewed" — the exit code still passes
-  // (that is what fail-open means) but the evidence says so plainly.
+  // A file that only went through because the review could not run is "unreviewed",
+  // never "allow" — the gate still passes, but the evidence says what happened.
   const passDecision = reviewed.reviewed ? "allow" : "unreviewed";
   const verdicts = [
     ...reviewed.allowed.map((b) => ({
@@ -209,6 +179,7 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
     reviewed: reviewed.reviewed,
     verdicts, denied, skipped, total,
     packs: packNames,
+    unpinned,
     commit: sha,
     auditPath,
   };

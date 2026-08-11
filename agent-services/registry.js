@@ -193,7 +193,7 @@ export function readPipelineManifest(dir) {
     .split(",").map((s) => s.trim()).filter(Boolean);
   const knowledge = (process.env.GITAGENT_KNOWLEDGE_AGENT || "").trim();
   if (!dev && !knowledge && guards.length === 0) return null;
-  return { developer: dev || null, guardrails: guards, knowledge: knowledge || null };
+  return { developer: dev || null, guardrails: guards, knowledge: knowledge || null, pins: {} };
 }
 
 function readManifestFile(dir) {
@@ -233,8 +233,15 @@ function normalizePipeline(p) {
   const devRef = developer && !developer.startsWith("builtin:") ? developer : null;
   const k = typeof p.knowledge === "string" ? p.knowledge : null;
   const knowledge = k && !k.startsWith("builtin:") ? k : null;
+  // ref -> commit sha. A manifest written before pinning existed simply has none.
+  const pins = {};
+  if (p.pins && typeof p.pins === "object") {
+    for (const [ref, sha] of Object.entries(p.pins)) {
+      if (typeof sha === "string" && /^[0-9a-f]{7,40}$/i.test(sha.trim())) pins[ref] = sha.trim();
+    }
+  }
   if (!devRef && !knowledge && guardrails.length === 0) return null;
-  return { developer: devRef, guardrails, knowledge };
+  return { developer: devRef, guardrails, knowledge, pins };
 }
 
 // Minimal YAML reader for the tiny pipeline subset: nested maps, scalars, and
@@ -297,11 +304,18 @@ export function writePipelineManifest(dir, pipeline) {
     return;
   }
   mkdirSync(base, { recursive: true });
-  // `knowledge` is only written when a community agent holds the slot. Leaving it
-  // out means "the built-in knowledge-builder skill", which is the default — so a
-  // manifest never has to name the thing that was going to happen anyway.
+  // knowledge is written only when a community agent holds the slot; absent means
+  // the built-in knowledge-builder, which is the default.
   const p = { developer, guardrails };
   if (knowledge) p.knowledge = knowledge;
+  // Drop pins for refs that left the pipeline — a commit nobody can trace back to
+  // a rule is noise.
+  const live = new Set([developer, knowledge, ...guardrails].filter(Boolean));
+  const pins = {};
+  for (const [ref, sha] of Object.entries((pipeline && pipeline.pins) || {})) {
+    if (live.has(ref) && sha) pins[ref] = sha;
+  }
+  if (Object.keys(pins).length) p.pins = pins;
   writeFileSync(file, JSON.stringify({ spec_version: "0.1.0", pipeline: p }, null, 2) + "\n");
 }
 
@@ -310,8 +324,8 @@ export function writePipelineManifest(dir, pipeline) {
 // having to restate the whole pipeline. An agent holds ONE slot at a time —
 // moving it to Guardrails takes it out of Developer and vice versa, otherwise a
 // re-classified agent would silently both write and review its own code.
-export function assignSlot(dir, ref, slot) {
-  const cur = readPipelineManifest(dir) || { developer: null, guardrails: [], knowledge: null };
+export function assignSlot(dir, ref, slot, pin) {
+  const cur = readPipelineManifest(dir) || { developer: null, guardrails: [], knowledge: null, pins: {} };
   const guardrails = (cur.guardrails || []).filter(Boolean).filter((r) => r !== ref);
   let developer = cur.developer === ref ? null : cur.developer || null;
   let knowledge = cur.knowledge === ref ? null : cur.knowledge || null;
@@ -321,7 +335,9 @@ export function assignSlot(dir, ref, slot) {
   else if (slot === "knowledge") knowledge = ref;
   else developer = ref;
 
-  const pipeline = { developer, guardrails, knowledge };
+  const pins = { ...(cur.pins || {}) };
+  if (pin) pins[ref] = pin;
+  const pipeline = { developer, guardrails, knowledge, pins };
   writePipelineManifest(dir, pipeline);
   return pipeline;
 }
@@ -351,25 +367,60 @@ function installPath(dir, entry) {
 // — treat it as stale and re-clone, and clear the target if this attempt fails
 // too. Otherwise one bad clone would poison every later install of that agent:
 // the empty directory reads as "installed" and the persona silently loads blank.
-export async function installAgent(dir, entry) {
+function gitIn(cwd, args) {
+  return new Promise((res, rej) => {
+    execFile("git", args, { cwd, timeout: CLONE_TIMEOUT_MS }, (err, stdout) =>
+      err ? rej(err) : res(String(stdout).trim()));
+  });
+}
+
+// The commit a clone landed on, "" if it can't be read.
+export async function headSha(target) {
+  try { return await gitIn(target, ["rev-parse", "HEAD"]); } catch { return ""; }
+}
+
+// Upstream's current HEAD, without cloning. Used to spot a pack that moved.
+export async function remoteSha(repository) {
+  try {
+    const out = await gitIn(process.cwd(), ["ls-remote", repository, "HEAD"]);
+    return (out.split(/\s+/)[0] || "").trim();
+  } catch { return ""; }
+}
+
+// Clone the agent into <workspace>/.gitagent/agents/<author>__<name>, at `pin` if
+// one is given. Returns { path, sha }.
+//
+// A cached clone is reused, but only when it is already at the pinned commit —
+// otherwise a pack that changed after the pin was written would keep serving the
+// old rules from disk under the new pin, or vice versa.
+//
+// A directory WITHOUT .git is a clone that died partway; treat it as stale and
+// re-clone, and clear the target if this attempt fails too, so one bad clone can't
+// poison every later install (the empty dir reads as "installed" and the persona
+// silently loads blank).
+export async function installAgent(dir, entry, pin) {
   const target = installPath(dir, entry);
-  if (existsSync(join(target, ".git"))) return target;
-  if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+  if (existsSync(join(target, ".git"))) {
+    const at = await headSha(target);
+    if (!pin || at === pin) return { path: target, sha: at };
+    rmSync(target, { recursive: true, force: true });
+  } else if (existsSync(target)) {
+    rmSync(target, { recursive: true, force: true });
+  }
   mkdirSync(resolve(dir, AGENTS_DIR), { recursive: true });
   try {
-    await new Promise((res, rej) => {
-      execFile(
-        "git",
-        ["clone", "--depth", "1", entry.repository, target],
-        { timeout: CLONE_TIMEOUT_MS },
-        (err) => (err ? rej(err) : res()),
-      );
-    });
+    await gitIn(process.cwd(), ["clone", "--depth", "1", entry.repository, target]);
+    if (pin) {
+      // A --depth 1 clone has only the tip, so an older commit has to be fetched
+      // explicitly before it can be checked out.
+      await gitIn(target, ["fetch", "--depth", "1", "origin", pin]);
+      await gitIn(target, ["checkout", "--detach", "FETCH_HEAD"]);
+    }
   } catch (e) {
     rmSync(target, { recursive: true, force: true });
     throw e;
   }
-  return target;
+  return { path: target, sha: await headSha(target) };
 }
 
 function readCapped(abs) {
@@ -721,7 +772,7 @@ function overlayFrontmatter(ref, slot, description) {
 function developerOverlayDoc(persona) {
   const ref = persona.name;
   const parts = [
-    overlayFrontmatter(ref, "developer", persona.description || `Developer persona pulled from ${ref}`),
+    overlayFrontmatter(ref, "developer", persona.description || `Developer persona pulled from ${ref}`, persona.sha),
     `# ${ref} — Developer`,
     "",
     // A comment, not prose: readOverlayBody strips it, so this guidance never
@@ -748,7 +799,7 @@ function developerOverlayDoc(persona) {
 function knowledgeOverlayDoc(persona) {
   const ref = persona.name;
   const parts = [
-    overlayFrontmatter(ref, "knowledge", persona.description || `Knowledge builder pulled from ${ref}`),
+    overlayFrontmatter(ref, "knowledge", persona.description || `Knowledge builder pulled from ${ref}`, persona.sha),
     `# ${ref} — Knowledge`,
     "",
     "<!--",
@@ -773,7 +824,7 @@ function guardrailOverlayDoc(persona) {
   const ref = persona.name;
   const body = (persona.rules || persona.soul || "").trim();
   return [
-    overlayFrontmatter(ref, "guardrails", persona.description || `Guardrail rules pulled from ${ref}`),
+    overlayFrontmatter(ref, "guardrails", persona.description || `Guardrail rules pulled from ${ref}`, persona.sha),
     `# ${ref} — Guardrail`,
     "",
     "<!--",
@@ -812,7 +863,7 @@ function workflowOverlayDoc(persona, slot) {
         "code-level checks and any installed guardrail agent still get the last word.",
       ];
   return [
-    overlayFrontmatter(ref, slot, `Where ${ref} runs in the edit pipeline`),
+    overlayFrontmatter(ref, slot, `Where ${ref} runs in the edit pipeline`, persona.sha),
     `# ${ref} — ${SLOT_LABEL[slot] || "Developer"} stage`,
     "",
     slot === "knowledge"
@@ -1026,14 +1077,27 @@ export async function resolvePipelineAgents(dir, onStep) {
 
   const index = await fetchRegistryIndex();
 
+  const pins = manifest.pins || {};
   const install = async (ref, slot) => {
     const entry = findAgent(index, ref);
     if (!entry) { step(`skip ${ref} (not found)`); return null; }
+    const pin = pins[ref] || "";
     try {
-      const at = await installAgent(dir, entry);
+      const { path: at, sha } = await installAgent(dir, entry, pin);
+      // Unpinned means "whatever upstream is today", which for a compliance pack is
+      // a rule that can change with no diff and no review. Say so once, and hand
+      // back the sha so the caller can pin it.
+      if (!pin) step(`${ref} is UNPINNED · running ${sha.slice(0, 7) || "unknown"}`);
+      else {
+        const upstream = await remoteSha(entry.repository);
+        if (upstream && upstream !== pin) {
+          step(`${ref} pinned ${pin.slice(0, 7)} · upstream moved to ${upstream.slice(0, 7)}`);
+        }
+      }
+      const persona = applyOverlay(dir, loadAgentPersona(at, entry), slot);
       // The overlay in .gitagent/ wins over the clone when it exists, so a rule the
       // developer edited there is the rule that actually runs.
-      return applyOverlay(dir, loadAgentPersona(at, entry), slot);
+      return { ...persona, sha, pin };
     } catch (e) {
       step(`skip ${ref} (${e.message})`);
       return null;
@@ -1065,7 +1129,7 @@ export async function resolvePipelineAgents(dir, onStep) {
   }
 
   const agents = {
-    root, developer, guardrails, knowledge,
+    root, developer, guardrails, knowledge, pins,
     enabled: !!(root || developer || guardrails.length || knowledge),
   };
 

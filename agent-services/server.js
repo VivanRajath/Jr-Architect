@@ -1131,11 +1131,13 @@ async function gitagentStatus(dir) {
   const index = await fetchRegistryIndex();
   const manifest = readPipelineManifest(dir) || { developer: null, guardrails: [] };
   const installed = new Set(installedAgents(dir));
+  const pins = manifest.pins || {};
   const enrich = (ref, slot) => {
     const e = findAgent(index, ref) || {};
     const p = overlayPaths(ref, slot);
     return {
       ref, slot,
+      pin: pins[ref] || "",
       category: e.category || "other",
       description: e.description || "",
       repository: e.repository || "",
@@ -1301,16 +1303,18 @@ app.post("/agent/gitagent/install", async (req, res) => {
     const index = await fetchRegistryIndex();
     const entry = findAgent(index, ref);
     if (!entry) return res.status(404).json({ error: `no agent "${ref}"` });
-    await installAgent(session.dir, entry);
+    const { sha } = await installAgent(session.dir, entry);
 
     const auto = classifySlot(entry);
-    const slot = wanted === "developer" || wanted === "guardrails" ? wanted
+    const slot = wanted === "developer" || wanted === "guardrails" || wanted === "knowledge" ? wanted
       : wanted === "none" ? null
       : auto.slot;
     const reason = slot === auto.slot ? auto.reason : "you chose this slot";
     // The canonical ref, which may differ in case/spacing from what was typed.
     const pulled = `${entry.author}/${entry.name}`;
-    if (slot) assignSlot(session.dir, pulled, slot);
+    // Pin at pull time. Without this the pack is "whatever upstream is today" and
+    // the rules can change with no diff and no review.
+    if (slot) assignSlot(session.dir, pulled, slot, sha);
 
     // Resolving the pipeline is what writes the agent INTO .gitagent/: its rules
     // become a real file under compliance/ or skills/, its stage is documented in
