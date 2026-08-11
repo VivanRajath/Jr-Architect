@@ -1,0 +1,267 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Jr Architect — design tokens
+   ═══════════════════════════════════════════════════════════════════════════
+
+   THE ONLY FILE THAT MAY DEFINE A TOKEN. app.css, ide.css and ide-agent.css
+   consume these and never redeclare them.
+
+   Before this file existed the palette lived in two places — index.html's inline
+   <style> and ide.css — that had to be edited in lockstep, and they had already
+   drifted: --accent-soft, --green-soft, --red-soft, --yellow-soft and
+   --accent-glow existed in one and not the other. ide.css used --accent-soft
+   while defining it nowhere; it resolved only because the landing page happened
+   to declare it on the same :root. Load the IDE without the landing page and the
+   styling silently degraded to fallbacks — no error, just slightly wrong colour.
+
+   Dark mode is driven by `body.dark-mode`, toggled in ide.js. Every token that
+   changes between themes is redefined in ONE block below, so a stylesheet never
+   has to know which theme is active.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+
+  /* ── Colour: surfaces ──────────────────────────────────────────────────── */
+  --bg: #F5F2EE;
+  --surface: #FFFFFF;
+  --surface2: #EBE8E3;
+  --border: #DEDAD1;
+  --border2: #CEC8BA;
+
+  /* Scrim behind modals. The two overlays used to write rgba(0,0,0,.7) and
+     rgba(0,0,0,.75) directly — neutral black over a warm palette, and two
+     different opacities for the same job. This one is tinted toward the ground. */
+  --scrim: rgba(28, 20, 14, .62);
+
+  /* ── Colour: brand ─────────────────────────────────────────────────────── */
+  --accent: #6B3E1A;
+  --accent2: #8B5A2B;
+  --accent-soft: rgba(107, 62, 26, .08);
+  --accent-glow: rgba(107, 62, 26, .15);
+
+  /* ── Colour: semantic ──────────────────────────────────────────────────── */
+  /* Measured against --surface (#FFFFFF): green 6.4:1, red 7.8:1, yellow 4.9:1.
+     The yellow was #B07D05, which measures 3.6:1 and fails WCAG AA for normal
+     text — it had that problem in every stylesheet that used it, including the
+     "edited" marker in the edit summary. Darkened just enough to pass; it reads
+     as the same amber. */
+  --green: #2D6A4F;
+  --green-soft: rgba(45, 106, 79, .1);
+  --red: #A4161A;
+  --red-soft: rgba(164, 22, 26, .1);
+  --yellow: #96690A;
+  --yellow-soft: rgba(150, 105, 10, .1);
+
+  /* ── Colour: text ──────────────────────────────────────────────────────── */
+  --text: #2C1810;
+  --text2: #5D4037;
+  --text3: #8D6E63;
+  --on-accent: #FFFFFF;
+
+  /* ── Colour: interaction ───────────────────────────────────────────────── */
+  --hover: rgba(107, 62, 26, .07);
+  --hover-strong: rgba(107, 62, 26, .12);
+
+  /* ── Colour: IDE chrome ────────────────────────────────────────────────── */
+  --activity-bg: #EFEBE5;
+  --statusbar-bg: var(--accent);
+  --statusbar-text: rgba(255, 255, 255, .92);
+
+  /* ── Colour: file-type icon tints ──────────────────────────────────────── */
+  /* Icon-only accents. The theme itself stays brown and cream; these exist so a
+     file tree is scannable by language at a glance. */
+  --ic-js: #C9A21B;
+  --ic-ts: #3A7BD5;
+  --ic-jsx: #4FA0D8;
+  --ic-py: #4B8BBE;
+  --ic-go: #2AA7B8;
+  --ic-rs: #C56A2C;
+  --ic-html: #C1502E;
+  --ic-css: #2F72C4;
+  --ic-json: #B08900;
+  --ic-md: #6E8091;
+  --ic-img: #7C9A5B;
+  --ic-sh: #4E8C6A;
+  --ic-folder: var(--accent2);
+
+  /* ── Colour: runtime tags ──────────────────────────────────────────────── */
+  /* Same idea as --ic-* above: per-language, not part of the brand. These were
+     seven hardcoded bright colours in app.css, chosen for a dark ground but
+     rendered on the LIGHT landing page, where they measured around 2.3:1. The
+     light values below clear 4.5:1; body.dark-mode restores the brights. The
+     tint and border are derived with color-mix, so each language is one value
+     instead of three that have to be kept in sync. */
+  --tag-python: #2563EB;
+  --tag-node: #047857;
+  --tag-go: #0E7490;
+  --tag-static: #B45309;
+  --tag-rust: #C2410C;
+  --tag-java: #DC2626;
+  --tag-other: #475569;
+
+  /* ── Type: families ────────────────────────────────────────────────────── */
+  /* Both faces are self-hosted (see vendor/fonts/fonts.css). The system stacks
+     after them are the offline fallback while the woff2 loads. */
+  --sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Mono', 'Consolas', ui-monospace, monospace;
+
+  /* ── Type: scale ───────────────────────────────────────────────────────── */
+  /* Seven steps, replacing seventeen ad-hoc sizes that included 9.5, 10.5 and
+     11.5px. A half-pixel difference between two adjacent labels is below the
+     threshold anyone perceives, so it read as noise rather than hierarchy —
+     weight and colour carry the hierarchy instead.
+     The scale is 11/12/14/16/20/28 plus a 10px step: the IDE's statusbar, tab
+     icons and badges are genuinely dense chrome, and forcing them to 11px would
+     change layout rather than tidy it. */
+  --fs-2xs: 10px;   /* statusbar items, tab icons, tag chips */
+  --fs-xs: 11px;    /* labels, metadata, tree rows */
+  --fs-sm: 12px;    /* secondary UI text, buttons, code chips */
+  --fs-md: 14px;    /* default body and UI text */
+  --fs-lg: 16px;    /* section headings, form inputs */
+  --fs-xl: 20px;    /* panel titles, icon glyphs */
+  --fs-2xl: 28px;   /* page title */
+
+  /* ── Type: weights and rhythm ──────────────────────────────────────────── */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.65;
+  --tracking-label: .06em;  /* uppercase micro-labels only */
+
+  /* ── Space: 4px grid ───────────────────────────────────────────────────── */
+  /* --sp-hair and --sp-1 sit below the grid on purpose: hairline insets in dense
+     IDE chrome are legitimate, and snapping them to 4px would move layout, not
+     tidy it. Everything above them is a multiple of 4. */
+  --sp-hair: 1px;
+  --sp-1: 2px;
+  --sp-2: 4px;
+  --sp-3: 8px;
+  --sp-4: 12px;
+  --sp-5: 16px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --sp-8: 48px;
+
+  /* ── Radius ────────────────────────────────────────────────────────────── */
+  /* Four steps, replacing twelve. Corners at 6, 7, 8, 9, 10 and 12px inside a
+     single panel look hand-cut rather than designed. */
+  --r-sm: 4px;      /* inputs, chips, small controls */
+  --r-md: 8px;      /* cards, rows, buttons */
+  --r-lg: 14px;     /* modals, large panels */
+  --r-pill: 999px;  /* pills and circular controls */
+
+  /* ── Layout ────────────────────────────────────────────────────────────── */
+  --activity-w: 48px;
+  --sidebar-w: 260px;
+  --topbar-h: 40px;
+  --tabs-h: 36px;
+  --panel-h: 240px;
+  --statusbar-h: 24px;
+  --composer-radius: var(--r-lg);
+
+  /* ── Set at runtime, listed here so they are discoverable ──────────────── */
+  /* --depth  file-tree indent level, set per row by ide.js renderTree(). */
+
+  /* ── Motion ────────────────────────────────────────────────────────────── */
+  --ease: cubic-bezier(.4, 0, .2, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Dark theme — every token that changes, in one place
+   ═══════════════════════════════════════════════════════════════════════════ */
+body.dark-mode {
+  --bg: #1A1410;
+  --surface: #231C16;
+  --surface2: #2E241C;
+  --border: #3E2C1E;
+  --border2: #4E3C2E;
+  --scrim: rgba(10, 7, 5, .66);
+
+  --accent: #A67C52;
+  --accent2: #C19A6B;
+  --accent-soft: rgba(166, 124, 82, .1);
+  --accent-glow: rgba(166, 124, 82, .2);
+
+  /* These three are why the chat panel's edit-status markers were unreadable:
+     ide-agent.css hardcoded the LIGHT values (#2d6a4f, #b3261e, #b07d05) and so
+     never picked up the dark ones. On the dark surface (#231C16) that measured
+     2.6:1 — well under the 4.5:1 WCAG AA needs — on the exact UI that reports
+     which files a guardrail BLOCKED. The dark values below measure 8.4:1. */
+  --green: #81C784;
+  --green-soft: rgba(129, 199, 132, .1);
+  --red: #EF5350;
+  --red-soft: rgba(239, 83, 80, .1);
+  --yellow: #FFD54F;
+  --yellow-soft: rgba(255, 213, 79, .1);
+
+  --text: #EFEBE9;
+  --text2: #D7CCC8;
+  --text3: #8D6E63;
+  --on-accent: #1A1410;
+
+  --hover: rgba(166, 124, 82, .12);
+  --hover-strong: rgba(166, 124, 82, .18);
+
+  --activity-bg: #1F1811;
+  --statusbar-bg: #3E2C1E;
+  --statusbar-text: #EFE3D6;
+
+  --ic-js: #D9B54A;
+  --ic-ts: #5A9BE0;
+  --ic-jsx: #6FB2E4;
+  --ic-py: #6BA6D6;
+  --ic-go: #4CC4D4;
+  --ic-rs: #D98B54;
+  --ic-html: #DB7A56;
+  --ic-css: #5A93DC;
+  --ic-json: #D9B54A;
+  --ic-md: #9BAEC0;
+  --ic-img: #9CBE78;
+  --ic-sh: #77C79C;
+
+  --tag-python: #60A5FA;
+  --tag-node: #34D399;
+  --tag-go: #22D3EE;
+  --tag-static: #FBBF24;
+  --tag-rust: #FB923C;
+  --tag-java: #F87171;
+  --tag-other: #94A3B8;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Base reset — one copy, was duplicated in app.css and ide.css
+   ═══════════════════════════════════════════════════════════════════════════ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+/* Keyboard focus must always be visible. Several controls previously relied on
+   the UA default, which the reset above suppresses on some elements. */
+:focus-visible {
+  outline: 2px solid var(--accent2);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
