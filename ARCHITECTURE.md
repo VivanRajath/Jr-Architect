@@ -15,8 +15,8 @@
    - [GitAgent Generator (`gitagentgenerator.go`)](#33-gitagent-generator-gitagentgeneratorgog)
    - [Agent Service: Node.js (`agent-services/server.js`)](#34-agent-service-nodejs-agent-servicesserverjs)
    - [Agent Service: Python (`agent/main.py`)](#35-agent-service-python-agentmainpy)
-   - [Frontend IDE (`index.html`, `ide.js`, `ide.css`)](#36-frontend-ide-indexhtml-idejs-idecss)
-   - [AI Agent Chat Panel (`ide-agent.js`, `ide-agent.css`)](#37-ai-agent-chat-panel-ide-agentjs-ide-agentcss)
+   - [Frontend (`web/`)](#36-frontend-web)
+   - [AI Agent Chat Panel (`web/js/ide-agent.js`)](#37-ai-agent-chat-panel-webjside-agentjs)
    - [Docker Sandbox Images (`sandbox-images/`)](#38-docker-sandbox-images-sandbox-images)
    - [GitAgent Registry Integration (`agent-services/registry.js`)](#39-gitagent-registry-integration-agent-servicesregistryjs)
    - [Build Doctor (self-diagnosing IDE)](#310-build-doctor-self-diagnosing-ide)
@@ -106,7 +106,7 @@ The Orchestrator routes with free heuristics for the obvious cases (an edit verb
                           │                                                         │
                           │  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐ │
                           │  │  Sandbox UI  │  │   IDE Panel  │  │  AI Chat    │ │
-                          │  │  (index.html)│  │  (ide.js)    │  │(ide-agent.js│ │
+                          │  │  (js/app.js) │  │ (js/ide.js)  │  │(js/ide-agent│ │
                           │  └──────┬───────┘  └──────┬───────┘  └──────┬──────┘ │
                           └─────────┼─────────────────┼─────────────────┼─────────┘
                                     │ HTTP/WS          │ HTTP/WS         │ WS
@@ -127,11 +127,11 @@ The Orchestrator routes with free heuristics for the obvious cases (an edit verb
           │  POST /terminal/exec  → one-shot exec inside container                  │
           │  WS   /terminal/ws    → interactive PTY shell (xterm.js ↔ docker exec)  │
           │  ANY  /agent/*        → reverse proxy → Agent Service :8001              │
-          │  GET  /               → embedded index.html                              │
-          │  GET  /ide.js         → embedded Monaco IDE JS                           │
-          │  GET  /ide.css        → embedded Monaco IDE CSS                          │
-          │  GET  /ide-agent.js   → embedded AI agent chat JS                        │
-          │  GET  /ide-agent.css  → embedded AI agent chat CSS                       │
+          │  GET  /*              → the embedded web/ directory (one FileServer):    │
+          │                           /              → web/index.html                │
+          │                           /css/*.css     → tokens, app, ide, ide-agent   │
+          │                           /js/*.js       → app, ide, ide-agent           │
+          │                           /vendor/**     → Monaco, xterm, webfonts       │
           └─────────┬────────────────────────────────────────────────────────────────┘
                     │ docker run/exec/stop/logs
                     ▼
@@ -182,12 +182,14 @@ The single entry point and orchestrator of the entire system. Compiled to a **si
 
 | Responsibility | Details |
 |---|---|
-| **Static embedding** | `index.html`, `ide.js`, `ide.css`, `ide-agent.js`, `ide-agent.css` are embedded at compile-time using Go's `//go:embed` directive. No separate file serving needed. |
+| **Static embedding** | The whole front end is one directory, `web/`, embedded at compile time with a single `//go:embed all:web` and served by one `http.FileServer` (`staticHandler`). Adding a stylesheet means adding a file, not editing `main.go`. `web/vendor/` holds Monaco, xterm and the webfonts, so the binary has **no runtime CDN dependency** and works offline; that is what takes it from 17 MB to ~30 MB. `registerAssetMIMETypes()` pins the Content-Types rather than trusting the OS registry, which on Windows can serve `.js` as `text/plain`. |
+| **Front-end layout** | `web/index.html` is markup and load order only — the 1,418-line inline `<style>` and 660-line inline `<script>` it used to carry are now `css/app.css` and `js/app.js`. `css/tokens.css` loads first and is **the only file permitted to define a custom property**; `app.css`, `ide.css` and `ide-agent.css` consume them. Four Go tests enforce that contract (`static_test.go`). |
 | **Sandbox management** | Maintains an in-memory `map[string]Sandbox` of all active sandboxes, protected by a `sync.Mutex`. |
 | **Docker orchestration** | Calls `docker run` with resource limits (1 CPU, 1 GB RAM, 100 PIDs), volume mounts, and port mappings. Calls `docker exec` for terminal and one-shot commands. |
 | **Image preheating** | On startup, calls `preheatImages()` which checks if all 12 sandbox images exist locally. Builds any missing ones from `./sandbox-images/<name>/`. |
 | **Agent service launch** | Starts the Node.js agent service (`agent-services/server.js`) as a subprocess, piping its stdout/stderr to the Go process's stdout. |
 | **Reverse proxy** | All requests to `/agent/*` are forwarded to `http://127.0.0.1:8001` via `httputil.NewSingleHostReverseProxy`. |
+| **Knowledge build trigger** | `RegisterWithAgentService` (called in a goroutine after the spec and repo map are generated) is what tells the Node service a workspace opened. That POST is what starts the Knowledge slot's build — see §3.12. |
 | **WebSocket PTY** | For `/terminal/ws`, upgrades to WebSocket, spawns `docker exec -it <container> sh` using `github.com/creack/pty`, and bidirectionally relays raw bytes. Falls back to stdin/stdout pipes if PTY fails. |
 | **Auto-cleanup** | Each sandbox has a 10-minute TTL goroutine that runs `docker stop`, `docker rm`, and `os.RemoveAll` on the workspace temp dir. |
 
@@ -241,7 +243,7 @@ After a repo is cloned and its runtime is detected, this module **generates a fu
 | `.gitagent/agent.yaml` | Manifest: model preferences, allowed tools, runtime constraints (30 turns, 120s timeout) |
 | `.gitagent/SOUL.md` | Agent identity and personality, tailored to the detected stack |
 | `.gitagent/RULES.md` | Behavioral guardrails: always commit after edits, never delete files without asking, stack-specific rules |
-| `.gitagent/MEMORY.md` | Durable facts about the repository (stack, layout, a real detected entry file, conventions), seeded so the edit pipeline reads the repo's own knowledge before changing anything. Written **only if absent**, so a repo's memory or notes learned over time survive a re-clone. |
+| `.gitagent/memory/MEMORY.md` | Durable facts about the repository (stack, layout, a real detected entry file, conventions), seeded so the edit pipeline reads the repo's own knowledge before changing anything. Written **only if absent**, so a repo's memory or notes learned over time survive a re-clone. The `memory/` directory is the standard's full layout (`gitagent init --template full`); a spec scaffolded before this project adopted it has `MEMORY.md` at the spec root, so the generator moves that file into `memory/` on the next clone and the reader falls back to the old location — an existing repo never loses what it learned, and a leftover root copy can never shadow the migrated one. |
 | `.gitagent/skills/` | The built-in developer personas as skill files: `ui-editor`, `jnr-developer`, `snr-developer`, `architect`, `ask`, `build-doctor`. The Node edit pipeline reads these as the source of truth for how each squad behaves (section 3.9). |
 | `.gitagent/compliance/RULES.md` | Human-readable guardrails the pipeline enforces; documents and can extend the code-level secret/lockfile checks. |
 | `.gitagent/tools/`, `hooks/`, `workflows/` | The remaining standard directories, made explicit: the tools the agent uses, the session lifecycle points, and the edit / ask / doctor squads. |
@@ -265,8 +267,11 @@ A lightweight **Express + WebSocket** server that drives the `gitclaw` agentic e
 | `/agent/chat` | POST | Single-shot REST chat, streams `gitclaw.query()` and returns full response (used as a fallback when the WebSocket can't be established) |
 | `/agent/ws` | WS | **Primary path.** Persistent connection that streams the agent's work live |
 | `/agent/registry` | GET | Lists community agents from the GitAgent registry (`index.json`, cached). Powers the IDE GitAgent panel. See section 3.9 |
-| `/agent/gitagent` | GET/POST | GET returns the workspace's current pipeline assignment (which registry agents fill the Developer/Guardrails slots, whether each is cloned, and the local `skills` present). POST writes `.gitagent/pipeline.json`, live-clones the referenced agents, and returns the new status plus install steps |
-| `/agent/skill` | POST | Creates a new skill at `.gitagent/skills/<slug>/SKILL.md` from a name, description, and body, so a user-authored persona joins the edit pipeline immediately (section 3.9) |
+| `/agent/registry/agent` | GET | Previews one registry agent **without installing it**: the index entry plus its `SOUL.md` / `RULES.md` / `README.md` read straight from GitHub raw, so a user sees what an agent injects before it gets a slot |
+| `/agent/gitagent` | GET/POST | GET returns the full panel state: the pipeline assignment (which registry agents fill the Developer/Guardrails slots and whether each is cloned), the repo's own spec files with an `exists` flag, the local skills with descriptions, and the agents already installed in the workspace. POST writes `.gitagent/pipeline.json`, live-clones the referenced agents, and returns the new status plus install steps |
+| `/agent/gitagent/file` | GET/POST | Reads and writes one file of the repo's agent spec — identity, rules, memory, compliance, manifest, a skill, or an installed agent's own files. Paths are confined to `.gitagent/` (plus the root `agent.yaml`) by `resolveSpecPath`; traversal, source files, and secrets are refused. Writing `agent.yaml` mirrors it to the repo root, where the git-native runtime reads its manifest |
+| `/agent/gitagent/install` | POST | **Pull.** Clones a registry agent into `.gitagent/agents/` and puts it to work: `classifySlot()` reads the registry entry and assigns the slot itself (a compliance/security/governance agent becomes a Guardrail, a code agent becomes the Developer), so pulling is one click. `slot` overrides the choice; `slot: "none"` clones without assigning, for reading its files first. Then `syncSpecOverlay()` writes the agent's rules and stage **into** `.gitagent/` and the response returns the files it created, so the panel can say what changed in the folder |
+| `/agent/skill` | POST/DELETE | POST creates (or, with `overwrite`, saves) a skill at `.gitagent/skills/<slug>/SKILL.md` from a name, description, and body, so a user-authored persona joins the edit pipeline immediately. DELETE removes a user-authored skill; a built-in persona is refused, since deleting one would silently change how the pipeline codes (section 3.9) |
 | `/agent/diagnose` | POST | The build doctor: given the container logs, classifies a genuine failure vs. noise and returns a structured `{ severity, summary, cause, fix }` proposal (section 3.10) |
 
 **WebSocket protocol:**
@@ -315,7 +320,7 @@ The service also installs `unhandledRejection` / `uncaughtException` handlers so
 **Orchestrator routing (`decideMode()`):** an explicit client `mode` (`ask` / `edit` / `agent` from the composer dropdown) always wins. Otherwise the Orchestrator routes intelligently. `heuristicMode()` decides the obvious cases for free: an edit verb (`EDIT_INTENT`, which includes `rename`/`rebrand`/`relabel`) or an imperative styling command that names a style target (`EDIT_IMPERATIVE` + `EDIT_STYLE_INTENT`, e.g. "make the ui dark red") routes to Edit, and a question opener (`ASK_OPENER`, e.g. "summarize" / "where" / "how") routes to Ask. For a genuinely ambiguous message that changes files without an obvious verb ("rebrand the heading", "swap the two buttons"), it falls back to `classifyIntentLLM()`, a single one-word toolless call that returns `edit` or `ask`. Only ambiguous messages pay for that call, and any failure falls back to the safe read-only Ask mode. The synchronous `resolveTurnMode()` is retained for tests and as the confident fast-path.
 
 - **ask** (questions), `buildAskPrompt()` pulls salient terms, runs `search_code` server-side, and injects `file:line` hits. For overview questions it also injects real substance (the repo map plus the entry, layout, and README/package files) with an instruction to write a concrete summary now and not to hedge or narrate a process. It then calls the model with `replaceBuiltinTools: true` + `allowedTools: []` → **zero tools**. The model writes a grounded answer. Streams via `streamTurn()`.
-- **edit** (changes), a **layered agentic pipeline** modelled on the [gitagent](https://github.com/VivanRajath/gitagent-hackathon) standard's tiered dispatch (`runEditPipeline`): **Orchestrator** (routes here, `EDIT_INTENT`, or an imperative styling command like "make the ui dark red" via `EDIT_IMPERATIVE` + `EDIT_STYLE_INTENT`) → **Complexity Classifier** (`classifyEditComplexity`, junior/single-file vs senior/multi-file, bounding how many files may change) → **Guardrails** (`guardEditBlocks`, refuses edits to `.env`/lockfiles/`.git` and blocks secret injection) → **Developer** (the whole-file rewrite below). Each layer's decision is streamed to the chat as a step, so the engine reads as agentic instead of chatting. The Developer stage is generate-then-apply, **whole-file rewrite**. `gatherEditFiles()` picks the relevant files *UI entry + style files first, then search-term matches, skipping library boilerplate via `EDIT_SKIP_PATH` (e.g. `components/ui/*`)* and tags each `whole` if it's small enough (`WHOLE_FILE_MAX_CHARS`) to rewrite in full within the output budget. `buildEditPrompt()` shows those files and the expected reply in the **same** `=== FILE: path ===` delimiter (so the weak model mirrors the format instead of confusing input vs output) and asks for each changed file's COMPLETE new contents. Before the Developer runs, `resolvePipelineAgents()` (section 3.9) loads the repository's own root spec (`SOUL.md`/`RULES.md`/`skills`/`MEMORY.md`) plus any registry agents assigned to the Developer/Guardrails slots, and `personaPreamble()` prepends them so the rewrite obeys the repo's memory and rules. `parseEditBlocks()` extracts the whole-file blocks (accepts the `=== FILE ===` form and the `<file path="…">…</file>` fallback, strips code fences; an *unclosed* block from a truncated reply won't parse, so no half-written file is saved); `applyEditBlocks()` overwrites (path-safe: rejects anything resolving outside the workspace, and won't clobber an existing file that wasn't offered to the model). Buffered via `collectTurn()`, then a `file_changed` and a structured `edit_summary` frame are sent. The summary is a clickable file list in the chat; clicking an edited or created file opens a before/after diff (the pipeline carries each file's `before`/`after` for this). So llama-3.3 never calls `write` and never emits fragile patch markers. Whole-file rewrite is capped to small files; large-file or multi-file refactors need a stronger model (`AGENT_MODEL_*`).
+- **edit** (changes), a **layered agentic pipeline** modelled on the [gitagent](https://github.com/VivanRajath/gitagent-hackathon) standard's tiered dispatch (`runEditPipeline`): **Orchestrator** (routes here, `EDIT_INTENT`, or an imperative styling command like "make the ui dark red" via `EDIT_IMPERATIVE` + `EDIT_STYLE_INTENT`) → **Complexity Classifier** (`classifyEditComplexity`, junior/single-file vs senior/multi-file, bounding how many files may change) → **Guardrails** (`guardEditBlocks`, refuses edits to `.env`/lockfiles/`.git` and blocks secret injection) → **Developer** (the whole-file rewrite below) → **Guardrails (review)** (`reviewEditBlocks`, where any *installed* guardrail agent reads the actual rewrite and can deny a file — see section 3.9). Each layer's decision is streamed to the chat as a step, so the engine reads as agentic instead of chatting. The Developer stage is generate-then-apply, **whole-file rewrite**. `gatherEditFiles()` picks the relevant files *UI entry + style files first, then search-term matches, skipping library boilerplate via `EDIT_SKIP_PATH` (e.g. `components/ui/*`)* and tags each `whole` if it's small enough (`WHOLE_FILE_MAX_CHARS`) to rewrite in full within the output budget. `buildEditPrompt()` shows those files and the expected reply in the **same** `=== FILE: path ===` delimiter (so the weak model mirrors the format instead of confusing input vs output) and asks for each changed file's COMPLETE new contents. Before the Developer runs, `resolvePipelineAgents()` (section 3.9) loads the repository's own root spec (`SOUL.md`/`RULES.md`/`skills`/`MEMORY.md`) plus any registry agents assigned to the Developer/Guardrails slots, and `personaPreamble()` prepends them so the rewrite obeys the repo's memory and rules. `parseEditBlocks()` extracts the whole-file blocks (accepts the `=== FILE ===` form and the `<file path="…">…</file>` fallback, strips code fences; an *unclosed* block from a truncated reply won't parse, so no half-written file is saved); `applyEditBlocks()` overwrites (path-safe: rejects anything resolving outside the workspace, and won't clobber an existing file that wasn't offered to the model). Buffered via `collectTurn()`, then a `file_changed` and a structured `edit_summary` frame are sent. The summary is a clickable file list in the chat; clicking an edited or created file opens a before/after diff (the pipeline carries each file's `before`/`after` for this). So llama-3.3 never calls `write` and never emits fragile patch markers. Whole-file rewrite is capped to small files; large-file or multi-file refactors need a stronger model (`AGENT_MODEL_*`).
 - **agent** (legacy), the original tool-driven loop (`streamTurn()` with tools). Only reliable with a strong tool-calling model; opt in with `AGENT_EDIT_STRATEGY=agentic` or an explicit `mode: "agent"`.
 
 Both toolless modes are covered by `agent-services/server.test.js` (`node --test`). This is the same insight as Ask mode extended to writes: keep the model out of the function-calling path it's bad at.
@@ -343,7 +348,35 @@ An alternative agent backend implemented as a **FastAPI** service. This is the l
 
 ---
 
-### 3.6 Frontend IDE (`index.html`, `ide.js`, `ide.css`)
+### 3.6 Frontend (`web/`)
+
+The whole front end is one embedded directory. The layout **is** the contract —
+there is no build step, no bundler and no manifest, so the load order in
+`index.html` and the rule that only `tokens.css` defines a token are what keep it
+coherent. Four Go tests in `static_test.go` enforce both.
+
+```
+web/
+  index.html          markup + load order only (568 lines; was 2,639)
+  css/
+    tokens.css        THE ONLY FILE THAT DEFINES A TOKEN
+                      colour (light + dark), 7-step type scale,
+                      4-step radius scale, 4px space grid, layout, motion
+    app.css           landing page + shell   (was an inline <style>)
+    ide.css           editor, tree, terminal, preview
+    ide-agent.css     GitAgent dock + agent chat
+  js/
+    app.js            launcher, builder flow  (was an inline <script>)
+    ide.js            Monaco, tree, tabs, terminal, preview
+    ide-agent.js      agent stream + GitAgent panel
+  vendor/
+    monaco/vs/**      Monaco 0.45.0 (13 MB) — served from the binary
+    xterm/            xterm 5.3.0 + fit addon + its CSS
+    fonts/            Inter 300-700, JetBrains Mono 400-500 (latin, woff2)
+```
+
+Nothing is fetched from a CDN at runtime, so the IDE loads on an air-gapped
+machine and no third-party host sits on the editor's critical path.
 
 The main UI is a single-page application embedded in the Go binary. It provides:
 
@@ -352,13 +385,13 @@ The main UI is a single-page application embedded in the Go binary. It provides:
 | **Sandbox Launcher** | Input fields for GitHub repo URL and optional instructions. Mode selector (dev / prompt). One-click launch. Real-time setup log streaming via polling `/logs/:id`. |
 | **Live Preview** | `<iframe>` pointed at `http://localhost:<dynamic-port>`. **Readiness-aware:** the dev server in a fresh sandbox isn't up for a while (npm install + build), so the preview waits for the app to report `running` (status polling only returns `running` once the app's port actually answers), shows a "Starting your app…" state until then, and loads/auto-opens the iframe once ready instead of showing a dead connection error. **Live reload:** containers run with polling watchers (`WATCHPACK_POLLING`, `CHOKIDAR_USEPOLLING`), and because a host-side write does not reliably reach the container's view of a bind mount, each changed file is re-written through the container itself so the dev server actually recompiles (section 3.11). For non-HMR stacks (Vite, static) the preview auto-reloads on save. **Locate UI code:** a floating control on the preview, hover reveals the app's UI file's folder in the tree, click opens it in the editor (entry file resolved by `GET /sandbox/entry`). Reload button, open-in-new-tab, status indicator. |
 | **File Explorer** | Tree view of the workspace fetched from `/files`. Expand/collapse directories. Click to open files. |
-| **Monaco Editor** | Full VS Code-grade editor embedded via CDN. Language auto-detection from file extension. Syntax highlighting. Save with `Ctrl+S` → `POST /file/save`. |
+| **Monaco Editor** | Full VS Code-grade editor, **vendored into the binary** at `web/vendor/monaco/` (`require.config({paths:{vs:'/vendor/monaco/vs'}})`). Language auto-detection from file extension. Syntax highlighting. Save with `Ctrl+S` → `POST /file/save`. |
 | **Terminal** | xterm.js WebSocket terminal connected to `/terminal/ws`. Full PTY, interactive shells, autocomplete, color output. |
 | **Status Bar** | Shows container name, repo URL, sandbox state (cloning / starting / ready). |
 
 ---
 
-### 3.7 AI Agent Chat Panel (`ide-agent.js`, `ide-agent.css`)
+### 3.7 AI Agent Chat Panel (`web/js/ide-agent.js`)
 
 A collapsible side panel that provides the AI coding assistant UI. It is a **live agentic stream**, not a request/response chatbot:
 
@@ -410,13 +443,40 @@ Each subdirectory contains a `Dockerfile` that builds a pre-configured, isolated
 
 Jr Architect is inspired by Lyzr's **Architect** and builds on the **GitAgent standard** (the open, git-native agent spec from Lyzr Research Labs; registry at [registry.gitagent.sh](https://registry.gitagent.sh), source `open-gitagent/registry`). The premise: an agent's identity, rules, skills, and memory are plain files committed to a repo, so the agent is versioned and travels with the code. Jr Architect is a runtime for that standard, acting as a **GitAgent adapter** via the standard's universal `system-prompt` adapter. This module has two halves.
 
-**Half 1, the repository's own agent (root spec + skills as source of truth).** `loadRepoRootSpec(dir)` reads the `SOUL.md` / `RULES.md` / `skills/*/SKILL.md` / `MEMORY.md` scaffolded under `.gitagent/` by `gitagentgenerator.go` (section 3.3), falling back to the repo root for a standard-pure repo, each capped for the token budget. `resolvePipelineAgents()` loads this on **every** edit, manifest or not, and `personaPreamble()` composes it as the base layer of the Developer prompt, in order: repo **memory** (what the project is), **identity**, **skill** (how to change things here), then **rules** (with the "Never" section as hard limits).
+**Half 1, the repository's own agent (root spec + skills as source of truth).** `loadRepoRootSpec(dir)` reads the `SOUL.md` / `RULES.md` / `skills/*/SKILL.md` / `memory/MEMORY.md` scaffolded under `.gitagent/` by `gitagentgenerator.go` (section 3.3), falling back to the repo root for a standard-pure repo (and, for memory, to a legacy root `MEMORY.md`), each capped for the token budget. `resolvePipelineAgents()` loads this on **every** edit, manifest or not, and `personaPreamble()` composes it as the base layer of the Developer prompt, in order: repo **memory** (what the project is), **identity**, **skill** (how to change things here), then **rules** (with the "Never" section as hard limits).
 
-Beyond the repo spec, the platform's own squads are also files here. `loadSkill(dir, name)` reads a persona from `.gitagent/skills/<name>/SKILL.md` (frontmatter stripped) as the **source of truth** for that squad, with a built-in string fallback if the file is missing: the edit pipeline picks `jnr-developer` or `snr-developer` by the Complexity Classifier's tier, Ask reads `ask`, and the build doctor reads `build-doctor`. `loadComplianceRules(dir)` reads `.gitagent/compliance/RULES.md` and layers it onto the guardrail step (the hard `guardEditBlocks` regex still runs in code, deny wins). So editing a `RULES.md`, `MEMORY.md`, or a skill file changes how the very next turn behaves. The repo, and the platform, live in the folder.
+Beyond the repo spec, the platform's own squads are also files here. `loadSkill(dir, name)` reads a persona from `.gitagent/skills/<name>/SKILL.md` (frontmatter stripped) as the **source of truth** for that squad, with a built-in string fallback if the file is missing: the edit pipeline picks `jnr-developer` or `snr-developer` by the Complexity Classifier's tier, Ask reads `ask`, and the build doctor reads `build-doctor`. `loadComplianceRules(dir)` reads the repo's own rule files from `.gitagent/compliance/` (`RULES.md` first, then any other file dropped in that folder — the directory means something, not one hardcoded filename) and layers them onto the guardrail step (the hard `guardEditBlocks` regex still runs in code, deny wins). So editing a `RULES.md`, `MEMORY.md`, or a skill file changes how the very next turn behaves. The repo, and the platform, live in the folder.
 
-**Half 2, installed registry agents (pipeline slots).** The registry is backend-free: `fetchRegistryIndex()` pulls a single static `index.json` (cached 10 min), where each entry points at the agent's own GitHub repo. A repo declares which agents fill which pipeline slot in `.gitagent/pipeline.json` (or `pipeline.yaml`, read by a minimal `parseMiniYaml()`), or via `GITAGENT_DEVELOPER_AGENT` / `GITAGENT_GUARDRAIL_AGENTS` env overrides for a zero-config demo. `installAgent()` resolves the ref through the index and **live-clones** the agent (`git clone --depth 1`) into `<workspace>/.gitagent/agents/<author>__<name>` (cached on disk; skipped if present). Slot mapping follows the agent's registry `category`: `developer-tools` fills the **Developer** slot, `security`/`compliance` stack into **Guardrails**.
+**Half 2, installed registry agents (pipeline slots).** The registry is backend-free: `fetchRegistryIndex()` pulls a single static `index.json` (cached 10 min), where each entry points at the agent's own GitHub repo. A repo declares which agents fill which pipeline slot in `.gitagent/pipeline.json` (or `pipeline.yaml`, read by a minimal `parseMiniYaml()`), or via `GITAGENT_DEVELOPER_AGENT` / `GITAGENT_GUARDRAIL_AGENTS` env overrides for a zero-config demo. `installAgent()` resolves the ref through the index and **live-clones** the agent (`git clone --depth 1`) into `<workspace>/.gitagent/agents/<author>__<name>` (a complete clone is cached on disk and reused; a directory without `.git` is a half-finished clone and is discarded and retried).
 
-**Composition and precedence.** The root spec is the base identity that always applies; an installed registry Developer agent layers on top; guardrails combine (root `RULES.md` "Never" + registry guardrail agents + the built-in `guardEditBlocks` secret/lockfile regex), and a deny always wins. Because everything runs through the `system-prompt` adapter, an installed agent's persona and rules simply become the system prompt of the same reliable toolless edit engine (section 3.4), so no new execution path is added.
+**Pulling assigns the slot for you.** `classifySlot(entry)` reads the registry's own metadata so a user never has to know what a "slot" is: the curated `category` wins outright (`developer-tools`/`coding`/`engineering` → **Developer**; `security`/`compliance`/`governance`/`legal`/`policy`/`safety` → **Guardrails**), and only a generic category (`other`, `productivity`) falls through to a tag/description signal. The order matters — `gstack-agent` is `developer-tools` but tagged `code-review`, and `agent-designer`'s description says "audit"; both write code and must not be mistaken for reviewers. `assignSlot()` then writes just that slot into `.gitagent/pipeline.json`, leaving the rest of the pipeline alone, and an agent holds **one** slot at a time (moving it to Guardrails removes it from Developer, so it can never review its own work). The panel shows the destination on each card (`→ Developer` / `→ Guardrail`) with the reason on hover, and one button beside it to force the other slot.
+
+**A pulled agent materializes into `.gitagent/` (`syncSpecOverlay`).** Cloning into `.gitagent/agents/` is not enough: the folder the developer actually reads — `RULES.md`, `skills/`, `compliance/`, `workflows/` — would sit there as the untouched scaffold while the pipeline quietly ran something else. So resolving the pipeline also **reconciles the spec folder** with it, writing files that name the agent they came from:
+
+| Slot | File written | What it is |
+|---|---|---|
+| Developer | `.gitagent/skills/<author>__<name>/SKILL.md` | the agent's identity + rules + skill, in one file |
+| Guardrail | `.gitagent/compliance/<author>__<name>.md` | the rules the review stage enforces |
+| Either | `.gitagent/workflows/<author>__<name>.md` | where it runs in the pipeline, and what it may do there |
+| Index | a managed block in `.gitagent/RULES.md` and `workflows/README.md` | which agents are live and where their files are |
+
+These are not copies for show — **once the overlay exists it *is* the persona.** `applyOverlay()` collapses the persona to the visible file, so `readOverlayBody()` (not the clone) is what reaches the Developer prompt and the guardrail reviewer: edit `.gitagent/compliance/acme__guard.md` in the IDE and the *next* review enforces your text. Which forces three rules:
+
+- an overlay is **created only when missing, never overwritten** — your edits stand, and a second sync writes nothing;
+- it is **deleted when the agent leaves the pipeline**, so the folder can never advertise rules nothing runs (the managed block goes with it, leaving hand-written lines untouched);
+- the clone under `agents/` stays **pristine** as the upstream copy to diff against.
+
+Sync runs inside `resolvePipelineAgents()`, which makes it self-healing: a repo that commits only `pipeline.json` rebuilds its `.gitagent/` on the first turn. It is best-effort — a failed sync just leaves the clone driving the pipeline as before. Two details keep the layers honest: a pulled agent's overlay is skipped by `loadComplianceRules()` (it already rides in via `personaPreamble()`, and sending it twice would spend the token budget twice for the same enforcement), and skipped by `loadRepoRootSpec()` (an overlay slug sorts ahead of `ui-editor` and would otherwise stand in for the repo's own identity). Explanatory notes inside an overlay are HTML comments, stripped by `readOverlayBody()`, so guidance to the developer never reaches the model as if it were one of the agent's rules.
+
+**Composition and precedence.** The root spec is the base identity that always applies; an installed registry Developer agent layers on top. Because everything runs through the `system-prompt` adapter, an installed Developer agent's persona and rules simply become the system prompt of the same reliable toolless edit engine (section 3.4), so no new execution path is added — that holds for the composer's **Agent** mode too, which resolves the same pipeline before its tool-driven loop, so switching modes never silently drops the agent you pulled.
+
+**A pulled guardrail actually denies (`reviewEditBlocks`).** Guardrails are not a prompt suggestion. They run in three layers, and a deny at any layer wins:
+
+1. **Code floor** — `guardEditBlocks()`, fixed regex over `.env`/lockfiles/`.git` and secret injection. No model, so it holds even when the provider is down.
+2. **Registry review** — every installed guardrail agent's rules (from its overlay in `.gitagent/compliance/`, so the file you can edit is the one that runs) plus the Developer's *actual rewrite* go to a toolless turn that returns `{"verdicts":[{path, allow, reason}]}`. Anything explicitly denied is dropped before `applyEditBlocks()` ever sees it, and the blocked row appears in the edit summary naming the agent and its reason. A file with **no** verdict is allowed — silence is not a denial, so a model that drops a row from its JSON can't take an unrelated file down with it. The prompt states that style and taste are not grounds to block, which keeps a chatty reviewer from vetoing every edit.
+3. **Prompt layer** — the same rules also ride in the Developer's preamble via `personaPreamble()`, so the writer usually complies before the reviewer has to intervene.
+
+The review is budget-aware (`GITAGENT_GUARDRAIL_FILE_CHARS`, default 1200/file; `GITAGENT_GUARDRAIL_TOTAL_CHARS`, default 5000) to survive Groq's 12k TPM cap. If the reviewer itself fails (provider down, unparseable reply) the default is **fail-open with a visible "applying unreviewed" step** rather than wedging the IDE; set `GITAGENT_GUARDRAIL_FAIL=closed` where an unreviewed edit is worse than no edit.
 
 | Function | Role |
 |---|---|
@@ -424,13 +484,24 @@ Beyond the repo spec, the platform's own squads are also files here. `loadSkill(
 | `findAgent(index, ref)` | Resolve `author/name` to an index entry (or a synthetic entry pointing at `github.com/author/name`) |
 | `readPipelineManifest(dir)` | Read `.gitagent/pipeline.(json\|yaml)` or env overrides into slot assignments |
 | `writePipelineManifest(dir, p)` | Persist slot assignments; clearing both slots removes the file (reverts to built-ins) |
-| `installAgent(dir, entry)` | `git clone` the agent into `.gitagent/agents/` (cached) |
+| `installAgent(dir, entry)` | `git clone` the agent into `.gitagent/agents/` (cached). A directory without `.git` is a half-finished clone, so it is discarded and retried, and a failed attempt clears its target — otherwise one bad clone reads as "installed" forever and the persona silently loads blank |
+| `fetchAgentDetail(entry)` | Preview an agent's `SOUL`/`RULES`/`README` from GitHub raw, before anything is cloned |
 | `loadAgentPersona()` / `loadRepoRootSpec()` | Load an installed agent's / the repo root's `SOUL`/`RULES`/`skill`(`/MEMORY`) |
 | `loadSkill(dir, name)` / `loadComplianceRules(dir)` / `listSkills(dir)` | Read a squad persona (source of truth), the compliance rules, and the skills present under `.gitagent/skills/` |
-| `resolvePipelineAgents(dir, onStep)` | Orchestrate: root spec + installed slot agents, streaming `GitAgent(...)` steps |
+| `listSkillsDetailed(dir)` / `deleteSkill(dir, slug)` | Skills with their frontmatter description and a built-in flag; delete a user-authored one (built-ins refused) |
+| `resolveSpecPath()` / `readSpecFile()` / `writeSpecFile()` | The panel's authoring surface, and its security boundary: every path is resolved and confined to `.gitagent/` (plus the root `agent.yaml`) before any read or write |
+| `syncSpecOverlay(dir, agents)` | Reconcile `.gitagent/` with the pipeline: materialize each active agent's rules/stage, prune the files of agents that left, refresh the managed index blocks. Idempotent |
+| `overlayPaths(ref, slot)` / `readOverlayBody(dir, ref, slot)` | Where a pulled agent's spec lands, and the body the pipeline reads from it (frontmatter and HTML-comment notes stripped) |
+| `resolvePipelineAgents(dir, onStep)` | Orchestrate: root spec + installed slot agents (overlay wins over the clone) + spec sync, streaming `GitAgent(...)` steps |
 | `personaPreamble(agents)` | Compose the layered persona prepended to `buildEditPrompt()` |
 
-**Surfaced in the IDE** by the GitAgent panel (`ide-agent.js`, opened from the agent-panel header): it browses `/agent/registry`, shows the Developer/Guardrails slots with an installed/pending dot, and assigns agents (including manual `author/agent-name` refs) via `POST /agent/gitagent`, streaming the install log. Covered by `agent-services/registry.test.js` (`node --test`).
+**Surfaced in the IDE** by the GitAgent panel (`ide-agent.js`, `ide-agent.css`) — a dock opened from its own activity-bar entry, so customizing the coding agent is a first-class part of the IDE rather than a dialog buried in the chat. Three tabs:
+
+- **Agent** — the repository's own agent. Each spec file (identity, rules, memory, guardrails, manifest) is a card that opens an editor in the panel, with `Open in editor` to hand it to Monaco instead. Below it, the Developer/Guardrails slots with an installed/pending dot, and the community agents already cloned into the workspace, whose real files can be opened and read.
+- **Skills** — the personas under `.gitagent/skills`, each with its description and a built-in/yours badge. Edit one in place, create one from a form, or delete one you authored.
+- **Registry** — browse and search `/agent/registry`, expand a card to preview the agent's real `SOUL`/`RULES`/`README` before committing to it, then **Pull** it: one click clones it and puts it in the slot its registry entry implies, shown on the card as `→ Developer` or `→ Guardrail`. A second button forces the other slot, "Clone only" clones without assigning, and a manual `author/agent-name` ref goes through the same path (an unindexed repo is classified from its synthetic entry). The pull log streams below the tabs.
+
+Every surface writes a plain file in the workspace, so each change is a git diff the user can review and commit. Covered by `agent-services/registry.test.js` (`node --test`), including the path guard.
 
 **Honest scope note.** The `system-prompt` adapter runs an agent's identity, rules, and skills on whatever model is configured. It makes the agent run and comply but does not upgrade the underlying model, so on Groq's free tier the reasoning ceiling stays the free model's; a stronger provider key (`AGENT_MODEL_*`) lifts it.
 
@@ -487,7 +558,7 @@ Cold-start latency is addressed separately: `normalizeInstall()` (section 3.2) r
          ▼
 7. GenerateAgentSpec(workdir, stack)
    → Writes the .gitagent/ spec (agent.yaml, SOUL.md, RULES.md,
-     MEMORY.md, skills/, compliance/, tools/, hooks/, workflows/)
+     memory/MEMORY.md, skills/, compliance/, tools/, hooks/, workflows/)
      plus a root agent.yaml the engine loads
          │
          ▼
@@ -776,3 +847,35 @@ Lyzr Apps are recognized by `detectLyzrRepo()` and run as **Next.js** projects (
 ---
 
 *Jr Architect. Built with Go, Docker, Monaco Editor, xterm.js, and gitclaw.*
+
+---
+
+### 3.12 The Knowledge slot (`agent-services/knowledge.js`)
+
+`repomap.go` writes `knowledge/repo-map.md` at clone time: file counts, directory
+layout, exported symbol names. That is a **map**. It says where things are and
+nothing about what they do, so an agent asked to summarise a repository could only
+paraphrase a directory listing — the complaint that produced this component.
+
+A chat turn cannot fix it. On a shared free-tier key a turn can afford roughly 6k
+characters of context, which is not enough to read a codebase. So the Knowledge
+slot runs **once, when the workspace opens, in its own process, on its own key**.
+
+| Piece | Where | What it does |
+|---|---|---|
+| The prompt | `.gitagent/skills/knowledge-builder/SKILL.md` | Scaffolded by `gitagentgenerator.go`, listed in `BUILTIN_SKILLS`, editable in the panel, committed to git. **This is the agent** — nothing in the code hardcodes what the document says. A repo that commits its own version keeps it across re-clones. |
+| The reserved key | `server.js` `KNOWLEDGE_KEY` | The last configured Groq key is taken out of the chat rotation (`GROQ_KNOWLEDGE_API_KEY` overrides). Groq's limit is **per organisation**, so rotating a shared key would not help — the same bucket drains either way. |
+| The isolation | `knowledge-worker.js` | A child process, because `pi-ai` reads `process.env.GROQ_API_KEY` at request time. One variable and two concurrent callers means whoever writes last wins. A mutex would be correct but would make a 60-second build block the first thing the user types; a separate environment costs one spawn. |
+| Gathering | `gatherKnowledgeInputs` | Repo map, full file list, README, manifest (reduced to dependency and script *names*), entry point, and the top 8 source files by a no-model centrality score. Capped at 24k characters — four times a chat turn's budget. Tests, build output and dependencies score nothing. |
+| Validation | `looksLikeDocument`, `missingSections`, `invalidPaths` | A model that answers "I would start by looking at…" produces something worse than no file, because it is then loaded into every turn as fact. Each retry names the specific gap — missing sections, or paths cited that do not exist — which moves the model where repeating the request does not. |
+| The output | `knowledge/overview.md` | Registered `always_load: true` in `knowledge/index.yaml`, so it rides in every later turn. Frontmatter records when it was built, by which agent, from how many sources, and **which cited paths could not be verified**. |
+
+Ask mode leads with this document when it exists (`buildAskPrompt`), which is both
+better and cheaper than the previous fallback: four raw files at 3k characters each
+spent the whole budget on material the model then had to summarise under pressure.
+
+The slot is a first-class pipeline slot alongside Developer and Guardrails.
+`classifySlot` routes `documentation`/`knowledge`/`research` categories to it, an
+agent holds exactly one slot at a time, and a pulled agent's overlay lands in
+`skills/` like any other prompt. A manifest written before the slot existed simply
+has no `knowledge` key and reads as the built-in.

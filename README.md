@@ -76,18 +76,35 @@ It shows up in three ways.
   agent.yaml        manifest: model, tools, runtime
   SOUL.md           identity
   RULES.md          must and never rules
-  MEMORY.md         durable facts, seeded from the detected stack and a real entry file
+  memory/MEMORY.md  durable facts, seeded from the detected stack and a real entry file
   skills/           how this repo is edited: ui-editor, jnr-developer, snr-developer,
                     architect, ask, build-doctor
   compliance/       the guardrails the edit pipeline enforces
   tools/  hooks/  workflows/    the rest of the standard, made explicit
+  agents/           the upstream clone of every agent pulled from the registry
 ```
+
+Pulling an agent from the registry fills this tree in rather than sitting beside it: its rules appear under `compliance/` or `skills/`, its stage under `workflows/`, and it disappears from all of them when you remove it.
 
 Before the agent changes anything, the edit pipeline reads this spec, so edits obey the repository's own memory, rules, and skills. Add "never touch pricing.ts" to `RULES.md` and the next edit respects it. Because the spec lives in git, the repo's agent is versioned with the code, and a repo that commits its own customized spec is never overwritten on re-clone. (The engine also keeps a copy of `agent.yaml` at the repo root, where the git-native runtime reads its manifest.)
 
 **The platform's own agents are editable skills, not hidden prompts.** The built-in developer personas, the Junior and Senior Developer, the Architect, the Ask persona, and the Build Doctor, are real `SKILL.md` files under `.gitagent/skills/`. The chat agent reads them as the source of truth: edit `skills/snr-developer/SKILL.md` and the next multi-file change behaves differently. If a skill file is missing, a built-in default keeps everything working. You can author a new skill from the IDE and it joins the pipeline immediately. There is no separate, invisible system prompt. The folder is the system.
 
-**Install community agents from the registry.** A GitAgent panel in the IDE browses the registry and drops a published agent into a pipeline slot. The edit pipeline has named slots, Developer (rewrites the code) and Guardrails (can block an edit). A registry agent categorized `developer-tools` fills the Developer slot; `security` or `compliance` agents stack into Guardrails. Assigning writes `.gitagent/pipeline.json` and live-clones the agent into the sandbox, so the next edit runs as that agent, including Lyzr's own published agents such as `shreyas-lyzr/architect`.
+**A GitAgent panel, first-class in the IDE.** Customizing the coding agent has its own entry in the activity bar, beside the explorer and the chat, because it is a normal part of working in the repository rather than a settings dialog. The panel has three tabs.
+
+*Agent* is the repository's own agent: its identity, rules, memory, guardrails, and manifest, each editable in the panel or handed to Monaco. It also shows which agents fill the pipeline's slots and which are installed in the workspace, whose files you can open and read.
+
+*Skills* lists the personas under `.gitagent/skills` with their descriptions. Edit a built-in one, write a new one from a form, or delete one you authored.
+
+*Registry* browses the community index. Expand an agent to preview its real `SOUL.md` and `RULES.md`, read from its repository before anything is cloned, then **Pull** it. Pulling is one click and the agent goes to work: Jr Architect reads the registry entry and assigns the slot itself, so a `developer-tools` agent becomes the **Developer** that rewrites your code, and a `compliance`, `security`, or `governance` agent becomes a **Guardrail** that can block an edit. The card shows where it will land (`→ Developer` / `→ Guardrail`) before you click, with one button beside it to force the other slot. Pulling live-clones the agent into the sandbox and writes `.gitagent/pipeline.json`, so the very next edit runs through it, including Lyzr's own published agents such as `shreyas-lyzr/architect`.
+
+**Pulling an agent changes the folder, not just a config value.** `.gitagent/` is not a static scaffold that a pulled agent runs behind: the agent is written *into* it. A Developer agent's identity, rules, and skill land in `.gitagent/skills/<author>__<name>/SKILL.md`; a guardrail's rules land in `.gitagent/compliance/<author>__<name>.md`; either way a note in `.gitagent/workflows/` records which stage it runs at and what it may do there, and `RULES.md` gains a short managed index of what is live. The file explorer refreshes and flashes the new file the moment you pull.
+
+Those files are the agent. Once the overlay exists the pipeline reads it instead of the clone, so opening `.gitagent/compliance/acme__guard.md` and tightening a rule means the *next* review enforces your version. Which is why a file you have edited is never overwritten, and why removing the agent deletes its files and its index entry, leaving your own rules exactly as you wrote them: the folder always says what actually runs. The untouched upstream copy stays under `.gitagent/agents/` to diff against.
+
+A pulled guardrail is enforced, not merely suggested. After the Developer produces a rewrite, every installed guardrail agent's rules and the actual new file contents go to a review turn that returns a per-file allow/deny; a denied file is dropped before anything is written and shows up in the edit summary naming the agent and its reason. Underneath that sits a code-level floor (`.env`, lockfiles, `.git`, secret injection) that needs no model and holds even when the provider is down. A file the reviewer says nothing about is allowed, so one dropped line of JSON can't block an unrelated change; if the review itself fails, the default is to apply with a visible "applying unreviewed" step rather than wedging the IDE (`GITAGENT_GUARDRAIL_FAIL=closed` inverts that).
+
+Everything the panel writes is a plain file in the repository, so every change to the agent is a git diff you can review, revert, and commit alongside the code it governs.
 
 These layers compose. The repo's own spec is the base identity that always applies; installed skills and registry agents layer on top; guardrails and compliance combine so that a deny always wins, with the hard secret and lockfile checks enforced in code regardless of any file. Jr Architect honors the standard's universal `system-prompt` adapter, which is why any registry agent can drive a slot without new engine code: the agent's persona and rules become the system prompt of the same reliable, toolless edit engine.
 
@@ -98,12 +115,15 @@ An honest note on scope: the `system-prompt` adapter runs an agent's identity, r
 A short tour of the harder problems this project solves, and how.
 
 - **Reliable editing on a free-tier model.** `llama-3.3-70b-versatile` is a strong text generator but a weak tool-caller, so the Ask and Edit paths keep the model out of the function-calling loop entirely. The backend retrieves and applies; the model only writes text. Whole-file rewrites replace fragile patch syntax, so a reply truncated by the token cap fails to parse instead of corrupting a file.
+- **A knowledge agent with its own budget.** A file list is not knowledge: it says where things are and nothing about what they do, so an agent asked to summarise a repo could only paraphrase a directory listing. The Knowledge slot fixes that with an agent that runs once when a workspace opens, on a **dedicated API key** taken out of the chat pool, and reads roughly four times what a chat turn can afford — then writes `knowledge/overview.md`, which every later turn is grounded in. Its prompt is `.gitagent/skills/knowledge-builder/SKILL.md`: a real file you can open, edit and commit, not a hidden system prompt. Any registry agent can replace it. Every path the document cites is checked against the repo, and anything unverifiable is recorded in the file's own frontmatter rather than quietly presented as fact.
 - **Agentic retrieval instead of vector RAG.** A repo map (stack, layout, entry point, exported symbols) is generated at clone time and injected into every turn, with a ripgrep-style `search_code` tool for `file:line` snippets. Chosen deliberately: the free tier has no embeddings API, and for code, structure locates things more precisely than semantic similarity.
 - **A layered edit pipeline modeled as agent squads.** Orchestrator, Complexity Classifier, Guardrails, Developer. Each layer's decision streams into the chat as a step, and the Complexity Classifier selects the Junior or Senior developer skill for the change. The pipeline decides how to code, not just what to answer.
 - **A self-diagnosing IDE.** The build doctor reads the container logs, distinguishes a real failure from noise (deprecation warnings, a slow but successful install), and proposes a single safe fix: a command to run, or an edit routed through the guardrailed pipeline. One click applies it.
 - **A live preview that survives the Docker boundary.** A dev server inside the container does not reliably see host-side file writes, because a bind mount serves the container a cached view. Jr Architect re-writes each changed file through the container itself, refreshing the exact filesystem layer the dev server reads from and forcing a correct recompile, so an edit shows up in the preview instead of silently going stale.
 - **Faster cold starts.** Dependency installs skip npm's audit and funding network round-trips and prefer the mounted package cache, which is what dominated a cold install.
 - **Isolation and safety by default.** Every repo runs in a resource-limited container with a short TTL, sensitive paths and secret injection are blocked before any write, and all agent traffic is reverse-proxied through a single Go process.
+- **A drawn trust boundary around untrusted input.** Registry entries and cloned repo filenames are attacker-controlled, so they are escaped for the position they land in — attribute-safe escaping including both quote characters, an `http(s):` allowlist on any URL that reaches an `href`, and event handlers bound as properties rather than interpolated into markup. Cross-origin reads are refused: the REST surface echoes only a loopback `Origin`, matching the check the terminal WebSocket already made.
+- **One design system, enforced by tests.** A single `tokens.css` owns colour, a 7-step type scale, a 4-step radius scale and a 4px space grid; every other stylesheet only consumes it. Go tests fail the build if a stylesheet defines a token, references an undefined one, or writes a raw pixel font-size or radius. Both themes pass WCAG AA.
 
 ## Modes
 
@@ -147,7 +167,19 @@ The agent auto-selects the first provider that has a key, preferring Groq, so a 
 | `AGENT_EDIT_STRATEGY` | Set to `agentic` to route edits through the tool-driven Agent loop instead of the default Edit engine. |
 | `AGENT_MODEL_GROQ` / `_ANTHROPIC` / `_OPENAI` / `_GEMINI` | Override the model used per provider. |
 
-The frontend (`index.html`, `ide.js`, `ide.css`, `ide-agent.js`, `ide-agent.css`) is embedded into the Go binary with `go:embed`, so any frontend change requires a rebuild (`go run .` or `go build`) and a browser hard-refresh (Ctrl+Shift+R).
+### The front end lives in `web/`
+
+```
+web/index.html      markup and load order only
+web/css/            tokens.css (the only file that defines a token), then app, ide, ide-agent
+web/js/             app.js, ide.js, ide-agent.js
+web/vendor/         Monaco, xterm, and the webfonts — no CDN, works offline
+```
+
+The whole directory is embedded into the Go binary with one `//go:embed all:web`
+and served by one `http.FileServer`, so **any front-end change requires a rebuild**
+(`go run .` or `go build`) and a browser hard-refresh (Ctrl+Shift+R). Adding a
+stylesheet means adding a file — `main.go` does not need to know about it.
 
 ## Documentation
 
