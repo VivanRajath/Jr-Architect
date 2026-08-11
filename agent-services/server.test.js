@@ -7,10 +7,105 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.AGENT_NO_LISTEN = "1";
+// Point the registry index at a dead port so no test touches the network: the
+// fetch fails, findAgent synthesizes the entry, and a pre-seeded clone is reused.
+process.env.GITAGENT_REGISTRY_INDEX = "http://127.0.0.1:1/index.json";
 const {
   resolveTurnMode, heuristicMode, extractSearchTerms, parseEditBlocks, applyEditBlocks, gatherEditFiles,
-  classifyEditComplexity, guardEditBlocks,
+  classifyEditComplexity, guardEditBlocks, buildGuardrailPrompt, reviewEditBlocks,
+  applyGuardrailVerdicts, server,
 } = await import("./server.js");
+
+// Drive the real routes over HTTP. Calling a route's helpers proves the helpers
+// work; only a request proves the route does.
+async function withServer(fn) {
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+  try { return await fn((path, body) => fetch(`http://127.0.0.1:${port}${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  })); } finally { await new Promise((r) => server.close(r)); }
+}
+
+test("POST /agent/gitagent/install pulls an agent and reports what it wrote", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pull-route-"));
+  writeFileSync(join(dir, "agent.yaml"), "name: demo\n");
+  // A pre-seeded clone: installAgent sees .git and reuses it, so no network.
+  mkdirSync(join(dir, ".gitagent", "agents", "acme__guard", ".git"), { recursive: true });
+  writeFileSync(join(dir, ".gitagent", "agents", "acme__guard", "RULES.md"), "# Rules\n- No raw SQL.\n");
+
+  const body = await withServer(async (post) => {
+    const reg = await post("/agent/register", { container: "c1", workdir: dir, stack: "node" });
+    assert.equal(reg.status, 200);
+    const res = await post("/agent/gitagent/install", { container: "c1", ref: "acme/guard", slot: "guardrails" });
+    const text = await res.text(); // read once — the assert message needs it too
+    assert.equal(res.status, 200, `install failed: ${text}`);
+    return JSON.parse(text);
+  });
+
+  assert.equal(body.ref, "acme/guard");
+  assert.equal(body.slot, "guardrails");
+  // The pull must have written the agent INTO the spec folder, and said so.
+  const wrote = body.files.map((f) => f.path);
+  assert.ok(wrote.includes(".gitagent/compliance/acme__guard.md"), wrote.join(", "));
+  assert.ok(wrote.includes(".gitagent/workflows/acme__guard.md"));
+  assert.match(readFileSync(join(dir, ".gitagent", "compliance", "acme__guard.md"), "utf8"), /No raw SQL/);
+  // And the status it returns points the panel at those files.
+  assert.deepEqual(body.status.guardrails[0].specFiles,
+    [".gitagent/compliance/acme__guard.md", ".gitagent/workflows/acme__guard.md"]);
+});
+
+test("applyGuardrailVerdicts blocks only an explicit deny, and names the agent", () => {
+  const blocks = [
+    { path: "app/page.tsx", content: "a" },
+    { path: "app/pay.ts", content: "b" },
+    { path: "app/util.ts", content: "c" },
+  ];
+  const { allowed, blocked } = applyGuardrailVerdicts(blocks, [
+    { path: "app/page.tsx", allow: true },
+    { path: "app/pay.ts", allow: false, reason: "stores card data in plain text" },
+    // app/util.ts has no verdict — silence must not block it
+  ], "acme/guard");
+  assert.deepEqual(allowed.map((b) => b.path), ["app/page.tsx", "app/util.ts"]);
+  assert.equal(blocked.length, 1);
+  assert.equal(blocked[0].path, "app/pay.ts");
+  assert.match(blocked[0].reason, /acme\/guard: stores card data/);
+});
+
+test("reviewEditBlocks is a no-op when no guardrail agent is installed", async () => {
+  const blocks = [{ path: "a.js", content: "x" }];
+  const steps = [];
+  // No model call happens on this path — if one did, the test would hang/throw.
+  const out = await reviewEditBlocks("/tmp", { enabled: true, guardrails: [] }, "make it dark",
+    blocks, "groq:llama-3.3-70b-versatile", (n, d) => steps.push(`${n}:${d}`));
+  assert.deepEqual(out, { allowed: blocks, blocked: [] });
+  assert.equal(steps.length, 0);
+  // An agent that ships no rules and no soul is likewise nothing to enforce.
+  const empty = await reviewEditBlocks("/tmp", { enabled: true, guardrails: [{ name: "a/b", rules: "", soul: "" }] },
+    "make it dark", blocks, "groq:llama-3.3-70b-versatile", () => {});
+  assert.deepEqual(empty.allowed, blocks);
+});
+
+test("buildGuardrailPrompt shows the rules, every file, and asks for JSON verdicts", () => {
+  const p = buildGuardrailPrompt(
+    [{ name: "acme/guard", text: "Never log a credit card number." }],
+    "add payment logging",
+    [{ path: "app/pay.ts", content: "console.log(card)" }, { path: "app/ui.tsx", content: "<div/>" }],
+  );
+  assert.match(p, /acme\/guard/);
+  assert.match(p, /Never log a credit card number/);
+  assert.match(p, /=== FILE: app\/pay\.ts ===/);
+  assert.match(p, /=== FILE: app\/ui\.tsx ===/);
+  assert.match(p, /"verdicts"/);
+  // Taste is not grounds to block — the reviewer must only enforce the rules.
+  assert.match(p, /formatting, and taste are NOT grounds to block/);
+});
+
+test("buildGuardrailPrompt truncates a large file to stay inside the token budget", () => {
+  const huge = "x".repeat(50000);
+  const p = buildGuardrailPrompt([{ name: "a/b", text: "rule" }], "change it", [{ path: "big.js", content: huge }]);
+  assert.ok(p.length < 12000, `prompt was ${p.length} chars`);
+  assert.match(p, /truncated/);
+});
 
 test("resolveTurnMode routes edit intent to edit, questions to ask", () => {
   assert.equal(resolveTurnMode("", "change the ui to dark theme"), "edit");

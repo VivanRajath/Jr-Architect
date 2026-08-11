@@ -4,12 +4,23 @@ import { createServer } from "http";
 import { query } from "gitclaw";
 import { getModels } from "@mariozechner/pi-ai";
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from "fs";
-import { join, extname, resolve, sep } from "path";
+import { join, extname, resolve, sep, dirname } from "path";
+import { fileURLToPath } from "url";
+import { spawn } from "child_process";
 import {
   resolvePipelineAgents, personaPreamble, fetchRegistryIndex, findAgent,
   readPipelineManifest, writePipelineManifest, installedAgents,
   loadSkill, loadComplianceRules, listSkills,
+  readSpecFile, writeSpecFile, listSkillsDetailed, deleteSkill,
+  installedAgentsDetailed, installAgent, fetchAgentDetail, BUILTIN_SKILLS,
+  MEMORY_PATHS, classifySlot, assignSlot, overlayPaths,
+  KNOWLEDGE_SKILL, SLOT_LABEL,
 } from "./registry.js";
+import { knowledgeStatus, OVERVIEW_REL } from "./knowledge.js";
+
+// ESM has no __dirname; the knowledge worker is spawned by absolute path so the
+// service works regardless of the cwd Go happens to start it from.
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Keep the agent service alive if a single request's agent loop throws
 // asynchronously — e.g. a provider/key error surfaced from a background stream
@@ -71,7 +82,7 @@ const NO_KEY_MESSAGE =
 // keys from separate orgs each get their own bucket — round-robining across them
 // multiplies usable throughput (it does NOT raise the single-request size limit).
 // pi-ai reads process.env.GROQ_API_KEY at request time, so we rotate that var.
-const GROQ_KEYS = (() => {
+const ALL_GROQ_KEYS = (() => {
   const keys = [];
   const add = (v) => { const t = (v || "").trim(); if (t && !keys.includes(t)) keys.push(t); };
   (process.env.GROQ_API_KEYS || "").split(",").forEach(add);
@@ -79,9 +90,44 @@ const GROQ_KEYS = (() => {
   for (let i = 2; i <= 10; i++) add(process.env[`GROQ_API_KEY_${i}`]);
   return keys;
 })();
+
+// One key is RESERVED for the knowledge builder and taken out of the chat pool.
+//
+// The builder reads ~24k characters of the repo when the workspace opens — four
+// times what a chat turn can afford. Sharing a key would mean that build eats the
+// user's first minute of typing, and Groq's limit is per organisation, so rotating
+// does not help: the same org's bucket is the one being drained.
+//
+// Explicit GROQ_KNOWLEDGE_API_KEY wins. Otherwise the LAST configured key is
+// reserved, but only when there are at least two — with one key there is nothing
+// to reserve, and taking it would leave the chat with none.
+const KNOWLEDGE_KEY =
+  (process.env.GROQ_KNOWLEDGE_API_KEY || "").trim() ||
+  (ALL_GROQ_KEYS.length >= 2 ? ALL_GROQ_KEYS[ALL_GROQ_KEYS.length - 1] : "");
+
+const GROQ_KEYS = (() => {
+  if (!KNOWLEDGE_KEY) return ALL_GROQ_KEYS;
+  const rest = ALL_GROQ_KEYS.filter((k) => k !== KNOWLEDGE_KEY);
+  // An explicit GROQ_KNOWLEDGE_API_KEY that is also the only chat key would leave
+  // the editor with nothing. Sharing is worse than reserving but far better than
+  // a dead chat panel, so hand it back and say so.
+  if (!rest.length) {
+    console.warn("[agent] GROQ_KNOWLEDGE_API_KEY is the only key — chat and knowledge will share it");
+    return ALL_GROQ_KEYS;
+  }
+  return rest;
+})();
+
+if (KNOWLEDGE_KEY) {
+  console.log(`[agent] reserved 1 Groq key for the knowledge builder · ${GROQ_KEYS.length} left for chat`);
+}
 // Ensure pi-ai's providerHasKey/getEnvApiKey see a key even if only the numbered
-// or comma-separated forms were set.
-if (!process.env.GROQ_API_KEY && GROQ_KEYS.length) process.env.GROQ_API_KEY = GROQ_KEYS[0];
+// or comma-separated forms were set. Must be a CHAT key: this process's default
+// env is what every chat turn starts from, and the reserved key lives only in the
+// knowledge worker's own environment.
+if (!GROQ_KEYS.includes(process.env.GROQ_API_KEY) && GROQ_KEYS.length) {
+  process.env.GROQ_API_KEY = GROQ_KEYS[0];
+}
 if (GROQ_KEYS.length > 1) console.log(`[agent] Groq key pool: ${GROQ_KEYS.length} keys (round-robin per turn)`);
 
 // llama-3.3 on Groq intermittently produces a malformed tool call that Groq
@@ -296,19 +342,35 @@ async function buildAskPrompt(dir, message) {
     : "";
 
   // For overview/summary questions, feed the model REAL substance so it can
-  // synthesize instead of hedging: the repo map plus the entry, layout, and a
-  // couple of top-level files it can actually read here.
+  // synthesize instead of hedging.
+  //
+  // knowledge/overview.md is the good answer when it exists: the Knowledge agent
+  // already read ~24k characters of this repo on its own key and wrote the
+  // synthesis. Leading with it is both BETTER and CHEAPER than the old fallback —
+  // four raw files at 3k each spent the whole budget on material the model then
+  // had to summarise under pressure, which is exactly why summaries were thin.
   const isOverview = /\b(summar|overview|understand|explain (?:the|this)|architecture|structure|how does|what is this|what does this|walk me through)\b/i.test(message);
+  const overviewPath = firstExistingFile(dir, [OVERVIEW_REL]);
   let contextBlock = "";
+  let haveOverview = false;
   if (isOverview) {
-    const wanted = [
-      firstExistingFile(dir, ["knowledge/repo-map.md"]),
-      firstExistingFile(dir, EDIT_ENTRY_CANDIDATES),
-      firstExistingFile(dir, ["app/layout.tsx", "src/app/layout.tsx", "src/main.tsx", "src/index.tsx"]),
-      firstExistingFile(dir, ["README.md", "package.json"]),
-    ].filter((p, i, a) => p && a.indexOf(p) === i);
     const parts = [];
-    for (const p of wanted) {
+    const overview = overviewPath ? readFileCapped(join(dir, overviewPath), 6000) : "";
+    if (overview) {
+      haveOverview = true;
+      parts.push(`<file path="${overviewPath}">\n${overview}\n</file>`);
+    }
+    // With the synthesis in hand only the entry file adds anything; without it,
+    // fall back to the old raw-file spread so an un-built workspace still answers.
+    const wanted = haveOverview
+      ? [firstExistingFile(dir, EDIT_ENTRY_CANDIDATES)]
+      : [
+          firstExistingFile(dir, ["knowledge/repo-map.md"]),
+          firstExistingFile(dir, EDIT_ENTRY_CANDIDATES),
+          firstExistingFile(dir, ["app/layout.tsx", "src/app/layout.tsx", "src/main.tsx", "src/index.tsx"]),
+          firstExistingFile(dir, ["README.md", "package.json"]),
+        ];
+    for (const p of wanted.filter((p, i, a) => p && a.indexOf(p) === i)) {
       const body = readFileCapped(join(dir, p), 3000);
       if (body) parts.push(`<file path="${p}">\n${body}\n</file>`);
     }
@@ -316,10 +378,15 @@ async function buildAskPrompt(dir, message) {
   }
 
   const instruction = isOverview
-    ? `Write a concrete summary of what this project IS and DOES, using the files above. ` +
-      `Cover: what the app does, its stack/framework, the main screens or sections, and how the code is organized. ` +
-      `Write it NOW in 4-8 sentences. Do NOT say you would look at files, do NOT say you need more information, ` +
-      `do NOT describe your process — just give the summary. Do not invent files or features.`
+    ? (haveOverview
+        ? `\`${overviewPath}\` above is this repository's own architectural overview, written by the ` +
+          `Knowledge agent after reading the codebase. TRUST IT and answer from it. ` +
+          `Answer the question directly and concretely, citing real paths. Do NOT hedge, ` +
+          `do NOT say you would look at files, do NOT describe your process.`
+        : `Write a concrete summary of what this project IS and DOES, using the files above. ` +
+          `Cover: what the app does, its stack/framework, the main screens or sections, and how the code is organized. ` +
+          `Write it NOW in 4-8 sentences. Do NOT say you would look at files, do NOT say you need more information, ` +
+          `do NOT describe your process — just give the summary. Do not invent files or features.`)
     : `Be concrete and answer directly, citing \`file:line\` for specifics. ` +
       `If a needed file isn't shown, name it briefly, but still give your best answer from what's here. Do not invent files or code.`;
 
@@ -442,10 +509,14 @@ const EDIT_STYLE_INTENT = /\b(theme|dark|light|colou?r|style|styling|css|font|ba
 // "theme"/"color" but aren't where YOUR page's look is controlled.
 const EDIT_SKIP_PATH = /(?:^|\/)(?:components\/ui|node_modules|\.next|dist|build|out|coverage|vendor|\.git)\//i;
 const EDIT_MAX_FILES = 5;      // how many files to *show* the model as context
-const EDIT_MAX_FILE_CHARS = 6000;
+const EDIT_MAX_FILE_CHARS = 7000;
 // A file we're willing to have the model rewrite whole. Kept under the output
-// budget (AGENT_MAX_OUTPUT_TOKENS) so a full rewrite can't get truncated.
-const WHOLE_FILE_MAX_CHARS = 4200;
+// budget (AGENT_MAX_OUTPUT_TOKENS ≈ 3000 tokens ≈ ~9k chars) so a full rewrite
+// can't get truncated. Sized so a real themed globals.css / index.css (where a
+// "neon" or accent palette actually lives) is editable, not just tiny config
+// files — the old 4200 cap silently dropped the CSS and left only a small
+// tailwind.config, which the model then returned unchanged ("0 changes").
+const WHOLE_FILE_MAX_CHARS = 6000;
 const EDIT_MAX_EDITABLE = 3;   // don't offer more than this many rewritable files
 
 // ── Layered agentic edit pipeline (gitagent standard) ────────────────────────
@@ -478,6 +549,102 @@ function guardEditBlocks(blocks) {
     if (GUARD_SENSITIVE_PATH.test(b.path)) { blocked.push({ ...b, reason: "sensitive/generated file" }); continue; }
     if (GUARD_SECRET.test(b.content)) { blocked.push({ ...b, reason: "would introduce a secret" }); continue; }
     allowed.push(b);
+  }
+  return { allowed, blocked };
+}
+
+// Layer: Guardrails (registry agents). The regex guard above is the code-level
+// floor — fixed rules, no model. This is the part a pulled guardrail agent
+// actually drives: it sees the rewrite the Developer produced and can DENY it.
+// Without this pass an installed guardrail agent is only advice in the writer's
+// own prompt, which a weak model ignores; here its verdict is enforced in code.
+const GUARD_REVIEW_FILE_CHARS = Number(process.env.GITAGENT_GUARDRAIL_FILE_CHARS) || 1200;
+const GUARD_REVIEW_TOTAL_CHARS = Number(process.env.GITAGENT_GUARDRAIL_TOTAL_CHARS) || 5000;
+// A guardrail that can't be reached must not silently wedge the IDE, so the
+// default is fail-open with a visible warning. Set GITAGENT_GUARDRAIL_FAIL=closed
+// for a workspace where an unreviewed edit is worse than no edit.
+const GUARD_FAIL_CLOSED = process.env.GITAGENT_GUARDRAIL_FAIL === "closed";
+
+function buildGuardrailPrompt(rules, message, blocks) {
+  let budget = GUARD_REVIEW_TOTAL_CHARS;
+  const shown = blocks.map((b) => {
+    const cap = Math.max(0, Math.min(GUARD_REVIEW_FILE_CHARS, budget));
+    budget -= cap;
+    const body = b.content.length > cap ? b.content.slice(0, cap) + "\n/* …truncated… */" : b.content;
+    return `=== FILE: ${b.path} ===\n${body}\n=== END ===`;
+  }).join("\n\n");
+
+  return (
+    `You are the GUARDRAIL reviewer for this repository. You do not write code. ` +
+    `You decide whether each proposed file change may be applied.\n\n` +
+    `--- RULES YOU ENFORCE ---\n` +
+    rules.map((r) => `[${r.name}]\n${r.text}`).join("\n\n") +
+    `\n--- END RULES ---\n\n` +
+    `The user asked: "${String(message).slice(0, 300)}"\n\n` +
+    `Below is the proposed new content of each file. Judge ONLY against the rules ` +
+    `above. Style preferences, formatting, and taste are NOT grounds to block — ` +
+    `block only a real violation of a stated rule.\n\n${shown}\n\n` +
+    `Reply with ONLY a JSON object, no prose:\n` +
+    `{"verdicts":[{"path":"<exact path above>","allow":true|false,"reason":"<=15 words, required when allow is false"}]}\n` +
+    `Omit nothing: include one verdict per file.`
+  );
+}
+
+// Run the guardrail agents over the parsed edit blocks. Returns the same
+// { allowed, blocked } shape as guardEditBlocks so the caller merges them freely.
+// A file with no verdict is allowed — silence is not a denial, and a model that
+// drops a row must not take an unrelated file down with it.
+async function reviewEditBlocks(dir, agents, message, blocks, model, step) {
+  const rules = ((agents && agents.guardrails) || [])
+    .map((g) => ({ name: g.name, text: (g.rules || g.soul || "").trim() }))
+    .filter((g) => g.text);
+  if (!rules.length || !blocks.length) return { allowed: blocks, blocked: [] };
+
+  const names = rules.map((r) => r.name).join(", ");
+  step("Guardrails", `reviewing ${blocks.length} file(s) as ${names}`);
+
+  const { text, error } = await collectTurn({
+    prompt: buildGuardrailPrompt(rules, message, blocks),
+    dir,
+    model,
+    replaceBuiltinTools: true,
+    allowedTools: [],
+    constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+  }, model);
+
+  const parsed = (error && !text) ? null : parseJsonLoose(text);
+  const verdicts = parsed && Array.isArray(parsed.verdicts) ? parsed.verdicts : null;
+  if (!verdicts) {
+    const why = error ? error.slice(0, 80) : "no usable verdict";
+    if (GUARD_FAIL_CLOSED) {
+      step("Guardrails", `review failed (${why}) · blocking (fail-closed)`);
+      return { allowed: [], blocked: blocks.map((b) => ({ ...b, reason: `guardrail review unavailable (${why})` })) };
+    }
+    step("Guardrails", `review failed (${why}) · applying unreviewed`);
+    return { allowed: blocks, blocked: [] };
+  }
+
+  const out = applyGuardrailVerdicts(blocks, verdicts, names);
+  step("Guardrails", out.blocked.length ? `denied ${out.blocked.length} file(s)` : "approved");
+  return out;
+}
+
+// Turn the reviewer's verdicts into the { allowed, blocked } split. Pure, so the
+// deny logic is testable without a model. A file with no verdict is ALLOWED —
+// silence is not a denial, and a model that drops a row from its JSON must not
+// take an unrelated file down with it.
+function applyGuardrailVerdicts(blocks, verdicts, names) {
+  const denied = new Map();
+  for (const v of verdicts) {
+    if (!v || v.allow !== false) continue;                  // only an explicit false denies
+    denied.set(String(v.path || "").trim(), String(v.reason || "violates a guardrail rule").slice(0, 160));
+  }
+  const allowed = [];
+  const blocked = [];
+  for (const b of blocks) {
+    const reason = denied.get(b.path);
+    if (reason) blocked.push({ ...b, reason: `${names}: ${reason}` });
+    else allowed.push(b);
   }
   return { allowed, blocked };
 }
@@ -726,8 +893,12 @@ async function runEditPipeline(dir, message, model, onStep) {
   // Gather candidate files, keep the ones small enough to rewrite whole.
   const gathered = await gatherEditFiles(dir, message);
   const whole = gathered.filter((f) => f.whole);
+  // Relevant files we found but can't rewrite whole on the free tier — surfaced
+  // in the summary so a "0 changes" result names the real target instead of the
+  // useless "try rephrasing".
+  const tooLarge = gathered.filter((f) => !f.whole).map((f) => f.path);
   if (whole.length === 0) {
-    return { ok: false, reason: gathered.length ? "too-large" : "not-found" };
+    return { ok: false, reason: gathered.length ? "too-large" : "not-found", tooLarge };
   }
 
   // Complexity Classifier — decides how many files the Developer may rewrite.
@@ -781,28 +952,44 @@ async function runEditPipeline(dir, message, model, onStep) {
   const blocks = parseEditBlocks(text);
   if (blocks.length === 0) return { ok: false, reason: "no-blocks", text };
 
-  // Guardrails (apply) — refuse sensitive files / secret injection.
+  // Guardrails (apply) — refuse sensitive files / secret injection. Code-level,
+  // no model involved, so it holds even when the provider is down.
   const { allowed, blocked } = guardEditBlocks(blocks);
   if (blocked.length) step("Guardrails", `blocked ${blocked.length} unsafe edit(s)`);
 
-  const results = applyEditBlocks(dir, allowed, editable);
+  // Then the installed guardrail agents get the last word on what survived: they
+  // read the actual rewrite and may deny it. Deny wins — nothing they reject is
+  // written, regardless of what the Developer (or its persona) wanted.
+  const reviewed = await reviewEditBlocks(dir, agents, message, allowed, model, step);
+  blocked.push(...reviewed.blocked);
+
+  const results = applyEditBlocks(dir, reviewed.allowed, editable);
   for (const b of blocked) results.push({ path: b.path, status: `blocked by guardrails (${b.reason})` });
-  return { ok: true, results, cls };
+  return { ok: true, results, cls, tooLarge };
 }
 
 // Build the human summary + changed-flag from a pipeline result.
 function summarizeEdit(out) {
   if (!out.ok) {
-    if (out.reason === "too-large") return { text: "The file(s) for that change are too large to rewrite safely on the free tier. Name a specific smaller file, or split the change into a smaller step.", changed: false, error: null };
+    if (out.reason === "too-large") {
+      const names = (out.tooLarge || []).slice(0, 4).map((p) => `\`${p}\``).join(", ");
+      return { text: `The file(s) for that change are too large to rewrite safely on the free tier${names ? ` (${names})` : ""}. Name a specific smaller file, or split the change into a smaller step.`, changed: false, error: null };
+    }
     if (out.reason === "not-found") return { text: "I couldn't find the files to change for that request. Try naming a file or feature, e.g. \"make the header in app/page.tsx dark\".", changed: false, error: null };
     if (out.reason === "error") return { text: "", changed: false, error: out.error };
     if (out.reason === "no-blocks") return { text: out.text || "No changes were produced.", changed: false, error: null };
   }
   const changed = out.results.filter((r) => r.status === "edited" || r.status === "created");
+  // When nothing changed, if we found a relevant file too large to rewrite (e.g.
+  // the themed globals.css a recolor actually needs), name it — that's far more
+  // useful than a generic "try rephrasing".
+  const bigHint = (!changed.length && out.tooLarge && out.tooLarge.length)
+    ? ` The change likely lives in ${out.tooLarge.slice(0, 3).map((p) => `\`${p}\``).join(", ")}, which is too large to rewrite whole on the free tier — try naming a smaller file or splitting the change.`
+    : "";
   const summary =
     `Applied ${changed.length} change(s):\n` +
     out.results.map((r) => `- \`${r.path}\` — ${r.status}`).join("\n") +
-    (changed.length ? "\n\nThe preview will reload with your changes." : "\n\nNo files changed. Try rephrasing, or name the exact file to edit.");
+    (changed.length ? "\n\nThe preview will reload with your changes." : `\n\nNo files changed.${bigHint || " Try rephrasing, or name the exact file to edit."}`);
   return { text: summary, changed: changed.length > 0, error: null };
 }
 
@@ -889,6 +1076,78 @@ function agentSpecPresent(dir) {
   return existsSync(join(dir, ".gitagent", "agent.yaml")) || existsSync(join(dir, "agent.yaml"));
 }
 
+// ── Knowledge slot ───────────────────────────────────────────────────────────
+//
+// Runs once when the workspace opens. Spawned as a child process so the reserved
+// key lives in an environment no chat turn can reach — see knowledge-worker.js for
+// why a mutex would not do.
+
+// Per-workspace build state, so the panel can show what is happening without the
+// build having to finish first. Keyed by directory, not container: reopening the
+// same workspace should not rebuild what is already there.
+const knowledgeState = new Map();
+
+function knowledgeStateFor(dir) {
+  return knowledgeState.get(dir) || { status: "idle" };
+}
+
+function runKnowledgeBuild(dir, { agent, force } = {}) {
+  const cur = knowledgeStateFor(dir);
+  if (cur.status === "building") return cur;              // already in flight
+  if (!force && knowledgeStatus(dir).exists) {
+    // A workspace that already carries the document does not rebuild on open —
+    // the file is committed knowledge, and a repo may well ship a better one than
+    // we would generate. Press Rebuild to override.
+    const st = { status: "ready", skipped: "already built" };
+    knowledgeState.set(dir, st);
+    return st;
+  }
+  if (!firstAvailableProvider()) {
+    const st = { status: "failed", error: "no AI provider key configured" };
+    knowledgeState.set(dir, st);
+    return st;
+  }
+
+  const model = modelFor("groq");
+  const startedAt = Date.now();
+  knowledgeState.set(dir, { status: "building", startedAt, agent: agent || KNOWLEDGE_SKILL });
+
+  const env = { ...process.env };
+  // The reserved key, and only here. Absent it the worker inherits the chat key
+  // and simply competes — degraded, not broken.
+  if (KNOWLEDGE_KEY) env.GROQ_API_KEY = KNOWLEDGE_KEY;
+
+  const child = spawn(
+    process.execPath,
+    [join(__dirname, "knowledge-worker.js"), JSON.stringify({ dir, model, agent })],
+    { env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+
+  let out = "";
+  child.stdout.on("data", (b) => { out += b.toString(); });
+  child.stderr.on("data", (b) => process.stderr.write(b));
+  child.on("error", (e) => {
+    knowledgeState.set(dir, { status: "failed", error: e.message, startedAt });
+  });
+  child.on("close", () => {
+    let result = null;
+    try { result = JSON.parse(out.trim().split("\n").pop() || "{}"); } catch { /* no usable line */ }
+    if (result && result.ok) {
+      knowledgeState.set(dir, {
+        status: "ready", startedAt, tookMs: Date.now() - startedAt,
+        sources: result.sources, bytes: result.bytes,
+      });
+      console.log(`[knowledge] built ${result.path} from ${result.sources} sources in ${Date.now() - startedAt}ms`);
+    } else {
+      const error = (result && (result.error || result.reason)) || "the build produced no document";
+      knowledgeState.set(dir, { status: "failed", error, startedAt });
+      console.error("[knowledge] build failed:", error);
+    }
+  });
+
+  return knowledgeStateFor(dir);
+}
+
 app.post("/agent/register", (req, res) => {
   const { container, workdir, stack } = req.body;
   if (!container || !workdir) {
@@ -896,7 +1155,36 @@ app.post("/agent/register", (req, res) => {
   }
   sessions.set(container, { dir: workdir, stack: stack || "unknown", clients: new Set() });
   console.log(`[agent] registered container=${container} dir=${workdir} stack=${stack}`);
+  // Respond first. The build takes ~30-60s and must never hold up the sandbox —
+  // Go calls this in a goroutine at clone time and ignores the body.
   res.json({ status: "registered" });
+  try {
+    const manifest = readPipelineManifest(workdir);
+    runKnowledgeBuild(workdir, { agent: (manifest && manifest.knowledge) || undefined });
+  } catch (e) {
+    console.error("[knowledge] could not start the build:", e.message);
+  }
+});
+
+// Rebuild on demand — after editing the builder's SKILL.md, or after the repo has
+// changed enough that the overview is stale.
+app.post("/agent/knowledge", (req, res) => {
+  const { container } = req.body || {};
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  const manifest = readPipelineManifest(session.dir);
+  const state = runKnowledgeBuild(session.dir, {
+    agent: (manifest && manifest.knowledge) || undefined,
+    force: true,
+  });
+  res.json({ state, doc: knowledgeStatus(session.dir) });
+});
+
+// Poll target while a build is in flight.
+app.get("/agent/knowledge", (req, res) => {
+  const session = sessions.get(req.query.container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  res.json({ state: knowledgeStateFor(session.dir), doc: knowledgeStatus(session.dir) });
 });
 
 // REST fallback for single-shot prompts
@@ -1068,51 +1356,117 @@ app.post("/agent/diagnose", async (req, res) => {
 // Powers the IDE's GitAgent panel: browse the registry, see which agents fill
 // the Developer/Guardrails slots for this workspace, and swap them.
 
-// Browse the registry index (community agents).
+// Browse the registry index (community agents). Each row carries the slot it
+// would take, so the panel can label the button with what pulling it will do
+// instead of duplicating the classification in the frontend.
 app.get("/agent/registry", async (_req, res) => {
   const index = await fetchRegistryIndex();
   res.json({
-    agents: index.map((a) => ({
-      ref: `${a.author}/${a.name}`,
-      name: a.name,
-      author: a.author,
-      category: a.category || "other",
-      description: a.description || "",
-      tags: a.tags || [],
-      adapters: a.adapters || [],
-      repository: a.repository || "",
-    })),
+    agents: index.map((a) => {
+      const { slot, reason } = classifySlot(a);
+      return {
+        ref: `${a.author}/${a.name}`,
+        name: a.name,
+        author: a.author,
+        category: a.category || "other",
+        description: a.description || "",
+        tags: a.tags || [],
+        adapters: a.adapters || [],
+        repository: a.repository || "",
+        slot,
+        slotReason: reason,
+      };
+    }),
   });
 });
 
-// Which slot a registry category fills. Security/compliance → Guardrails.
-function slotForCategory(category) {
-  return category === "security" || category === "compliance" ? "guardrails" : "developer";
+// The repo's own spec files, in the order the panel presents them. Each is a real
+// file in the workspace — editing one changes how the next turn behaves.
+const SPEC_FILES = [
+  { key: "soul", path: ".gitagent/SOUL.md", label: "Identity",
+    hint: "Who this agent is. Injected first, ahead of every edit." },
+  { key: "rules", path: ".gitagent/RULES.md", label: "Rules",
+    hint: "Must / Never rules. \"Never\" items are hard limits the agent may not cross." },
+  // memory/MEMORY.md is the standard's full layout; resolveMemoryPath() below
+  // falls back to a legacy root MEMORY.md so the card always points at the file
+  // the agent will actually read.
+  { key: "memory", path: ".gitagent/memory/MEMORY.md", label: "Memory",
+    hint: "Durable facts about this project the agent reads before changing anything." },
+  { key: "compliance", path: ".gitagent/compliance/RULES.md", label: "Guardrails",
+    hint: "Compliance rules layered onto the code-enforced guardrails. A deny always wins." },
+  { key: "manifest", path: ".gitagent/agent.yaml", label: "Manifest",
+    hint: "Model, tools, and runtime. Mirrored to the repo root, where the runtime reads it." },
+];
+
+// Point the Memory card at the file the agent will actually read: the standard
+// memory/MEMORY.md, or a legacy root MEMORY.md in a repo scaffolded before the
+// move. Editing the wrong one would look like it worked and change nothing.
+function resolveMemoryPath(dir) {
+  for (const rel of MEMORY_PATHS) {
+    if (existsSync(join(dir, ".gitagent", ...rel.split("/")))) return `.gitagent/${rel}`;
+  }
+  return `.gitagent/${MEMORY_PATHS[0]}`; // neither exists — offer to create the standard one
 }
 
 // Compose the pipeline status for a workspace: the assigned agents (enriched from
-// the index) plus whether each is already cloned to disk.
+// the index), whether each is cloned to disk, and the repo's own spec — the files
+// that define its agent plus the skills that drive the pipeline.
 async function gitagentStatus(dir) {
   const index = await fetchRegistryIndex();
   const manifest = readPipelineManifest(dir) || { developer: null, guardrails: [] };
   const installed = new Set(installedAgents(dir));
   const enrich = (ref, slot) => {
     const e = findAgent(index, ref) || {};
+    const p = overlayPaths(ref, slot);
     return {
       ref, slot,
       category: e.category || "other",
       description: e.description || "",
       repository: e.repository || "",
       installed: installed.has(ref),
+      // Where this agent lives inside the spec folder. Present only once the
+      // overlay is materialized, so the panel links to files that really exist.
+      specFiles: [p.spec, p.workflow].filter((rel) => existsSync(join(dir, ...rel.split("/")))),
     };
   };
+  // The Knowledge slot always has an occupant: a pulled registry agent if one is
+  // assigned, otherwise the built-in knowledge-builder skill. It is shown as an
+  // agent either way — the built-in is a SKILL.md in this repo, not a hidden
+  // prompt, so "open it and edit it" is true for both.
+  const kRef = manifest.knowledge || null;
+  const knowledge = kRef ? enrich(kRef, "knowledge") : {
+    ref: KNOWLEDGE_SKILL,
+    slot: "knowledge",
+    builtin: true,
+    category: "knowledge",
+    description: "Reads the repo when the workspace opens and writes knowledge/overview.md",
+    repository: "",
+    installed: true,
+    specFiles: [`.gitagent/skills/${KNOWLEDGE_SKILL}/SKILL.md`]
+      .filter((rel) => existsSync(join(dir, ...rel.split("/")))),
+  };
+
   return {
     enabled: !!(manifest.developer || (manifest.guardrails || []).length),
     developer: manifest.developer ? enrich(manifest.developer, "developer") : null,
     guardrails: (manifest.guardrails || []).map((r) => enrich(r, "guardrails")),
+    knowledge,
+    // What the Knowledge slot has actually produced, and whether it is running.
+    knowledgeDoc: knowledgeStatus(dir),
+    knowledgeState: knowledgeStateFor(dir),
     // The repo's own .gitagent/skills/ — the built-in personas plus any the user
     // authored. These drive the chat agent directly (source of truth).
-    skills: listSkills(dir),
+    skills: listSkillsDetailed(dir),
+    builtinSkills: BUILTIN_SKILLS,
+    // The identity/rules/memory files, with a presence flag so the panel can
+    // offer to create one that a hand-written repo never scaffolded.
+    spec: SPEC_FILES.map((f) => {
+      const path = f.key === "memory" ? resolveMemoryPath(dir) : f.path;
+      return { ...f, path, exists: existsSync(join(dir, ...path.split("/"))) };
+    }),
+    // Community agents already cloned into this workspace, whether or not they
+    // currently hold a slot — so an installed agent can be inspected and reused.
+    installedAgents: installedAgentsDetailed(dir),
   };
 }
 
@@ -1120,7 +1474,7 @@ async function gitagentStatus(dir) {
 // shows in the folder and can drive the agent. Intertwined with the registry: a
 // local skill and an installed registry agent both compose through the pipeline.
 app.post("/agent/skill", (req, res) => {
-  const { container, name, description, body } = req.body || {};
+  const { container, name, description, body, overwrite } = req.body || {};
   const session = sessions.get(container);
   if (!session) return res.status(404).json({ error: "sandbox not registered" });
   const slug = String(name || "").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -1128,15 +1482,148 @@ app.post("/agent/skill", (req, res) => {
   try {
     const skillDir = join(session.dir, ".gitagent", "skills", slug);
     const file = join(skillDir, "SKILL.md");
-    if (existsSync(file)) return res.status(409).json({ error: `skill "${slug}" already exists` });
+    // Creating is the default; the panel's skill editor passes overwrite to save
+    // an existing one, so a typo'd new skill can't silently clobber a persona.
+    if (existsSync(file) && !overwrite) {
+      return res.status(409).json({ error: `skill "${slug}" already exists` });
+    }
     mkdirSync(skillDir, { recursive: true });
     const content =
       `---\nname: ${slug}\ndescription: ${String(description || "").replace(/\n/g, " ").slice(0, 200) || "Custom skill"}\n---\n\n` +
       `# ${slug}\n\n${String(body || "").trim() || "Describe when this skill applies and how the agent should behave."}\n`;
     writeFileSync(file, content);
-    res.json({ status: "created", slug, skills: listSkills(session.dir) });
+    res.json({
+      status: overwrite ? "saved" : "created",
+      slug,
+      skills: listSkillsDetailed(session.dir),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Delete a user-authored skill. Built-in personas are refused by deleteSkill —
+// removing one would quietly change how the pipeline codes.
+app.delete("/agent/skill", (req, res) => {
+  const { container, slug } = req.body || {};
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  try {
+    deleteSkill(session.dir, slug);
+    res.json({ status: "deleted", slug, skills: listSkillsDetailed(session.dir) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ── Spec files (identity, rules, memory, guardrails, manifest) ────────────────
+// The panel edits the repo's own agent in place. Paths are confined to
+// .gitagent/ (plus the root agent.yaml) by resolveSpecPath.
+
+app.get("/agent/gitagent/file", (req, res) => {
+  const session = sessions.get(req.query.container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  try {
+    const file = readSpecFile(session.dir, req.query.path);
+    if (!file) return res.status(400).json({ error: "path is not part of the agent spec" });
+    res.json(file);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/agent/gitagent/file", (req, res) => {
+  const { container, path: rel, content } = req.body || {};
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  try {
+    const file = writeSpecFile(session.dir, rel, content);
+    res.json({ status: "saved", ...file });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Preview a registry agent before installing it: the index entry plus its spec
+// files read straight from GitHub. Lets a user see what an agent will inject
+// before handing it a slot.
+app.get("/agent/registry/agent", async (req, res) => {
+  const ref = String(req.query.ref || "");
+  try {
+    const index = await fetchRegistryIndex();
+    const entry = findAgent(index, ref);
+    if (!entry) return res.status(404).json({ error: `no agent "${ref}"` });
+    const detail = await fetchAgentDetail(entry);
+    const { slot, reason } = classifySlot(entry);
+    res.json({
+      ref: `${entry.author}/${entry.name}`,
+      slot,
+      slotReason: reason,
+      category: entry.category || "other",
+      description: entry.description || "",
+      repository: entry.repository || "",
+      adapters: entry.adapters || [],
+      tags: entry.tags || [],
+      synthetic: !!entry._synthetic,
+      files: detail.files,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Pull an agent from the registry: clone it AND put it to work. The slot comes
+// from the registry's own metadata via classifySlot (a compliance agent guards,
+// a developer-tools agent writes), so pulling is one click and the next edit
+// already runs through it. Pass `slot` to override, or `slot: "none"` to clone
+// without assigning — for reading an agent's files before trusting it.
+app.post("/agent/gitagent/install", async (req, res) => {
+  const { container, ref, slot: wanted } = req.body || {};
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  try {
+    const index = await fetchRegistryIndex();
+    const entry = findAgent(index, ref);
+    if (!entry) return res.status(404).json({ error: `no agent "${ref}"` });
+    await installAgent(session.dir, entry);
+
+    const auto = classifySlot(entry);
+    const slot = wanted === "developer" || wanted === "guardrails" ? wanted
+      : wanted === "none" ? null
+      : auto.slot;
+    const reason = slot === auto.slot ? auto.reason : "you chose this slot";
+    // The canonical ref, which may differ in case/spacing from what was typed.
+    const pulled = `${entry.author}/${entry.name}`;
+    if (slot) assignSlot(session.dir, pulled, slot);
+
+    // Resolving the pipeline is what writes the agent INTO .gitagent/: its rules
+    // become a real file under compliance/ or skills/, its stage is documented in
+    // workflows/, and RULES.md gains a managed index. Without this the folder
+    // would still read as the untouched scaffold while the pipeline ran the agent.
+    const files = [];
+    if (slot) {
+      try {
+        await resolvePipelineAgents(session.dir, (_n, d) => {
+          const m = /^spec (updated|pruned) · (.+)$/.exec(d);
+          if (m) files.push(...m[2].split(", ").map((p) => ({ path: p, action: m[1] })));
+        });
+      } catch (e) {
+        console.error("[gitagent] spec sync after pull failed:", e.message);
+      }
+    }
+
+    res.json({
+      status: await gitagentStatus(session.dir),
+      ref: pulled,
+      slot,
+      slotReason: reason,
+      auto: !wanted,
+      // The files the pull created or removed, so the panel can say what changed
+      // in the folder instead of leaving the user to go find it.
+      files,
+    });
+  } catch (e) {
+    res.status(500).json({ error: `clone failed: ${e.message}` });
   }
 });
 
@@ -1241,9 +1728,17 @@ wss.on("connection", (ws) => {
         await runEditModeWS(ws, session.dir, message, model);
       } else {
         // Legacy agentic path: the model drives cli/read/write/search_code itself
-        // (only reliable with a strong tool-calling model).
+        // (only reliable with a strong tool-calling model). It still runs as the
+        // installed agent — the persona is the same one the Edit pipeline uses,
+        // so switching the composer to "Agent" doesn't silently drop it.
+        let agents = { enabled: false };
+        try {
+          agents = await resolvePipelineAgents(session.dir, (n, d) =>
+            ws.send(JSON.stringify({ type: "tool", content: `${n}(${d})` })));
+        } catch { /* built-ins */ }
+        const preamble = personaPreamble(agents);
         await streamTurn(ws, {
-          prompt: message,
+          prompt: preamble ? `${preamble}--- USER REQUEST ---\n${message}` : message,
           dir: session.dir,
           model,
           allowedTools: AGENT_ALLOWED_TOOLS,
@@ -1265,13 +1760,25 @@ wss.on("connection", (ws) => {
 export {
   makeSearchCodeTool, resolveTurnMode, heuristicMode, extractSearchTerms, buildAskPrompt,
   parseEditBlocks, applyEditBlocks, gatherEditFiles, buildEditPrompt,
-  classifyEditComplexity, guardEditBlocks,
+  classifyEditComplexity, guardEditBlocks, buildGuardrailPrompt,
+  reviewEditBlocks, applyGuardrailVerdicts,
+  // Exported so tests can drive the routes over real HTTP. A route can break in
+  // ways calling its helpers never shows — a shadowed binding, a bad status code —
+  // and those only surface by actually making the request.
+  server,
 };
 
 // Skip binding a port when imported for tests (AGENT_NO_LISTEN=1).
 if (!process.env.AGENT_NO_LISTEN) {
   const PORT = process.env.AGENT_PORT || 8001;
-  server.listen(PORT, () => {
-    console.log(`[agent-service] running on port ${PORT}`);
+  // Bind loopback explicitly. `server.listen(PORT)` with no host binds 0.0.0.0,
+  // which exposed this service to the local network — and it can read and write
+  // any registered workspace and spend your provider API keys, with no auth of
+  // any kind. The Go host binds 127.0.0.1:9000 and reverse-proxies /agent/* here,
+  // so nothing legitimate ever needed an external interface.
+  // AGENT_HOST is an explicit opt-out for anyone deliberately running it remotely.
+  const HOST = process.env.AGENT_HOST || "127.0.0.1";
+  server.listen(PORT, HOST, () => {
+    console.log(`[agent-service] running on ${HOST}:${PORT}`);
   });
 }

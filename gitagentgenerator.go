@@ -195,6 +195,65 @@ Answer questions about this codebase concretely, grounded in the actual files.
 - Never change files in Ask mode.
 `
 
+// The knowledge builder is a real agent, not a hidden system prompt: this file IS
+// the prompt it runs. Edit it and the next build produces a different document.
+// It runs once when the IDE opens, on its own dedicated API key, so it can afford
+// to read far more of the repo than a chat turn ever could.
+var knowledgeBuilderSkill = `---
+name: knowledge-builder
+description: Reads the repo once at open and writes knowledge/overview.md — the architectural summary every later turn is grounded in
+---
+
+# Knowledge Builder
+
+You run ONCE when the workspace opens, before anyone asks a question. Your job is
+to read this repository and write the document every later turn will be grounded
+in: ` + "`knowledge/overview.md`" + `.
+
+The static repo map (` + "`knowledge/repo-map.md`" + `) already lists files, directories and
+exported symbols. Do NOT repeat it. A file listing is a map, not knowledge —
+it tells the agent WHERE things are and nothing about WHAT they do. You supply
+the part a map cannot: what this project is, how a request flows through it, and
+what someone would get wrong on their first change.
+
+Write the document with exactly these sections, in this order:
+
+## What this is
+Two or three sentences. What the project does, who runs it, and what problem it
+solves. Concrete, not marketing. If the repo is a library, say what it is a
+library for; if it is an app, say what a user does with it.
+
+## How it works
+The main flows, in prose. For each one, follow the actual call path and cite real
+files: "a request hits X, which calls Y in ` + "`path/file.ts`" + `, which writes Z."
+Two to four flows. This is the most valuable section — spend your effort here.
+
+## Where things live
+The directories that matter and what belongs in each. Only the ones a person
+would need to be told; skip the obvious. Name the entry point explicitly.
+
+## Conventions
+How this codebase does things: naming, error handling, state, styling, testing.
+Anything a new change must match to look native. Infer these from the code you
+were shown, not from general best practice.
+
+## Gotchas
+Things that would waste an hour. Generated files that must not be hand-edited,
+a build step people forget, a config that has to change in two places, a
+non-obvious coupling. If you found none, write "None found" — do not invent any.
+
+## Key files
+A short list, most important first: ` + "`path`" + ` — one line on why it matters.
+Ten at most.
+
+Rules:
+- Ground EVERY claim in a file you were actually shown. If you did not see it,
+  do not describe it. A confident wrong summary is worse than a short one.
+- Cite paths in backticks so later turns can act on them.
+- No preamble, no "Here is the overview", no closing summary. Start at "# ".
+- Prefer being short and true over long and padded.
+`
+
 var buildDoctorSkill = `---
 name: build-doctor
 description: Diagnose container/terminal issues and propose one safe fix
@@ -248,6 +307,8 @@ var hooksReadmeTemplate = `# Hooks
 Lifecycle points in a sandbox session.
 
 - on-clone — scaffold this .gitagent spec and index the repo map.
+- on-open — the knowledge-builder agent reads the repo and writes
+  knowledge/overview.md, on its own API key so it never competes with chat.
 - pre-edit — Guardrails check scope and protected paths before an edit is applied.
 - post-edit — save the file and reload the live preview.
 - on-stuck — if the app is slow to boot, the build doctor runs automatically.
@@ -262,6 +323,9 @@ code, not just what to answer.
   -> Developer -> Guardrails(apply). The Developer persona comes from skills/.
 - ask — retrieve (repo map + search_code) -> grounded answer, toolless.
 - doctor — collect logs -> classify -> propose one safe fix (command or edit).
+- knowledge — runs once when the workspace opens: the knowledge-builder agent in
+  skills/ reads the repo and writes knowledge/overview.md, which is then loaded
+  into every later turn. Replaceable by any registry agent in the Knowledge slot.
 `
 
 // MEMORY.md — the durable facts the agent reads before changing anything. Jr
@@ -394,17 +458,37 @@ func GenerateAgentSpec(workdir string, stack string) error {
 	// MEMORY.md is the repo's living knowledge — seed it only if it doesn't
 	// already exist, so a repo's own memory (or notes learned across turns)
 	// is never clobbered on a re-clone.
-	if _, err := os.Stat(filepath.Join(specDir, "MEMORY.md")); os.IsNotExist(err) {
-		memTmpl, err := template.New("MEMORY.md").Funcs(funcMap).Parse(memoryMDTemplate)
-		if err != nil {
-			return fmt.Errorf("memory template parse error: %w", err)
-		}
-		var memBuf bytes.Buffer
-		if err := memTmpl.Execute(&memBuf, spec); err != nil {
-			return fmt.Errorf("memory template execute error: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(specDir, "MEMORY.md"), memBuf.Bytes(), 0644); err != nil {
-			return fmt.Errorf("write error for MEMORY.md: %w", err)
+	//
+	// It lives in memory/, not at the spec root: the gitagent standard's full
+	// layout groups it there alongside skills/, tools/, hooks/, workflows/, and
+	// compliance/ (`gitagent init --template full`). Earlier versions of this
+	// generator wrote it to the root, so a repo scaffolded before this change
+	// still has one there — it is moved rather than duplicated, otherwise the
+	// agent would read a stale copy and the two would drift apart.
+	memoryDir := filepath.Join(specDir, "memory")
+	if err := os.MkdirAll(memoryDir, 0755); err != nil {
+		return fmt.Errorf("mkdir error for memory/: %w", err)
+	}
+	memoryPath := filepath.Join(memoryDir, "MEMORY.md")
+	legacyPath := filepath.Join(specDir, "MEMORY.md")
+	if _, err := os.Stat(memoryPath); os.IsNotExist(err) {
+		if legacy, readErr := os.ReadFile(legacyPath); readErr == nil {
+			if err := os.WriteFile(memoryPath, legacy, 0644); err != nil {
+				return fmt.Errorf("write error for memory/MEMORY.md: %w", err)
+			}
+			os.Remove(legacyPath)
+		} else {
+			memTmpl, err := template.New("MEMORY.md").Funcs(funcMap).Parse(memoryMDTemplate)
+			if err != nil {
+				return fmt.Errorf("memory template parse error: %w", err)
+			}
+			var memBuf bytes.Buffer
+			if err := memTmpl.Execute(&memBuf, spec); err != nil {
+				return fmt.Errorf("memory template execute error: %w", err)
+			}
+			if err := os.WriteFile(memoryPath, memBuf.Bytes(), 0644); err != nil {
+				return fmt.Errorf("write error for memory/MEMORY.md: %w", err)
+			}
 		}
 	}
 
@@ -468,6 +552,7 @@ func GenerateAgentSpec(workdir string, stack string) error {
 		"skills/architect/SKILL.md":     architectSkill,
 		"skills/ask/SKILL.md":           askSkill,
 		"skills/build-doctor/SKILL.md":  buildDoctorSkill,
+		"skills/knowledge-builder/SKILL.md": knowledgeBuilderSkill,
 		"compliance/RULES.md":           complianceRulesTemplate,
 		"tools/README.md":               toolsReadmeTemplate,
 		"hooks/README.md":               hooksReadmeTemplate,
