@@ -77,12 +77,18 @@ test("reviewEditBlocks is a no-op when no guardrail agent is installed", async (
   // No model call happens on this path — if one did, the test would hang/throw.
   const out = await reviewEditBlocks("/tmp", { enabled: true, guardrails: [] }, "make it dark",
     blocks, "groq:llama-3.3-70b-versatile", (n, d) => steps.push(`${n}:${d}`));
-  assert.deepEqual(out, { allowed: blocks, blocked: [] });
+  assert.deepEqual(out.allowed, blocks);
+  assert.deepEqual(out.blocked, []);
+  // `reviewed:false` is the contract that keeps the audit trail honest: these files
+  // went through because nothing looked at them, which is NOT the same as a pack
+  // having cleared them. review.js logs this case as "unreviewed", not "allow".
+  assert.equal(out.reviewed, false);
   assert.equal(steps.length, 0);
   // An agent that ships no rules and no soul is likewise nothing to enforce.
   const empty = await reviewEditBlocks("/tmp", { enabled: true, guardrails: [{ name: "a/b", rules: "", soul: "" }] },
     "make it dark", blocks, "groq:llama-3.3-70b-versatile", () => {});
   assert.deepEqual(empty.allowed, blocks);
+  assert.equal(empty.reviewed, false);
 });
 
 test("buildGuardrailPrompt shows the rules, every file, and asks for JSON verdicts", () => {

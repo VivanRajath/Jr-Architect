@@ -17,6 +17,17 @@ import {
   KNOWLEDGE_SKILL, SLOT_LABEL,
 } from "./registry.js";
 import { knowledgeStatus, OVERVIEW_REL } from "./knowledge.js";
+// The engine now lives in its own modules so it can run with no HTTP at all —
+// see review.js, which drives the identical guardrails over a pull request.
+import {
+  PROVIDER_MODELS, providerHasKey, NO_KEY_MESSAGE, KNOWLEDGE_KEY,
+  rotateGroqKey, collectTurn, stripFences, parseJsonLoose,
+  AGENT_MAX_OUTPUT_TOKENS, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR,
+  firstAvailableProvider, modelFor,
+} from "./llm.js";
+import {
+  guardEditBlocks, buildGuardrailPrompt, applyGuardrailVerdicts, reviewEditBlocks,
+} from "./guardrails.js";
 
 // ESM has no __dirname; the knowledge worker is spawned by absolute path so the
 // service works regardless of the cwd Go happens to start it from.
@@ -43,109 +54,6 @@ const wss = new WebSocketServer({ server });
 // Active sessions: container -> { dir, stack, wss clients }
 const sessions = new Map();
 
-// Map the UI's provider selector to a gitclaw model id. Each is overridable via
-// env so operators can point a provider at whatever model their gitclaw build
-// supports without a code change.
-const PROVIDER_MODELS = {
-  // llama-3.3-70b-versatile is the tool-capable model available on Groq's free
-  // tier. It occasionally emits a malformed tool call ("cli {json}" as the
-  // function NAME) that Groq rejects with "tool call ... not in request.tools" —
-  // this is intermittent (the model samples differently each run), so the WS
-  // handler retries the turn on a fresh key when it fails before producing output.
-  // Override with AGENT_MODEL_GROQ (e.g. groq:meta-llama/llama-4-scout-17b-16e-instruct
-  // if your account has it — Llama 4 is steadier at tool calls).
-  groq: process.env.AGENT_MODEL_GROQ || "groq:llama-3.3-70b-versatile",
-  anthropic: process.env.AGENT_MODEL_ANTHROPIC || "anthropic:claude-sonnet-4-5",
-  openai: process.env.AGENT_MODEL_OPENAI || "openai:gpt-4.1",
-  gemini: process.env.AGENT_MODEL_GEMINI || "google:gemini-2.0-flash",
-};
-
-// gitclaw/pi-ai throws (and, via an async stream, can crash the whole process)
-// if asked to use a provider with no API key. So we only ever hand it a provider
-// we know is configured. Env var names mirror pi-ai's getEnvApiKey().
-function providerHasKey(p) {
-  switch (p) {
-    case "anthropic": return !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN);
-    case "openai": return !!process.env.OPENAI_API_KEY;
-    case "gemini":
-    case "google": return !!process.env.GEMINI_API_KEY;
-    case "groq": return !!process.env.GROQ_API_KEY;
-    default: return false;
-  }
-}
-
-const NO_KEY_MESSAGE =
-  "No AI provider API key configured. Set GROQ_API_KEY (or ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) in .env and restart the server.";
-
-// All configured Groq keys: GROQ_API_KEY, GROQ_API_KEY_2..10, and any comma-
-// separated GROQ_API_KEYS. Groq's free tier caps tokens-per-minute PER ORG, so
-// keys from separate orgs each get their own bucket — round-robining across them
-// multiplies usable throughput (it does NOT raise the single-request size limit).
-// pi-ai reads process.env.GROQ_API_KEY at request time, so we rotate that var.
-const ALL_GROQ_KEYS = (() => {
-  const keys = [];
-  const add = (v) => { const t = (v || "").trim(); if (t && !keys.includes(t)) keys.push(t); };
-  (process.env.GROQ_API_KEYS || "").split(",").forEach(add);
-  add(process.env.GROQ_API_KEY);
-  for (let i = 2; i <= 10; i++) add(process.env[`GROQ_API_KEY_${i}`]);
-  return keys;
-})();
-
-// One key is RESERVED for the knowledge builder and taken out of the chat pool.
-//
-// The builder reads ~24k characters of the repo when the workspace opens — four
-// times what a chat turn can afford. Sharing a key would mean that build eats the
-// user's first minute of typing, and Groq's limit is per organisation, so rotating
-// does not help: the same org's bucket is the one being drained.
-//
-// Explicit GROQ_KNOWLEDGE_API_KEY wins. Otherwise the LAST configured key is
-// reserved, but only when there are at least two — with one key there is nothing
-// to reserve, and taking it would leave the chat with none.
-const KNOWLEDGE_KEY =
-  (process.env.GROQ_KNOWLEDGE_API_KEY || "").trim() ||
-  (ALL_GROQ_KEYS.length >= 2 ? ALL_GROQ_KEYS[ALL_GROQ_KEYS.length - 1] : "");
-
-const GROQ_KEYS = (() => {
-  if (!KNOWLEDGE_KEY) return ALL_GROQ_KEYS;
-  const rest = ALL_GROQ_KEYS.filter((k) => k !== KNOWLEDGE_KEY);
-  // An explicit GROQ_KNOWLEDGE_API_KEY that is also the only chat key would leave
-  // the editor with nothing. Sharing is worse than reserving but far better than
-  // a dead chat panel, so hand it back and say so.
-  if (!rest.length) {
-    console.warn("[agent] GROQ_KNOWLEDGE_API_KEY is the only key — chat and knowledge will share it");
-    return ALL_GROQ_KEYS;
-  }
-  return rest;
-})();
-
-if (KNOWLEDGE_KEY) {
-  console.log(`[agent] reserved 1 Groq key for the knowledge builder · ${GROQ_KEYS.length} left for chat`);
-}
-// Ensure pi-ai's providerHasKey/getEnvApiKey see a key even if only the numbered
-// or comma-separated forms were set. Must be a CHAT key: this process's default
-// env is what every chat turn starts from, and the reserved key lives only in the
-// knowledge worker's own environment.
-if (!GROQ_KEYS.includes(process.env.GROQ_API_KEY) && GROQ_KEYS.length) {
-  process.env.GROQ_API_KEY = GROQ_KEYS[0];
-}
-if (GROQ_KEYS.length > 1) console.log(`[agent] Groq key pool: ${GROQ_KEYS.length} keys (round-robin per turn)`);
-
-// llama-3.3 on Groq intermittently produces a malformed tool call that Groq
-// rejects. It's non-deterministic (the model samples differently each run), so
-// re-running the turn on a fresh key usually succeeds. We retry ONLY when the
-// turn failed before any output reached the client, so a partial reply is never
-// duplicated. Total attempts = AGENT_TOOLCALL_RETRIES + 1.
-const AGENT_TOOLCALL_RETRIES = Number(process.env.AGENT_TOOLCALL_RETRIES) || 2;
-const RETRIABLE_TURN_ERROR = /tool call validation|not in request\.tools|malformed|failed to call a function|failed_generation|adjust your prompt|could not parse|invalid (?:tool|function)|Connection error|rate limit|\b429\b|temporarily|ECONNRESET|fetch failed/i;
-
-let groqCursor = 0;
-// Point process.env.GROQ_API_KEY at the next key in the pool before a Groq turn,
-// so consecutive agent requests land on different orgs' TPM buckets.
-function rotateGroqKey(model) {
-  if (!model || !model.startsWith("groq:") || GROQ_KEYS.length < 2) return;
-  process.env.GROQ_API_KEY = GROQ_KEYS[groqCursor % GROQ_KEYS.length];
-  groqCursor++;
-}
 
 // Restrict the agent to the core coding tools. gitclaw otherwise injects extra
 // built-ins (capture_photo, task_tracker, skill_learner) plus a system prompt
@@ -536,118 +444,12 @@ function classifyEditComplexity(message, availableFiles) {
   return { tier: "junior", maxFiles: Math.min(2, availableFiles), label: "junior dev · focused change" };
 }
 
-// Layer: Guardrails (the "Guardrails Squad"). Blocks edits that touch sensitive
-// or generated files, or that would inject a credential into the codebase.
-const GUARD_SENSITIVE_PATH = /(?:^|\/)(?:\.env(?:\..*)?|.*\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|(?:^|\/)\.git\//i;
-const GUARD_SECRET = /sk-[A-Za-z0-9]{16,}|gsk_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/;
-
-// Partition parsed edit blocks into what's safe to apply and what to refuse.
-function guardEditBlocks(blocks) {
-  const allowed = [];
-  const blocked = [];
-  for (const b of blocks) {
-    if (GUARD_SENSITIVE_PATH.test(b.path)) { blocked.push({ ...b, reason: "sensitive/generated file" }); continue; }
-    if (GUARD_SECRET.test(b.content)) { blocked.push({ ...b, reason: "would introduce a secret" }); continue; }
-    allowed.push(b);
-  }
-  return { allowed, blocked };
-}
 
 // Layer: Guardrails (registry agents). The regex guard above is the code-level
 // floor — fixed rules, no model. This is the part a pulled guardrail agent
 // actually drives: it sees the rewrite the Developer produced and can DENY it.
 // Without this pass an installed guardrail agent is only advice in the writer's
 // own prompt, which a weak model ignores; here its verdict is enforced in code.
-const GUARD_REVIEW_FILE_CHARS = Number(process.env.GITAGENT_GUARDRAIL_FILE_CHARS) || 1200;
-const GUARD_REVIEW_TOTAL_CHARS = Number(process.env.GITAGENT_GUARDRAIL_TOTAL_CHARS) || 5000;
-// A guardrail that can't be reached must not silently wedge the IDE, so the
-// default is fail-open with a visible warning. Set GITAGENT_GUARDRAIL_FAIL=closed
-// for a workspace where an unreviewed edit is worse than no edit.
-const GUARD_FAIL_CLOSED = process.env.GITAGENT_GUARDRAIL_FAIL === "closed";
-
-function buildGuardrailPrompt(rules, message, blocks) {
-  let budget = GUARD_REVIEW_TOTAL_CHARS;
-  const shown = blocks.map((b) => {
-    const cap = Math.max(0, Math.min(GUARD_REVIEW_FILE_CHARS, budget));
-    budget -= cap;
-    const body = b.content.length > cap ? b.content.slice(0, cap) + "\n/* …truncated… */" : b.content;
-    return `=== FILE: ${b.path} ===\n${body}\n=== END ===`;
-  }).join("\n\n");
-
-  return (
-    `You are the GUARDRAIL reviewer for this repository. You do not write code. ` +
-    `You decide whether each proposed file change may be applied.\n\n` +
-    `--- RULES YOU ENFORCE ---\n` +
-    rules.map((r) => `[${r.name}]\n${r.text}`).join("\n\n") +
-    `\n--- END RULES ---\n\n` +
-    `The user asked: "${String(message).slice(0, 300)}"\n\n` +
-    `Below is the proposed new content of each file. Judge ONLY against the rules ` +
-    `above. Style preferences, formatting, and taste are NOT grounds to block — ` +
-    `block only a real violation of a stated rule.\n\n${shown}\n\n` +
-    `Reply with ONLY a JSON object, no prose:\n` +
-    `{"verdicts":[{"path":"<exact path above>","allow":true|false,"reason":"<=15 words, required when allow is false"}]}\n` +
-    `Omit nothing: include one verdict per file.`
-  );
-}
-
-// Run the guardrail agents over the parsed edit blocks. Returns the same
-// { allowed, blocked } shape as guardEditBlocks so the caller merges them freely.
-// A file with no verdict is allowed — silence is not a denial, and a model that
-// drops a row must not take an unrelated file down with it.
-async function reviewEditBlocks(dir, agents, message, blocks, model, step) {
-  const rules = ((agents && agents.guardrails) || [])
-    .map((g) => ({ name: g.name, text: (g.rules || g.soul || "").trim() }))
-    .filter((g) => g.text);
-  if (!rules.length || !blocks.length) return { allowed: blocks, blocked: [] };
-
-  const names = rules.map((r) => r.name).join(", ");
-  step("Guardrails", `reviewing ${blocks.length} file(s) as ${names}`);
-
-  const { text, error } = await collectTurn({
-    prompt: buildGuardrailPrompt(rules, message, blocks),
-    dir,
-    model,
-    replaceBuiltinTools: true,
-    allowedTools: [],
-    constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
-  }, model);
-
-  const parsed = (error && !text) ? null : parseJsonLoose(text);
-  const verdicts = parsed && Array.isArray(parsed.verdicts) ? parsed.verdicts : null;
-  if (!verdicts) {
-    const why = error ? error.slice(0, 80) : "no usable verdict";
-    if (GUARD_FAIL_CLOSED) {
-      step("Guardrails", `review failed (${why}) · blocking (fail-closed)`);
-      return { allowed: [], blocked: blocks.map((b) => ({ ...b, reason: `guardrail review unavailable (${why})` })) };
-    }
-    step("Guardrails", `review failed (${why}) · applying unreviewed`);
-    return { allowed: blocks, blocked: [] };
-  }
-
-  const out = applyGuardrailVerdicts(blocks, verdicts, names);
-  step("Guardrails", out.blocked.length ? `denied ${out.blocked.length} file(s)` : "approved");
-  return out;
-}
-
-// Turn the reviewer's verdicts into the { allowed, blocked } split. Pure, so the
-// deny logic is testable without a model. A file with no verdict is ALLOWED —
-// silence is not a denial, and a model that drops a row from its JSON must not
-// take an unrelated file down with it.
-function applyGuardrailVerdicts(blocks, verdicts, names) {
-  const denied = new Map();
-  for (const v of verdicts) {
-    if (!v || v.allow !== false) continue;                  // only an explicit false denies
-    denied.set(String(v.path || "").trim(), String(v.reason || "violates a guardrail rule").slice(0, 160));
-  }
-  const allowed = [];
-  const blocked = [];
-  for (const b of blocks) {
-    const reason = denied.get(b.path);
-    if (reason) blocked.push({ ...b, reason: `${names}: ${reason}` });
-    else allowed.push(b);
-  }
-  return { allowed, blocked };
-}
 
 // Read a file, truncating to maxChars (keeps the request under the token budget).
 function readFileCapped(abs, maxChars) {
@@ -757,12 +559,6 @@ function buildEditPrompt(files, message, cls, persona) {
   );
 }
 
-// If the model wrapped a file body in a ```lang … ``` fence, strip it.
-function stripFences(body) {
-  const t = body.replace(/^\s+|\s+$/g, "");
-  const m = t.match(/^```[^\n]*\r?\n([\s\S]*?)\r?\n?```$/);
-  return m ? m[1] : body;
-}
 
 // Parse whole-file blocks out of the model's reply. Accepts the `=== FILE: … ===`
 // delimiter we ask for, and also the `<file path="…">…</file>` form the model
@@ -827,26 +623,6 @@ function applyEditBlocks(dir, blocks, offered) {
   return results;
 }
 
-// Buffered (non-streaming) turn: collect the full reply text, with the same
-// transient-failure retry on a fresh key. Used by Edit mode.
-async function collectTurn(queryOptions, model) {
-  for (let attempt = 0; ; attempt++) {
-    rotateGroqKey(model);
-    let text = "";
-    let error = null;
-    try {
-      for await (const msg of query(queryOptions)) {
-        if (msg.type === "delta" && msg.deltaType !== "thinking") text += msg.content;
-        else if (msg.type === "system" && msg.subtype === "error") error = msg.content || error;
-        else if (msg.type === "assistant" && msg.stopReason === "error") error = msg.errorMessage || error;
-      }
-    } catch (err) {
-      error = err.message || String(err);
-    }
-    if (!text && error && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(error)) continue;
-    return { text, error };
-  }
-}
 
 // LLM Orchestrator: classify an ambiguous message as "edit" vs "ask" with a
 // single cheap toolless call. This is what makes routing intelligent beyond the
@@ -1020,54 +796,6 @@ async function runEditModeWS(ws, dir, message, model) {
   ws.send(JSON.stringify({ type: "complete", content: "" }));
 }
 
-// Cap the model's *output* reservation. Groq's free-tier 12k tokens-per-minute
-// (TPM) limit counts input PLUS reserved output (max_completion_tokens). pi-ai
-// otherwise reserves Math.min(model.maxTokens, 32000) = 32000 for Groq, so even a
-// ~1.8k-token prompt is billed as ~33.9k tokens/min and gets a 413 — that, not
-// prompt size, was the real cause of the "Requested 33889" error.
-//
-// The clean per-request `constraints: { maxTokens }` route below is IGNORED by
-// this pi-agent-core build (its _runLoop rebuilds the model config from a fixed
-// field whitelist that omits maxTokens). The mechanism that actually sticks is
-// the model registry: getModels returns shared objects, and pi-ai's output
-// reservation reads model.maxTokens — so we lower it once at startup. Raise
-// AGENT_MAX_OUTPUT_TOKENS if you move to a higher Groq tier.
-const AGENT_MAX_OUTPUT_TOKENS = Number(process.env.AGENT_MAX_OUTPUT_TOKENS) || 3000;
-try {
-  let capped = 0;
-  for (const m of getModels("groq")) {
-    if (m && typeof m.maxTokens === "number" && m.maxTokens > AGENT_MAX_OUTPUT_TOKENS) {
-      m.maxTokens = AGENT_MAX_OUTPUT_TOKENS;
-      capped++;
-    }
-  }
-  console.log(`[agent] capped Groq output reservation to ${AGENT_MAX_OUTPUT_TOKENS} tokens on ${capped} model(s) (keeps a turn under Groq's 12k TPM)`);
-} catch (e) {
-  console.error("[agent] could not cap Groq output reservation:", e.message);
-}
-
-// First configured provider, preferring Groq (the free-tier default).
-export function firstAvailableProvider() {
-  return ["groq", "anthropic", "openai", "gemini"].find(providerHasKey) || null;
-}
-
-// Resolve the model string for a request. Priority:
-//   1. GITCLAW_MODEL, but only if its provider actually has a key
-//   2. the provider chosen in the UI, if it has a key
-//   3. the first provider that has a key (Groq preferred)
-// Never returns a keyless provider's model, so the agent loop can't crash on a
-// missing key — a request with no configured provider is rejected up front.
-export function modelFor(uiProvider) {
-  const explicit = (process.env.GITCLAW_MODEL || "").trim();
-  if (explicit && providerHasKey(explicit.split(":")[0])) return explicit;
-
-  if (uiProvider && providerHasKey(uiProvider) && PROVIDER_MODELS[uiProvider]) {
-    return PROVIDER_MODELS[uiProvider];
-  }
-
-  const avail = firstAvailableProvider();
-  return avail ? PROVIDER_MODELS[avail] : PROVIDER_MODELS.groq;
-}
 
 // Register a sandbox dir after Jr Architect clones + generates agent spec
 // The scaffolded spec lives under .gitagent/ (grouped, visible in the explorer),
@@ -1276,18 +1004,6 @@ app.post("/agent/chat", async (req, res) => {
 // one-click apply"), so a weak free-tier model can't silently break the repo.
 
 // Pull a JSON object out of a model reply that may be fenced or wrapped in prose.
-function parseJsonLoose(text) {
-  if (!text) return null;
-  const body = stripFences(text);
-  const start = body.indexOf("{");
-  const end = body.lastIndexOf("}");
-  if (start < 0 || end <= start) return null;
-  try {
-    return JSON.parse(body.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-}
 
 function buildDiagnosePrompt(stack, logs) {
   // Keep only the tail — the failure is almost always at the end, and the free
@@ -1758,6 +1474,9 @@ wss.on("connection", (ws) => {
 });
 
 export {
+  // Re-exported from llm.js / guardrails.js so existing callers and tests keep
+  // importing them from here while the engine lives in its own modules.
+  firstAvailableProvider, modelFor,
   makeSearchCodeTool, resolveTurnMode, heuristicMode, extractSearchTerms, buildAskPrompt,
   parseEditBlocks, applyEditBlocks, gatherEditFiles, buildEditPrompt,
   classifyEditComplexity, guardEditBlocks, buildGuardrailPrompt,
