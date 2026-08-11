@@ -80,8 +80,11 @@ function renderTree(nodes, parent, depth) {
       item.style.setProperty('--depth', depth);
       item.innerHTML = `<span class="icon folder-icon">\u25B8</span><span class="name">${esc(node.name)}</span>
         <span class="tree-actions">
-          <button onclick="event.stopPropagation(); deleteFileOrFolder('${esc(node.path)}', true)" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
+          <button type="button" class="tree-delete" title="Delete">${TRASH_ICON}</button>
         </span>`;
+      // Bound as a property, not an onclick attribute. Paths come from a cloned
+      // repo, so a filename containing a quote must never be able to become code.
+      bindTreeDelete(item, node.path, true);
       item.onclick = (e) => {
         if (e.target.closest('.tree-actions')) return;
         e.stopPropagation();
@@ -106,8 +109,9 @@ function renderTree(nodes, parent, depth) {
       const fileExt = node.name.split('.').pop().toLowerCase();
       item.innerHTML = `<span class="icon" data-ext="${esc(fileExt)}">${fileIcon(node.name)}</span><span class="name">${esc(node.name)}</span>
         <span class="tree-actions">
-          <button onclick="event.stopPropagation(); deleteFileOrFolder('${esc(node.path)}', false)" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
+          <button type="button" class="tree-delete" title="Delete">${TRASH_ICON}</button>
         </span>`;
+      bindTreeDelete(item, node.path, false);
       item.onclick = (e) => {
         if (e.target.closest('.tree-actions')) return;
         openFile(node.path, node.name);
@@ -130,7 +134,28 @@ function fileIcon(name) {
   };
   return map[ext] || 'F';
 }
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+const TRASH_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+
+// Wire a tree row's delete button without routing the path through markup.
+function bindTreeDelete(item, path, isDir) {
+  const btn = item.querySelector('.tree-delete');
+  if (!btn) return;
+  btn.onclick = (e) => { e.stopPropagation(); deleteFileOrFolder(path, isDir); };
+}
+
+// Escape a value for HTML — including both quote characters, so it is safe in an
+// attribute as well as in element text. The previous textContent/innerHTML trick
+// escaped only `& < >`, because a text node never needs a quote escaped; that left
+// every `data-ext="${esc(x)}"` open to a filename crafted to close the attribute.
+// Repos are cloned from arbitrary URLs, so filenames are untrusted input.
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 // ── File Create / Delete ──
 async function promptCreateFile() {
@@ -397,7 +422,10 @@ function getTerminalTheme() {
 }
 
 function initMonaco() {
-  require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
+  // Monaco is served from the binary, not a CDN — the loader fetches the rest of
+  // the editor (workers, language services) relative to this path, so pointing it
+  // at /vendor/monaco/vs is what actually makes the IDE work offline.
+  require.config({ paths: { vs: '/vendor/monaco/vs' } });
   require(['vs/editor/editor.main'], () => {
     monaco.editor.defineTheme('jr-architect-light', {
       base: 'vs', inherit: true,
@@ -544,7 +572,12 @@ function renderTabs() {
     const d = document.createElement('div');
     d.className = 'editor-tab' + (tab === IDE.activeTab ? ' active' : '');
     const ext = tab.name.split('.').pop().toLowerCase();
-    d.innerHTML = `<span class="tab-icon icon" data-ext="${esc(ext)}">${fileIcon(tab.name)}</span><span class="tab-label">${esc(tab.name)}</span>${tab.modified ? '<span class="tab-modified">\u25CF</span>' : ''}<span class="tab-close" onclick="closeTab('${tab.path}', event)">\u00D7</span>`;
+    d.innerHTML = `<span class="tab-icon icon" data-ext="${esc(ext)}">${fileIcon(tab.name)}</span><span class="tab-label">${esc(tab.name)}</span>${tab.modified ? '<span class="tab-modified">\u25CF</span>' : ''}<span class="tab-close" role="button" tabindex="0" title="Close">\u00D7</span>`;
+    // The close handler is bound as a property. It used to interpolate tab.path
+    // into an onclick attribute completely unescaped, so a file named with a
+    // quote could inject script into the tab strip.
+    const close = d.querySelector('.tab-close');
+    if (close) close.onclick = (e) => closeTab(tab.path, e);
     d.onclick = () => activateTab(tab);
     el.appendChild(d);
   });

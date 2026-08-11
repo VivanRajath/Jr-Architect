@@ -1,101 +1,8 @@
 /* ─────────────────────────────────────────────
    Jr Architect IDE — VS Code-style shell
-   (warm brown/cream palette preserved)
+   Colour, type, space and radius come from tokens.css.
+   This file styles the shell; it defines no tokens.
    ───────────────────────────────────────────── */
-:root {
-  --bg: #F5F2EE;
-  --surface: #FFFFFF;
-  --surface2: #EBE8E3;
-  --border: #DEDAD1;
-  --border2: #CEC8BA;
-  --accent: #6B3E1A;
-  --accent2: #8B5A2B;
-  --green: #2D6A4F;
-  --red: #A4161A;
-  --yellow: #B07D05;
-  --text: #2C1810;
-  --text2: #5D4037;
-  --text3: #8D6E63;
-  --mono: 'JetBrains Mono', 'Consolas', monospace;
-  --sans: 'Inter', 'Segoe UI', sans-serif;
-
-  /* Layout */
-  --activity-w: 48px;
-  --sidebar-w: 260px;
-  --topbar-h: 40px;
-  --tabs-h: 36px;
-  --panel-h: 240px;
-  --statusbar-h: 24px;
-
-  /* Elevation / surfaces derived from the palette */
-  --activity-bg: #EFEBE5;
-  --statusbar-bg: var(--accent);
-  --statusbar-text: rgba(255, 255, 255, .92);
-  --hover: rgba(107, 62, 26, .07);
-  --hover-strong: rgba(107, 62, 26, .12);
-
-  /* File-type icon accents (icon-only tints, theme stays brown/cream) */
-  --ic-js: #C9A21B;
-  --ic-ts: #3A7BD5;
-  --ic-jsx: #4FA0D8;
-  --ic-py: #4B8BBE;
-  --ic-go: #2AA7B8;
-  --ic-rs: #C56A2C;
-  --ic-html: #C1502E;
-  --ic-css: #2F72C4;
-  --ic-json: #B08900;
-  --ic-md: #6E8091;
-  --ic-img: #7C9A5B;
-  --ic-sh: #4E8C6A;
-  --ic-folder: var(--accent2);
-}
-
-/* ── Dark Mode ── */
-body.dark-mode {
-  --bg: #1a1410;
-  --surface: #231C16;
-  --surface2: #2E241C;
-  --border: #3E2C1E;
-  --border2: #4E3C2E;
-  --accent: #A67C52;
-  --accent2: #C19A6B;
-  --green: #81C784;
-  --red: #EF5350;
-  --yellow: #FFD54F;
-  --text: #EFEBE9;
-  --text2: #D7CCC8;
-  --text3: #8D6E63;
-
-  --activity-bg: #1F1811;
-  --statusbar-bg: #3E2C1E;
-  --statusbar-text: #EFE3D6;
-  --hover: rgba(166, 124, 82, .12);
-  --hover-strong: rgba(166, 124, 82, .18);
-
-  --ic-js: #D9B54A;
-  --ic-ts: #5A9BE0;
-  --ic-jsx: #6FB2E4;
-  --ic-py: #6BA6D6;
-  --ic-go: #4CC4D4;
-  --ic-rs: #D98B54;
-  --ic-html: #DB7A56;
-  --ic-css: #5A93DC;
-  --ic-json: #D9B54A;
-  --ic-md: #9BAEC0;
-  --ic-img: #9CBE78;
-  --ic-sh: #77C79C;
-}
-
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
-html,
-body {
-  height: 100%;
-}
 
 /* Only the IDE view locks scrolling (it manages its own internal panes).
    The landing page must stay free to scroll vertically. */
@@ -128,7 +35,7 @@ body.ide-mode {
   background: var(--border2);
   border: 3px solid transparent;
   background-clip: content-box;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
 }
 
 .file-tree::-webkit-scrollbar-thumb:hover,
@@ -153,7 +60,7 @@ body.ide-mode {
 
 .ide-topbar .logo {
   font-weight: 700;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   background: linear-gradient(135deg, var(--accent), var(--accent2));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -163,7 +70,7 @@ body.ide-mode {
 
 .ide-topbar .repo-name {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -172,14 +79,14 @@ body.ide-mode {
 }
 
 .ide-topbar .mode-badge {
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   letter-spacing: .09em;
   background: var(--accent-soft, rgba(107, 62, 26, .08));
   border: 1px solid var(--border2);
   color: var(--accent);
   padding: 2px 8px;
-  border-radius: 100px;
+  border-radius: var(--r-pill);
 }
 
 body.dark-mode .ide-topbar .mode-badge {
@@ -187,14 +94,14 @@ body.dark-mode .ide-topbar .mode-badge {
 }
 
 .ide-topbar .framework-badge {
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   letter-spacing: .04em;
   background: var(--green-soft, rgba(45, 106, 79, .12));
   border: 1px solid rgba(45, 106, 79, .3);
   color: var(--green);
   padding: 2px 8px;
-  border-radius: 100px;
+  border-radius: var(--r-pill);
   white-space: nowrap;
 }
 
@@ -206,8 +113,8 @@ body.dark-mode .ide-topbar .mode-badge {
   background: none;
   border: 1px solid transparent;
   color: var(--text2);
-  border-radius: 5px;
-  font-size: 11px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
   padding: 5px 10px;
   cursor: pointer;
   font-family: var(--sans);
@@ -302,7 +209,7 @@ body.dark-mode .ide-topbar .mode-badge {
 
 .sidebar-header {
   padding: 9px 8px 9px 16px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .08em;
@@ -325,9 +232,9 @@ body.dark-mode .ide-topbar .mode-badge {
   border: none;
   color: var(--text3);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 3px 6px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   transition: .12s;
   display: inline-flex;
   align-items: center;
@@ -344,7 +251,7 @@ body.dark-mode .ide-topbar .mode-badge {
   flex: 1;
   overflow-y: auto;
   padding: 2px 0 8px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .tree-item {
@@ -381,7 +288,7 @@ body.dark-mode .ide-topbar .mode-badge {
 }
 
 .tree-item .icon {
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   flex-shrink: 0;
   width: 20px;
@@ -393,7 +300,7 @@ body.dark-mode .ide-topbar .mode-badge {
 
 .tree-item .icon.folder-icon {
   color: var(--ic-folder);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .tree-item .name {
@@ -416,9 +323,9 @@ body.dark-mode .ide-topbar .mode-badge {
   border: none;
   color: var(--text3);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 2px 4px;
-  border-radius: 3px;
+  border-radius: var(--r-sm);
   display: flex;
   align-items: center;
 }
@@ -479,7 +386,7 @@ body.dark-mode .ide-topbar .mode-badge {
   align-items: center;
   gap: 6px;
   padding: 0 10px 0 12px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
   cursor: pointer;
   border-right: 1px solid var(--border);
@@ -513,7 +420,7 @@ body.dark-mode .ide-topbar .mode-badge {
 }
 
 .editor-tab .tab-icon {
-  font-size: 8px;
+  font-size: var(--fs-2xs);
   width: auto;
   min-width: 16px;
 }
@@ -522,12 +429,12 @@ body.dark-mode .ide-topbar .mode-badge {
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .editor-tab .tab-close {
   opacity: 0;
-  font-size: 15px;
+  font-size: var(--fs-md);
   line-height: 1;
   color: var(--text3);
   margin-left: 2px;
@@ -537,7 +444,7 @@ body.dark-mode .ide-topbar .mode-badge {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
 }
 
 .editor-tab:hover .tab-close,
@@ -552,7 +459,7 @@ body.dark-mode .ide-topbar .mode-badge {
 
 .editor-tab .tab-modified {
   color: var(--accent);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   margin-left: 2px;
 }
 
@@ -572,7 +479,7 @@ body.dark-mode .ide-topbar .mode-badge {
   height: 100%;
   color: var(--text3);
   gap: 12px;
-  font-size: 14px;
+  font-size: var(--fs-md);
   text-align: center;
   padding: 20px;
 }
@@ -608,7 +515,7 @@ body.dark-mode .ide-topbar .mode-badge {
 
 .panel-tab {
   padding: 8px 12px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: .05em;
@@ -641,7 +548,7 @@ body.dark-mode .ide-topbar .mode-badge {
   overflow-y: auto;
   padding: 8px 14px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text2);
   line-height: 1.65;
   white-space: pre-wrap;
@@ -685,11 +592,11 @@ body.dark-mode .ide-topbar .mode-badge {
   align-items: center;
   gap: 5px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   color: var(--text3);
   cursor: pointer;
-  border-radius: 4px 4px 0 0;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
   transition: .12s;
   white-space: nowrap;
   user-select: none;
@@ -708,16 +615,16 @@ body.dark-mode .ide-topbar .mode-badge {
 }
 
 .terminal-tab-name {
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .terminal-tab-close {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1;
   cursor: pointer;
   color: var(--text3);
   padding: 0 2px;
-  border-radius: 2px;
+  border-radius: var(--r-sm);
 }
 
 .terminal-tab-close:hover {
@@ -730,10 +637,10 @@ body.dark-mode .ide-topbar .mode-badge {
   border: none;
   color: var(--text3);
   cursor: pointer;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 500;
   padding: 1px 8px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   transition: .12s;
   margin-left: 2px;
   line-height: 1;
@@ -762,7 +669,7 @@ body.dark-mode .ide-topbar .mode-badge {
 .status-panel-content {
   padding: 6px 2px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text2);
   line-height: 1.8;
 }
@@ -828,7 +735,7 @@ body.dark-mode .ide-topbar .mode-badge {
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: var(--surface);
   border: 1px solid var(--border2);
   color: var(--accent);
@@ -849,12 +756,12 @@ body.dark-mode .ide-topbar .mode-badge {
   right: calc(100% + 8px);
   transform: translateY(-50%);
   white-space: nowrap;
-  background: var(--text, #1a1a1a);
-  color: var(--surface, #fff);
-  font-size: 11px;
+  background: var(--text);
+  color: var(--surface);
+  font-size: var(--fs-xs);
   font-weight: 500;
   padding: 5px 9px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   pointer-events: none;
   opacity: 0;
   transition: opacity .12s;
@@ -871,13 +778,13 @@ body.dark-mode .ide-topbar .mode-badge {
 }
 
 @keyframes treeFlash {
-  0%, 40% { background: var(--accent); color: #fff; }
+  0%, 40% { background: var(--accent); color: var(--on-accent); }
   100% { background: transparent; }
 }
 
 .preview-header {
   padding: 8px 8px 8px 14px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text2);
   border-bottom: 1px solid var(--border);
@@ -893,9 +800,9 @@ body.dark-mode .ide-topbar .mode-badge {
   border: none;
   color: var(--text3);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-md);
   padding: 3px 5px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   display: inline-flex;
   align-items: center;
 }
@@ -908,6 +815,9 @@ body.dark-mode .ide-topbar .mode-badge {
 .preview-iframe {
   flex: 1;
   border: none;
+  /* Deliberately literal: this is the paint behind the USER'S app before it
+     loads, and most pages are light. It is not IDE chrome, so it does not
+     follow the IDE's theme. */
   background: #fff;
   width: 100%;
 }
@@ -935,13 +845,13 @@ body.dark-mode .ide-topbar .mode-badge {
 }
 
 .preview-loading-title {
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--text);
 }
 
 .preview-loading-sub {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text3);
   max-width: 340px;
   line-height: 1.5;
@@ -962,7 +872,7 @@ body.dark-mode .ide-topbar .mode-badge {
 
 .agent-panel-header {
   padding: 8px 8px 8px 14px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text2);
   border-bottom: 1px solid var(--border);
@@ -979,7 +889,7 @@ body.dark-mode .ide-topbar .mode-badge {
   gap: 7px;
   text-transform: uppercase;
   letter-spacing: .06em;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -988,10 +898,10 @@ body.dark-mode .ide-topbar .mode-badge {
   border: none;
   color: var(--text3);
   cursor: pointer;
-  font-size: 16px;
+  font-size: var(--fs-lg);
   line-height: 1;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
 }
 
 .agent-panel-header button:hover {
@@ -1016,7 +926,7 @@ body.dark-mode .ide-topbar .mode-badge {
   align-items: center;
   justify-content: space-between;
   padding: 0 4px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
   z-index: 10;
   user-select: none;
@@ -1053,7 +963,7 @@ body.dark-mode .ide-topbar .mode-badge {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--statusbar-text);
   box-shadow: 0 0 5px rgba(255, 255, 255, .5);
   animation: statusPulse 2s infinite;
 }
@@ -1075,9 +985,9 @@ body.dark-mode .ide-topbar .mode-badge {
   z-index: 100;
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 10px 16px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1116,8 +1026,8 @@ body.dark-mode .ide-toast {
   background: none;
   border: 1px solid transparent;
   color: var(--text2);
-  border-radius: 5px;
-  font-size: 11px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
   padding: 5px 10px;
   cursor: pointer;
   font-family: var(--sans);
@@ -1152,7 +1062,7 @@ body.dark-mode .ide-toast {
   height: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   overflow: hidden;
   box-shadow: 0 20px 60px rgba(0, 0, 0, .4);
 }
@@ -1167,8 +1077,8 @@ body.dark-mode .ide-toast {
 }
 
 .diff-title {
-  font-family: var(--mono, monospace);
-  font-size: 12.5px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1179,7 +1089,7 @@ body.dark-mode .ide-toast {
   background: none;
   border: none;
   color: var(--text3);
-  font-size: 22px;
+  font-size: var(--fs-xl);
   line-height: 1;
   cursor: pointer;
   padding: 0 4px;
@@ -1201,11 +1111,11 @@ body.dark-mode .ide-toast {
   min-width: 210px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   box-shadow: 0 10px 32px rgba(0, 0, 0, .30);
   padding: 5px;
   font-family: var(--sans);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text);
   user-select: none;
   animation: ctxIn .09s ease;
@@ -1221,7 +1131,7 @@ body.dark-mode .ide-toast {
   align-items: center;
   gap: 9px;
   padding: 6px 10px;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   cursor: pointer;
   white-space: nowrap;
   transition: background .08s;
@@ -1229,11 +1139,12 @@ body.dark-mode .ide-toast {
 
 .ctx-item:hover {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .ctx-item.danger:hover {
-  background: #b3261e;
+  background: var(--red);
+  color: var(--on-accent);
 }
 
 .ctx-ico {

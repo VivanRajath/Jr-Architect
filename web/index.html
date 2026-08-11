@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jr Architect - Cloud IDE</title>
+  <meta name="description"
+    content="Run any GitHub repo instantly in a Docker sandbox with a full cloud IDE experience." />
+
+  <!-- Stylesheets. The load order IS the cascade contract:
+         tokens  the single source of truth for color, type, space and radius
+         fonts   self-hosted @font-face declarations
+         vendor  third-party component CSS
+         app     landing page and shell
+         ide     editor, file tree, terminal, preview
+         agent   the GitAgent dock
+       Nothing below tokens.css may define a token; they only consume them. -->
+  <link rel="stylesheet" href="/css/tokens.css" />
+  <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
+  <link rel="stylesheet" href="/css/app.css" />
+  <link rel="stylesheet" href="/css/ide.css" />
+  <link rel="stylesheet" href="/css/ide-agent.css" />
+</head>
+
+<body>
+  <div id="landing-page">
+    <div class="app">
+      <header>
+        <div class="badge">
+          <div class="badge-dot"></div>
+          Jr Architect
+        </div>
+        <h1>Run Any Repo <span>Instantly</span></h1>
+        <p class="subtitle">Paste a GitHub URL and get a live sandbox in seconds. Use Prompt Mode for quick runs or Dev
+          Mode for a full cloud IDE experience.</p>
+      </header>
+  
+      <!-- Run a sandbox -->
+      <div class="card">
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 3l14 9-14 9V3z" />
+          </svg>
+          Launch Sandbox
+        </div>
+  
+        <!-- Mode Toggle -->
+        <div class="mode-toggle" id="modeToggle">
+          <div class="mode-option active" data-mode="prompt" onclick="setMode('prompt')">
+            Prompt Mode
+          </div>
+          <div class="mode-option" data-mode="dev" onclick="setMode('dev')">
+            Dev Mode
+          </div>
+          <div class="mode-option" data-mode="build" onclick="setMode('build')">
+            <span class="build-sparkle"><svg style="vertical-align:middle" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg></span> Build Mode
+          </div>
+        </div>
+  
+        <!-- Repo input row (Prompt / Dev Mode) -->
+        <div id="repoSection">
+          <div class="input-row">
+            <div class="input-wrap">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path
+                  d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />
+              </svg>
+              <input id="repoInput" type="text" placeholder="https://github.com/user/repo" autocomplete="off"
+                spellcheck="false" />
+            </div>
+            <button id="runBtn" class="btn" onclick="runSandbox()">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="15"
+                height="15">
+                <path d="M5 3l14 9-14 9V3z" />
+              </svg>
+              <div class="spinner"></div>
+              Run
+            </button>
+          </div>
+  
+          <div class="instructions-wrap">
+            <div class="instructions-label">
+              <span>Optional INSTRUCTIONS.md</span>
+              <small>Paste install &amp; run commands if not in repo</small>
+            </div>
+            <textarea id="instructionsInput" placeholder="Paste your setup commands, one per line:
+  
+  npm install
+  npm run dev
+  
+  Or any shell commands:
+  npm install
+  node server.js"></textarea>
+          </div>
+        </div>
+  
+        <!-- Build Mode prompt field -->
+        <div id="buildSection" style="display:none; margin-top:16px;">
+          <div class="instructions-label" style="margin-bottom:8px;">
+            <span><svg style="vertical-align:middle" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg> Describe the app you want to build</span>
+            <small>Be as specific or as vague as you like</small>
+          </div>
+          <textarea id="buildPromptInput" class="qa-input" rows="4"
+            placeholder="e.g. A Kanban board for dev teams where users can create tickets, assign them, drag between columns, and leave comments. Dark mode, purple accent."
+            style="min-height:100px;"></textarea>
+          <div style="margin-top:12px;">
+            <button class="btn" onclick="startBuilder()">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+              </svg>
+              Start Building
+            </button>
+          </div>
+        </div>
+  
+        <div id="runStatus" class="status-bar"></div>
+      </div>
+  
+      <!-- Build History -->
+      <div class="card" id="buildHistoryCard" style="display:none;">
+        <div class="sandboxes-header">
+          <div class="section-title">
+            <svg style="vertical-align:middle" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg> Recent Builds
+            <span class="count-badge" id="buildHistoryCount">0</span>
+          </div>
+          <button class="btn btn-sm btn-ghost" onclick="loadBuildHistory()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+              <path d="M1 4v6h6M23 20v-6h-6" />
+              <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+            </svg>
+            Refresh
+          </button>
+        </div>
+        <div id="buildHistoryList"></div>
+      </div>
+  
+      <!-- Active Sandboxes -->
+      <div class="card">
+        <div class="sandboxes-header">
+          <div class="section-title">
+            Active Sandboxes
+            <span class="count-badge" id="sandboxCount">0</span>
+          </div>
+          <button class="btn btn-sm btn-ghost" onclick="loadSandboxes()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+              <path d="M1 4v6h6M23 20v-6h-6" />
+              <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+            </svg>
+            Refresh
+          </button>
+        </div>
+        <div id="sandboxList">
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="2" y="3" width="20" height="14" rx="2" />
+              <path d="M8 21h8M12 17v4" />
+            </svg>
+            <p>No active sandboxes</p>
+          </div>
+        </div>
+      </div>
+  
+      <!-- Supported Runtimes -->
+      <div class="card">
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          Supported Runtimes
+        </div>
+        <div class="runtimes-grid">
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">PY</span>Python / Flask / FastAPI / Django
+          </div>
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">JS</span>Node.js / Express / Next.js / Vite
+          </div>
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">GO</span>Go</div>
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">RS</span>Rust</div>
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">JV</span>Java / Spring Boot</div>
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">PHP</span>PHP / Laravel</div>
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">RB</span>Ruby / Rails</div>
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">BN</span>Bun</div>
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">DN</span>Deno</div>
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">.N</span>.NET</div>
+          <div class="runtime-chip"><span class="chip-icon"
+              style="font-size:12px;font-weight:700;font-family:var(--mono)">HT</span>Static HTML</div>
+        </div>
+        <div class="divider" style="margin-top: 16px;"></div>
+        <p style="font-size: 12px; color: var(--text3); margin-top: 12px; line-height: 1.6;">
+          FastAPI apps expose <code
+            style="font-family: var(--mono); background: var(--surface2); padding: 1px 5px; border-radius: 4px; color: var(--accent);">/docs</code>
+          and <code
+            style="font-family: var(--mono); background: var(--surface2); padding: 1px 5px; border-radius: 4px; color: var(--accent);">/redoc</code>
+          automatically. Sandboxes auto-destroy after 10 minutes.
+        </p>
+      </div>
+    </div>
+  
+    <!-- Logs Modal -->
+    <div class="modal-overlay" id="logsModal" onclick="closeLogsIfOverlay(event)">
+      <div class="modal">
+        <div class="modal-header">
+          <div class="modal-title" id="logsTitle">Container Logs</div>
+          <button class="modal-close" onclick="closeLogs()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="logs-output" id="logsOutput"></div>
+        </div>
+      </div>
+    </div>
+  
+    <!-- ═══ Builder Modal ═══ -->
+    <div class="builder-overlay" id="builderOverlay" onclick="closeBuilderIfOverlay(event)">
+      <div class="builder-modal">
+        <!-- Header -->
+        <div class="builder-header">
+          <div class="builder-header-icon"><svg style="vertical-align:middle" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg></div>
+          <div class="builder-header-text">
+            <div class="builder-header-title" id="builderHeaderTitle">What do you want to build?</div>
+            <div class="builder-header-sub" id="builderHeaderSub">Powered by Groq + llama-3.3-70b</div>
+          </div>
+          <button class="builder-close" onclick="closeBuilder()">&times;</button>
+        </div>
+  
+        <!-- Steps -->
+        <div class="builder-steps">
+          <div class="bstep active" id="bstep-1">
+            <div class="bstep-num">1</div>
+            <span>Q&amp;A</span>
+          </div>
+          <div class="bstep-connector" id="bconn-1"></div>
+          <div class="bstep" id="bstep-2">
+            <div class="bstep-num">2</div>
+            <span>PRD</span>
+          </div>
+          <div class="bstep-connector" id="bconn-2"></div>
+          <div class="bstep" id="bstep-3">
+            <div class="bstep-num">3</div>
+            <span>Build</span>
+          </div>
+          <div class="bstep-connector" id="bconn-3"></div>
+          <div class="bstep" id="bstep-4">
+            <div class="bstep-num">4</div>
+            <span>Launch</span>
+          </div>
+        </div>
+  
+        <!-- Body -->
+        <div class="builder-body" id="builderBody">
+          <!-- Injected dynamically per step -->
+        </div>
+      </div>
+    </div>
+  
+    <!-- Toast container -->
+    <div class="toast-container" id="toastContainer"></div>
+  </div><!-- end landing-page -->
+  
+  <!-- ═══ IDE Layout (hidden until sandbox starts in Dev Mode) ═══ -->
+  <div id="ide-page" style="display:none; flex-direction:column; height:100vh;">
+    <!-- Top Bar -->
+    <div class="ide-topbar">
+      <span class="logo">Jr Architect</span>
+      <span class="repo-name"></span>
+      <span class="framework-badge" id="framework-badge" style="display:none;"></span>
+      <span class="mode-badge">DEV MODE</span>
+      <div class="spacer"></div>
+      <button class="top-btn" onclick="saveCurrentFile()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+          <polyline points="17 21 17 13 7 13 7 21" />
+          <polyline points="7 3 7 8 15 8" />
+        </svg> Save</button>
+      <button class="top-btn" onclick="openLivePreview()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10" />
+          <line x1="2" y1="12" x2="22" y2="12" />
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+        </svg> Preview</button>
+      <button class="top-btn" onclick="loadFileTree()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2">
+          <path d="M1 4v6h6M23 20v-6h-6" />
+          <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+        </svg> Refresh</button>
+      <button class="top-btn dark-mode-toggle" id="dark-mode-btn" onclick="toggleDarkMode()"><svg width="14" height="14"
+          viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+        </svg> Dark</button>
+      <button class="top-btn" onclick="backToLanding()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2">
+          <line x1="19" y1="12" x2="5" y2="12" />
+          <polyline points="12 19 5 12 12 5" />
+        </svg> Back</button>
+    </div>
+    <!-- Main -->
+    <div class="ide-main">
+      <!-- Activity Bar -->
+      <div class="ide-activitybar">
+        <div class="activity-top">
+          <button class="activity-btn active" id="act-explorer" title="Explorer" onclick="toggleSidebar(this)">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+              <polyline points="13 2 13 9 20 9" />
+            </svg>
+          </button>
+          <button class="activity-btn" id="act-agent" title="AI Agent" onclick="toggleAgentPanel()">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
+          <button class="activity-btn" id="act-gitagent"
+            title="GitAgent — this repo's agent: identity, rules, guardrails, skills, registry"
+            onclick="toggleGitAgentPanel()">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <circle cx="12" cy="12" r="3" />
+              <circle cx="12" cy="4" r="2" />
+              <circle cx="5" cy="18" r="2" />
+              <circle cx="19" cy="18" r="2" />
+              <line x1="12" y1="6" x2="12" y2="9" />
+              <line x1="9.7" y1="13.7" x2="6.4" y2="16.4" />
+              <line x1="14.3" y1="13.7" x2="17.6" y2="16.4" />
+            </svg>
+          </button>
+          <button class="activity-btn" id="act-preview" title="Live Preview" onclick="openLivePreview()">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <circle cx="12" cy="12" r="9" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <path d="M12 3a14 14 0 0 1 4 9 14 14 0 0 1-4 9 14 14 0 0 1-4-9 14 14 0 0 1 4-9z" />
+            </svg>
+          </button>
+        </div>
+        <div class="activity-bottom">
+          <button class="activity-btn" title="Toggle theme" onclick="toggleDarkMode()">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <!-- Sidebar -->
+      <div class="ide-sidebar">
+        <div class="sidebar-header">
+          <span>Explorer</span>
+          <div style="display:flex;gap:4px;">
+            <button onclick="promptCreateFile()" title="New File">+ File</button>
+            <button onclick="promptCreateFolder()" title="New Folder">+ Dir</button>
+            <button onclick="loadFileTree()" title="Refresh"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2">
+                <path d="M1 4v6h6M23 20v-6h-6" />
+                <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+              </svg></button>
+          </div>
+        </div>
+        <div class="file-tree" id="file-tree"></div>
+      </div>
+      <!-- Editor Area -->
+      <div class="ide-editor-area">
+        <div class="editor-tabs" id="editor-tabs"></div>
+        <div class="editor-container">
+          <div class="editor-welcome" id="editor-welcome">
+            <div class="big-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="1.5">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+                <polyline points="10 9 9 9 8 9" />
+              </svg></div>
+            <div>Select a file from the explorer to start editing</div>
+            <div style="font-size:12px;color:var(--text3)">Ctrl+S to save -- Click files in the sidebar</div>
+          </div>
+          <div id="monaco-container" style="display:none;width:100%;height:100%"></div>
+        </div>
+        <!-- Bottom Panel -->
+        <div class="panel-resize" id="panel-resize"></div>
+        <div class="ide-bottom-panel">
+          <div class="panel-tabs">
+            <div class="panel-tab active" data-tab="terminal" onclick="switchPanelTab('terminal')">Terminal</div>
+            <div class="panel-tab" data-tab="logs" onclick="switchPanelTab('logs')">Logs</div>
+            <div class="panel-tab" data-tab="status" onclick="switchPanelTab('status')">Status</div>
+          </div>
+          <div class="panel-content">
+            <div class="terminal-pane active" data-tab="terminal">
+              <div class="terminal-tabs-bar" id="terminal-tab-bar"></div>
+              <div class="terminal-output" id="terminal-instances" onclick="focusActiveTerminal()"></div>
+            </div>
+            <div class="panel-pane" data-tab="logs" id="logs-output"></div>
+            <div class="panel-pane" data-tab="status" id="status-output">
+              <div class="status-panel-content" id="status-panel-content">Loading status...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- AI Agent Side Panel (VS Code-style chat dock) -->
+      <div class="ide-agent-panel" id="ide-agent-panel" style="display:none;">
+        <div class="agent-panel-header">
+          <span class="agent-panel-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            AI Agent
+          </span>
+          <div class="agent-header-actions">
+            <button class="agent-header-btn" onclick="runDoctor(false)"
+              title="Diagnose the app — read the container logs and propose a fix">Diagnose</button>
+            <button class="agent-header-btn" onclick="openGitAgentPanel('registry')"
+              title="GitAgent registry — run community agents from registry.gitagent.sh">GitAgent</button>
+            <button onclick="toggleAgentPanel()" title="Close">&times;</button>
+          </div>
+        </div>
+        <div class="agent-chat" id="agent-chat">
+          <div class="agent-messages" id="agent-messages">
+            <div class="agent-welcome">
+              <div style="font-size:16px;margin-bottom:8px;font-weight:700;color:var(--accent)">AI</div>
+              <div style="font-weight:600;margin-bottom:4px">AI Coding Agent</div>
+              <div style="font-size:12px;color:var(--text3)">Ask me to explain code, suggest edits, create files,
+                or run commands.</div>
+            </div>
+          </div>
+          <div class="agent-input-row">
+            <textarea id="agent-input" class="agent-input" rows="1"
+              placeholder="Ask the AI agent…  (Enter to send · Shift+Enter for a new line)"
+              spellcheck="false"></textarea>
+            <div class="agent-input-controls">
+              <select id="agent-mode" class="agent-provider-select" title="How the agent handles your message">
+                <option value="auto">Auto</option>
+                <option value="ask">Ask</option>
+                <option value="edit">Edit</option>
+                <option value="agent">Agent</option>
+              </select>
+              <select id="agent-provider" class="agent-provider-select">
+                <option value="groq">Groq</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Gemini</option>
+              </select>
+              <button class="agent-send-btn" onclick="sendAgentMessage()">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- GitAgent Side Panel — customize the coding agent (gitagent.sh standard) -->
+      <div class="ide-gitagent-panel" id="ide-gitagent-panel" style="display:none;">
+        <div class="ga-panel-header">
+          <span class="ga-panel-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3" />
+              <circle cx="12" cy="4" r="2" />
+              <circle cx="5" cy="18" r="2" />
+              <circle cx="19" cy="18" r="2" />
+              <line x1="12" y1="6" x2="12" y2="9" />
+              <line x1="9.7" y1="13.7" x2="6.4" y2="16.4" />
+              <line x1="14.3" y1="13.7" x2="17.6" y2="16.4" />
+            </svg>
+            GitAgent
+          </span>
+          <div class="ga-panel-actions">
+            <a href="https://www.gitagent.sh" target="_blank" rel="noopener" class="ga-sub"
+              title="The GitAgent standard">gitagent.sh</a>
+            <button class="agent-header-btn" onclick="gaRefresh()" title="Reload the spec and registry">Refresh</button>
+            <button onclick="closeGitAgentPanel()" title="Close">&times;</button>
+          </div>
+        </div>
+        <div class="ga-tabs">
+          <button class="ga-tab active" data-tab="agent" onclick="gaSwitchTab('agent')">Agent</button>
+          <button class="ga-tab" data-tab="skills" onclick="gaSwitchTab('skills')">Skills</button>
+          <button class="ga-tab" data-tab="registry" onclick="gaSwitchTab('registry')">Registry</button>
+        </div>
+        <div class="ga-panel-body" id="ga-panel-body"></div>
+        <div class="ga-steps" id="ga-steps"></div>
+      </div>
+      <!-- Live Preview Panel -->
+      <div class="ide-preview-panel" id="ide-preview-panel" style="display:none;">
+        <div class="preview-header">
+          <span>Live Preview</span>
+          <div style="display:flex;gap:4px;">
+            <button onclick="refreshPreview()" title="Refresh"><svg width="12" height="12" viewBox="0 0 24 24"
+                fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 4v6h6M23 20v-6h-6" />
+                <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+              </svg></button>
+            <button onclick="openPreviewExternal()" title="Open in new tab"><svg width="12" height="12"
+                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg></button>
+            <button onclick="closePreview()" title="Close">&times;</button>
+          </div>
+        </div>
+        <div id="preview-loading" class="preview-loading" style="display:none;">
+          <div class="preview-loading-spinner"></div>
+          <div class="preview-loading-title">Starting your app…</div>
+          <div class="preview-loading-sub">Installing dependencies and booting the dev server. This can take a minute on first run — the preview loads automatically once it's ready.</div>
+        </div>
+        <button class="preview-locate-btn" id="preview-locate-btn" type="button"
+          onmouseenter="locateUISource(false)" onclick="locateUISource(true)"
+          aria-label="Show this app's UI code in the editor">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/><line x1="12" y1="4" x2="10" y2="20"/>
+          </svg>
+          <span class="preview-locate-tip" id="preview-locate-tip">Show this app's UI code in the editor</span>
+        </button>
+        <iframe id="preview-iframe" class="preview-iframe"></iframe>
+      </div>
+    </div>
+    <!-- Status Bar -->
+    <div class="ide-statusbar">
+      <div class="statusbar-left">
+        <span class="statusbar-item" id="ide-status-indicator">
+          <span class="ide-status-dot"></span>
+          <span class="ide-status-text">Running</span>
+        </span>
+        <span class="statusbar-item statusbar-branch" title="Sandbox branch">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="6" y1="3" x2="6" y2="15" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="6" cy="18" r="3" />
+            <path d="M18 9a9 9 0 0 1-9 9" />
+          </svg>
+          main
+        </span>
+      </div>
+      <div class="statusbar-right">
+        <span class="statusbar-item">Spaces: 2</span>
+        <span class="statusbar-item">UTF-8</span>
+        <span class="statusbar-item">LF</span>
+        <span class="statusbar-item statusbar-mode">Jr Architect</span>
+      </div>
+    </div>
+    <div class="ide-toast" id="ide-toast"></div>
+  </div>
+
+  <script src="/js/app.js"></script>
+
+  <!-- Load xterm (UMD) BEFORE Monaco's AMD loader. Monaco's loader installs a
+       global AMD define(); if xterm loads after it, xterm's UMD wrapper registers
+       as an anonymous AMD module instead of setting window.Terminal - which threw
+       "Can only have one anonymous define call per script file" and left the
+       terminal (and FitAddon) undefined. Loading xterm first makes it attach to
+       window normally; Monaco's loader then only governs Monaco's own modules. -->
+  <script src="/vendor/xterm/xterm.js"></script>
+  <script src="/vendor/xterm/xterm-addon-fit.js"></script>
+  <script src="/vendor/monaco/vs/loader.js"></script>
+
+  <script src="/js/ide.js"></script>
+  <script src="/js/ide-agent.js"></script>
+</body>
+
+</html>

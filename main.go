@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -113,20 +114,37 @@ func cleanupAllSandboxes() {
 	}
 }
 
-//go:embed index.html
-var staticFiles embed.FS
+// The entire front end — markup, styles, scripts, and the vendored third-party
+// assets (Monaco, xterm, the webfonts) — is one embedded directory.
+//
+// This replaced five separate //go:embed variables and five near-identical
+// handlers, plus an index.html that carried a 1,400-line inline <style> and a
+// 660-line inline <script>. Adding a stylesheet used to mean editing main.go in
+// three places. Now the directory layout IS the contract:
+//
+//	web/index.html   the shell: markup and load order, nothing else
+//	web/css/         tokens.css first (the only file that may DEFINE a token),
+//	                 then app.css, ide.css, ide-agent.css, which only consume them
+//	web/js/          app.js, ide.js, ide-agent.js
+//	web/vendor/      third-party, version-pinned, never hand-edited
+//
+// `all:` is required — without it embed skips files beginning with "." or "_",
+// and Monaco's build contains some.
+//
+//go:embed all:web
+var webAssets embed.FS
 
-//go:embed ide.css
-var ideCSSFile []byte
-
-//go:embed ide.js
-var ideJSFile []byte
-
-//go:embed ide-agent.css
-var ideAgentCSSFile []byte
-
-//go:embed ide-agent.js
-var ideAgentJSFile []byte
+// webFS roots the embedded assets at web/, so a request for "/css/app.css" maps
+// to "web/css/app.css" without any caller knowing about the prefix.
+var webFS = func() fs.FS {
+	sub, err := fs.Sub(webAssets, "web")
+	if err != nil {
+		// Unreachable unless the embed directive and this path disagree, which is
+		// a build-time mistake worth failing loudly on rather than serving 404s.
+		panic("embedded web assets are missing: " + err.Error())
+	}
+	return sub
+}()
 
 //go:embed all:builder-template
 var builderTemplateFS embed.FS
@@ -187,8 +205,39 @@ func output(container, cmd string, args ...string) (string, error) {
 	return string(out), err
 }
 
-func corsHeaders(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+// isLoopbackOrigin reports whether an Origin header names this machine. Shared by
+// the CORS layer and the WebSocket upgrade check so both agree on what "local"
+// means and neither can drift.
+func isLoopbackOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
+// corsHeaders echoes an allowlisted loopback Origin rather than sending "*".
+//
+// The wildcard was a real hole: this API has no authentication, so any website
+// the developer happened to visit while the IDE was running could call these
+// endpoints cross-origin AND READ THE RESPONSE — enumerate sandboxes, read
+// workspace files, write workspace files. The terminal WebSocket upgrade already
+// checked the origin properly (wsUpgrader.CheckOrigin); the REST surface didn't.
+//
+// A request with no Origin is same-origin or a non-browser client and gets no
+// CORS headers at all — it doesn't need them. Vary: Origin keeps a cached
+// response for one origin from being served to another.
+func corsHeaders(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Vary", "Origin")
+	if r == nil {
+		return
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" || !isLoopbackOrigin(origin) {
+		return
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
@@ -420,7 +469,7 @@ func startSandbox(repo string, instructions string, mode string) (Sandbox, error
 }
 
 func runHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -448,7 +497,7 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func listHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	w.Header().Set("Content-Type", "application/json")
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -456,7 +505,7 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func stopHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	container := strings.TrimPrefix(r.URL.Path, "/stop/")
 	mutex.Lock()
 	_, ok := sandboxes[container]
@@ -475,7 +524,7 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func logsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	corsHeaders(w, r)
 	w.Header().Set("Content-Type", "text/plain")
 	container := strings.TrimPrefix(r.URL.Path, "/logs/")
 	logsMutex.Lock()
@@ -532,7 +581,7 @@ func buildFileTree(root string) ([]FileNode, error) {
 }
 
 func filesHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -563,7 +612,7 @@ func filesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func fileReadHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -610,7 +659,7 @@ type FileSaveRequest struct {
 }
 
 func fileSaveHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -681,7 +730,7 @@ type SyncRequest struct {
 // auto-apply path writes host-side and never hits /file/save) into the container,
 // so the live preview reflects the change.
 func sandboxSyncHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -714,7 +763,7 @@ type FileCreateRequest struct {
 }
 
 func fileCreateHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -761,7 +810,7 @@ type FileDeleteRequest struct {
 }
 
 func fileDeleteHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -800,7 +849,7 @@ type FileRenameRequest struct {
 // fileRenameHandler moves/renames a file or folder within the workspace. Both
 // paths are resolved inside the workspace, so neither side can escape it.
 func fileRenameHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -844,7 +893,7 @@ func fileRenameHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func sandboxStatusHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -904,7 +953,7 @@ var uiEntryCandidates = []string{
 // workspace-relative path (forward slashes, matching the file-tree paths) plus
 // its directory, so the preview's "locate UI code" control can open/reveal it.
 func sandboxEntryHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -937,7 +986,7 @@ type TerminalExecRequest struct {
 }
 
 func terminalExecHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -962,28 +1011,45 @@ func terminalExecHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, out)
 }
 
-func ideCSSHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/css")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Write(ideCSSFile)
+// registerAssetMIMETypes pins the content types for everything we serve.
+//
+// Go resolves a file's Content-Type from the OS: on Windows that means the
+// registry, where any installer can leave .js or .css mapped to something wrong
+// (text/plain is the common one). The browser then refuses to execute the script
+// and the IDE loads as an unstyled page with no explanation. Registering them
+// explicitly makes the served type a property of this program, not the machine.
+func registerAssetMIMETypes() {
+	for ext, typ := range map[string]string{
+		".html":  "text/html; charset=utf-8",
+		".css":   "text/css; charset=utf-8",
+		".js":    "application/javascript; charset=utf-8",
+		".json":  "application/json",
+		".map":   "application/json",
+		".svg":   "image/svg+xml",
+		".woff2": "font/woff2",
+		".ttf":   "font/ttf",
+	} {
+		_ = mime.AddExtensionType(ext, typ)
+	}
 }
 
-func ideJSHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/javascript")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Write(ideJSFile)
-}
-
-func ideAgentCSSHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/css")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Write(ideAgentCSSFile)
-}
-
-func ideAgentJSHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/javascript")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Write(ideAgentJSFile)
+// staticHandler serves the whole front end from the single embedded filesystem.
+// http.FileServer already resolves "/" to index.html and returns 404 for a path
+// that isn't there; the only thing added here is the caching policy.
+func staticHandler() http.Handler {
+	files := http.FileServer(http.FS(webFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Our own assets are compiled into the binary, so a stale browser cache
+		// would silently shadow a fresh build — no-cache keeps a rebuild honest.
+		// Vendored assets are pinned by version in their path and never change
+		// under the same URL, so they can be cached hard.
+		if strings.HasPrefix(r.URL.Path, "/vendor/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		files.ServeHTTP(w, r)
+	})
 }
 
 func agentProxyHandler() http.Handler {
@@ -999,26 +1065,16 @@ func newAgentProxy(targetURL string) http.Handler {
 	target, _ := url.Parse(targetURL)
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		corsHeaders(w)
+		corsHeaders(w, r)
 		jsonError(w, "Agent service unavailable: "+err.Error(), 502)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		corsHeaders(w)
+		corsHeaders(w, r)
 		if r.Method == http.MethodOptions {
 			return
 		}
 		proxy.ServeHTTP(w, r)
 	})
-}
-
-func indexHandler(w http.ResponseWriter, r *http.Request) {
-	data, err := staticFiles.ReadFile("index.html")
-	if err != nil {
-		http.Error(w, "UI missing", 500)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html")
-	w.Write(data)
 }
 
 var wsUpgrader = websocket.Upgrader{
@@ -1027,12 +1083,7 @@ var wsUpgrader = websocket.Upgrader{
 		if origin == "" {
 			return true // non-browser client (e.g. CLI); no CSRF surface
 		}
-		u, err := url.Parse(origin)
-		if err != nil {
-			return false
-		}
-		host := u.Hostname()
-		return host == "127.0.0.1" || host == "localhost" || host == "::1"
+		return isLoopbackOrigin(origin)
 	},
 }
 
@@ -1251,14 +1302,14 @@ func loadEnv() {
 
 func main() {
 	loadEnv()
+	registerAssetMIMETypes()
 	go preheatImages()
 	go startAgentService()
 
-	http.HandleFunc("/ide.css", ideCSSHandler)
-	http.HandleFunc("/ide.js", ideJSHandler)
-	http.HandleFunc("/ide-agent.css", ideAgentCSSHandler)
-	http.HandleFunc("/ide-agent.js", ideAgentJSHandler)
-	http.HandleFunc("/", indexHandler)
+	// The front end: one handler, one embedded directory. Registered on "/" so it
+	// picks up everything the API routes below don't claim.
+	http.Handle("/", staticHandler())
+
 	http.HandleFunc("/run", runHandler)
 	http.HandleFunc("/sandboxes", listHandler)
 	http.HandleFunc("/stop/", stopHandler)

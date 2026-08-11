@@ -378,7 +378,7 @@ type GeneratedFile struct {
 // ─────────────────────────────────────────────
 
 func buildQuestionsHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -451,7 +451,7 @@ func defaultQuestions() []Question {
 // ─────────────────────────────────────────────
 
 func buildPRDHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -529,7 +529,7 @@ Keep features as user stories (max 8). Keep data_model to 2-4 entities. Keep it 
 // ─────────────────────────────────────────────
 
 func buildScaffoldHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
@@ -1244,7 +1244,7 @@ func postProcessCode(content string, filename string) string {
 // ─────────────────────────────────────────────
 
 func buildHistoryHandler(w http.ResponseWriter, r *http.Request) {
-	corsHeaders(w)
+	corsHeaders(w, r)
 	buildHistMu.Lock()
 	defer buildHistMu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
