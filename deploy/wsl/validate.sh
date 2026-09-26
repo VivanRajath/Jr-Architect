@@ -78,8 +78,11 @@ in_sandbox() { podman exec "$1" sh -c "$2" 2>&1; }
 
 phase "0. clean slate"
 # Node resolves "ws" from the script's own directory, so the probe has to sit beside agent-services/node_modules.
-cp "$HERE/wsclient.mjs" "$APP/agent-services/wsclient.mjs"
+cp "$HERE/wsclient.mjs" "$HERE/reload.mjs" "$APP/agent-services/"
 WSC="$APP/agent-services/wsclient.mjs"
+# The installed service owns :9000; it is paused for the run and restarted at the end.
+systemctl --user stop jrarch.service 2>/dev/null
+trap 'systemctl --user stop jr-validate 2>/dev/null; systemctl --user is-enabled -q jrarch.service 2>/dev/null && systemctl --user start jrarch.service' EXIT
 systemctl --user stop jr-validate 2>/dev/null
 podman rm -f -v $(podman ps -aq --filter label=jrarch.sandbox) >/dev/null 2>&1
 podman rmi -f sandbox-static >/dev/null 2>&1
@@ -120,6 +123,8 @@ echo "$BODY" | grep -q 'id="root"' && pass "preview through Cloudflare quick tun
 HA=${URL_A#https://}; HA=${HA%/}
 WSP=$(node "$WSC" "wss://$HA/ws" "https://$HA")
 case "$WSP" in ""|TIMEOUT*|ERROR*|HTTP*) fail "dev-server WebSocket through preview: $WSP" ;; *) pass "dev-server (HMR) WebSocket through preview: ${WSP:0:80}" ;; esac
+RL=$(node "$APP/agent-services/reload.mjs" "wss://$HA/ws" "https://$HA" "$B" "$(cookie "$JA")" "$CA" src/App.js)
+case "$RL" in RELOADED*) pass "live reload: saving through the IDE rebuilt the app (${RL:0:60})" ;; *) fail "live reload: $RL" ;; esac
 check "IDE API is not reachable through the preview host" bash -c "! curl -s -m 10 https://$HA/sandboxes | grep -q 'login required'"
 [ "$(code "$JA" POST /run "{\"repo\":\"$REPO_B\"}")" = 429 ] && pass "second sandbox for the same tester -> 429" || fail "per-user limit"
 
@@ -194,9 +199,11 @@ check "orphaned workdir with subuid-owned files removed (podman unshare)" test !
 
 phase "9. disk floor (simulated with an impossible floor, nothing is filled)"
 ALLOW_503=1 start_server JR_MIN_FREE_DISK_MB=99999999 JR_DISK_CHECK_PATHS=/mnt/c || fail "restart with disk floor"
-H=$(curl -s -w ' %{http_code}' $B/health)
-info "health under the floor: $H"
-echo "$H" | grep -q ' 503$' && pass "/health reports 503 below the floor" || info "/health stays 200 (its own threshold is 1GB, the floor only gates new sandboxes)"
+[ "$(curl -s -o /dev/null -w '%{http_code}' $B/health)" = 200 ] && pass "/health (liveness) stays 200 below the floor" || fail "/health went down for a capacity problem"
+H=$(curl -s -w ' %{http_code}' $B/ready | tr -d '
+')
+info "ready under the floor: $H"
+case "$H" in *"free-disk floor"*" 503") pass "/ready reports 503 with the disk-floor reason" ;; *) fail "/ready below the floor: $H" ;; esac
 WIN=$(df -BM --output=avail /mnt/c | tail -1 | tr -dc 0-9)
 HD=$(echo "${H% *}" | json "d.get('diskFreeMB')")
 [ -n "$HD" ] && [ $((HD - WIN)) -le 64 ] && [ $((WIN - HD)) -le 64 ] && pass "disk check reads the Windows drive (${HD}MB), not the sparse WSL disk" || fail "disk check reported ${HD}MB, Windows drive has ${WIN}MB"

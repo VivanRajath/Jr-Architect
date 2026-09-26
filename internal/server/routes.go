@@ -26,6 +26,7 @@ func Routes(mux *http.ServeMux, webFS fs.FS) {
 	mux.HandleFunc("/auth/logout", logoutHandler)
 	mux.HandleFunc("/auth/me", meHandler)
 	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/ready", readyHandler)
 
 	mux.HandleFunc("/run", runHandler)
 	mux.HandleFunc("/run/plan", runPlanHandler)

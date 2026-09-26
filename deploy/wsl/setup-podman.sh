@@ -33,6 +33,7 @@ if [ "$(stat -fc %T /sys/fs/cgroup)" != "cgroup2fs" ]; then
   die "cgroup v2 is required for sandbox resource limits. On WSL add this to %USERPROFILE%\\.wslconfig on Windows:
     [wsl2]
     kernelCommandLine = cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1
+    guiApplications = false
 then run 'wsl --shutdown' and rerun this script"
 fi
 

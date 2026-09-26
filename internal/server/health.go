@@ -14,8 +14,6 @@ import (
 	"sandbox/internal/core"
 )
 
-const minFreeDiskMB = 1024
-
 // Swapped in tests; each answers within a few seconds so a hung dependency cannot hang the probe.
 var (
 	dockerUp = func() bool {
@@ -41,24 +39,45 @@ var (
 	freeDiskMB = core.LowestFreeDiskMB
 )
 
-// Public on purpose: uptime monitors call it without a session. It reports counts, never names.
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	running := 0
+func activeSandboxes() int {
+	n := 0
 	for _, sb := range core.AllSandboxes() {
 		if sb.Status != core.StatusFailed {
-			running++
+			n++
 		}
 	}
-	d, a, disk := dockerUp(), agentUp(), freeDiskMB()
-	ok := d && a && (disk < 0 || disk >= minFreeDiskMB)
-	status := "ok"
-	if !ok {
-		status = "degraded"
+	return n
+}
+
+// Liveness: answering at all means the process is up, so this never fails for capacity or dependencies.
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{"status": "ok", "sandboxes": activeSandboxes()})
+}
+
+// Readiness: 503 with the reasons whenever a new sandbox would be refused or could not run.
+func readyHandler(w http.ResponseWriter, r *http.Request) {
+	d, a, disk, n := dockerUp(), agentUp(), freeDiskMB(), activeSandboxes()
+	var reasons []string
+	if !d {
+		reasons = append(reasons, "container engine unreachable")
+	}
+	if !a {
+		reasons = append(reasons, "agent service unreachable")
+	}
+	if core.Cfg.MinFreeDiskMB > 0 && disk >= 0 && disk < core.Cfg.MinFreeDiskMB {
+		reasons = append(reasons, "below the free-disk floor")
+	}
+	if core.Cfg.MaxSandboxes > 0 && n >= core.Cfg.MaxSandboxes {
+		reasons = append(reasons, "at sandbox capacity")
+	}
+	status := "ready"
+	if len(reasons) > 0 {
+		status = "not ready"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	writeJSON(w, map[string]interface{}{
-		"status": status, "docker": d, "agent": a, "diskFreeMB": disk,
-		"sandboxes": running, "maxSandboxes": core.Cfg.MaxSandboxes,
+		"status": status, "reasons": reasons, "engine": d, "agent": a, "diskFreeMB": disk,
+		"minFreeDiskMB": core.Cfg.MinFreeDiskMB, "sandboxes": n, "maxSandboxes": core.Cfg.MaxSandboxes,
 	})
 }
 

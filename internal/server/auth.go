@@ -183,7 +183,7 @@ func meHandler(w http.ResponseWriter, r *http.Request) {
 // Reachable without a session: the login page, what it loads, and the health probe.
 func isPublicPath(p string) bool {
 	switch p {
-	case "/login", "/login.html", "/auth/login", "/health", "/css/tokens.css", "/css/login.css", "/js/login.js", "/vendor/fonts/fonts.css":
+	case "/login", "/login.html", "/auth/login", "/health", "/ready", "/css/tokens.css", "/css/login.css", "/js/login.js", "/vendor/fonts/fonts.css":
 		return true
 	}
 	return strings.HasPrefix(p, "/vendor/fonts/")
