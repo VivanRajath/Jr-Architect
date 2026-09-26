@@ -4,12 +4,12 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { query } from "gitclaw";
+import { safeQuery as query } from "./agent-home.js";
 import { getModels } from "@mariozechner/pi-ai";
 
 // UI provider selector -> gitclaw model id, each overridable by env.
 export const PROVIDER_MODELS = {
-  groq: process.env.AGENT_MODEL_GROQ || "groq:llama-3.3-70b-versatile",
+  groq: process.env.AGENT_MODEL_GROQ || "groq:openai/gpt-oss-120b",
   anthropic: process.env.AGENT_MODEL_ANTHROPIC || "anthropic:claude-sonnet-4-5",
   openai: process.env.AGENT_MODEL_OPENAI || "openai:gpt-4.1",
   gemini: process.env.AGENT_MODEL_GEMINI || "google:gemini-2.0-flash",
@@ -67,7 +67,7 @@ if (!GROQ_KEYS.includes(process.env.GROQ_API_KEY) && GROQ_KEYS.length) {
 }
 if (GROQ_KEYS.length > 1) console.error(`[agent] Groq key pool: ${GROQ_KEYS.length} keys (round-robin per turn)`);
 
-// llama-3.3 intermittently emits a tool call Groq rejects; retrying on a fresh key
+// A model can intermittently emit a tool call Groq rejects; retrying on a fresh key
 // usually works. Only retried before any output escaped, so nothing is duplicated.
 export const AGENT_TOOLCALL_RETRIES = Number(process.env.AGENT_TOOLCALL_RETRIES) || 2;
 export const RETRIABLE_TURN_ERROR = /tool call validation|not in request\.tools|malformed|failed to call a function|failed_generation|adjust your prompt|could not parse|invalid (?:tool|function)|Connection error|rate limit|\b429\b|temporarily|ECONNRESET|fetch failed/i;

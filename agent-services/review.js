@@ -2,7 +2,7 @@
 // edit — same manifest, same packs, same deny-wins semantics, no IDE.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, appendFileSync, SAFE_GIT, assertOwnGitDir } from "./workspace-fs.js";
 import { join, resolve } from "node:path";
 
 import { resolvePipelineAgents, loadComplianceRules } from "./registry.js";
@@ -26,7 +26,7 @@ export const AUDIT_DIR = ".gitagent/audit";
 const SKIP_REVIEW = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum|Cargo\.lock|.*\.min\.(?:js|css)|.*\.(?:png|jpe?g|gif|svg|ico|woff2?|ttf|pdf|zip))$/i;
 
 function git(dir, args) {
-  return execFileSync("git", args, { cwd: dir, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync("git", [...SAFE_GIT, ...args], { cwd: dir, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 }
 
 // Files a range touches. Renames report the new path — the one that gets judged.
@@ -34,7 +34,7 @@ export function changedFiles(dir, base, head = "HEAD") {
   let out = "";
   try {
     // Three-dot: what head added since it diverged, which is what a PR proposes.
-    out = git(dir, ["diff", "--name-status", "--find-renames", `${base}...${head}`]);
+    out = git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "--find-renames", `${base}...${head}`]);
   } catch (e) {
     throw new Error(`could not diff ${base}...${head} — ${String(e.message).split("\n")[0]}`);
   }
@@ -99,23 +99,31 @@ function headSha(dir, head) {
 }
 
 // Printing and exit codes are the CLI's job, so this stays usable from a server.
-export async function reviewRange({ dir, base, head = "HEAD", message, onStep } = {}) {
+// `packs` overrides the manifest entirely and `audit:false` skips the log — both
+// exist for the registry preview, which asks "what WOULD this pack have done"
+// about an agent that holds no slot. A hypothetical must not leave evidence.
+export async function reviewRange({
+  dir, base, head = "HEAD", message, onStep, packs: packsOverride, audit = true,
+} = {}) {
   const step = (name, detail) => { if (onStep) onStep(name, detail); };
   const root = resolve(dir || ".");
   if (!existsSync(join(root, ".git"))) throw new Error(`${root} is not a git repository`);
+  assertOwnGitDir(root);
 
   const { blocks, skipped, total } = blocksForRange(root, base, head);
   step("Diff", `${total} changed file(s) · ${blocks.length} to review · ${skipped.length} skipped`);
   if (!blocks.length) {
-    return { ok: true, verdicts: [], denied: [], skipped, total, agents: null };
+    return { ok: true, reviewed: false, verdicts: [], denied: [], skipped, total, packs: [], unpinned: [] };
   }
 
   // Same manifest and clone-and-materialise path the IDE uses.
   let agents = { enabled: false, guardrails: [] };
-  try {
-    agents = await resolvePipelineAgents(root, onStep);
-  } catch (e) {
-    step("GitAgent", `registry unavailable (${e.message}) · code-level guards only`);
+  if (!packsOverride) {
+    try {
+      agents = await resolvePipelineAgents(root, onStep);
+    } catch (e) {
+      step("GitAgent", `registry unavailable (${e.message}) · code-level guards only`);
+    }
   }
 
   // Tier 1 — the code floor. No model, so it holds with no network and no keys.
@@ -124,9 +132,9 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
 
   // Tier 2 — the repo's own rules first, then pulled packs. Enforced identically.
   let reviewed = { allowed: floor.allowed, blocked: [], reviewed: false, why: "" };
-  const own = localPack(root);
+  const own = packsOverride ? null : localPack(root);
   if (own) step("Guardrails", `loaded the repo's own rules · ${LOCAL_PACK}`);
-  const packs = [
+  const packs = packsOverride || [
     ...(own ? [own] : []),
     ...(agents.guardrails || []).filter((g) => (g.rules || g.soul || "").trim()),
   ];
@@ -166,13 +174,13 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
     ...denied.map((b) => ({ path: b.path, decision: "deny", reason: b.reason || "" })),
   ].sort((a, b) => a.path.localeCompare(b.path));
 
-  const auditPath = writeAudit(root, verdicts.map((v) => ({
+  const auditPath = audit ? writeAudit(root, verdicts.map((v) => ({
     at, base, head, commit: sha,
     packs: packNames,
     file: v.path,
     decision: v.decision,
     reason: v.reason || undefined,
-  })));
+  }))) : null;
 
   return {
     ok: denied.length === 0,

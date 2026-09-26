@@ -1,4 +1,4 @@
-FROM nginx:alpine
+FROM docker.io/library/nginx:alpine
 
 # Static site content is mounted at runtime via Docker volume
 # The container path is /usr/share/nginx/html

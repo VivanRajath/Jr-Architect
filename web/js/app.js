@@ -1,3 +1,17 @@
+// Same-origin calls carry X-Jr for the server's CSRF check, and a lapsed session goes back to the login page.
+(() => {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+    if (url.origin !== location.origin) return nativeFetch(input, init);
+    const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+    headers.set('X-Jr', '1');
+    const res = await nativeFetch(input, { ...init, headers });
+    if (res.status === 401 && !url.pathname.startsWith('/auth/')) location.href = '/login';
+    return res;
+  };
+})();
+
 const API = '';
 let currentMode = 'prompt';
 
@@ -33,11 +47,18 @@ function runtimeTag(image) {
   if (!image) return '';
   const map = {
     'sandbox-python': ['python', 'tag-python'],
+    'sandbox-django': ['django', 'tag-python'],
     'sandbox-node': ['node', 'tag-node'],
+    'sandbox-react': ['react', 'tag-node'],
+    'sandbox-deno': ['deno', 'tag-node'],
+    'sandbox-bun': ['bun', 'tag-node'],
     'sandbox-go': ['go', 'tag-go'],
     'sandbox-static': ['static', 'tag-static'],
     'sandbox-rust': ['rust', 'tag-rust'],
     'sandbox-java': ['java', 'tag-java'],
+    'sandbox-php': ['php', 'tag-php'],
+    'sandbox-ruby': ['ruby', 'tag-ruby'],
+    'sandbox-dotnet': ['dotnet', 'tag-dotnet'],
   };
   const [label, cls] = map[image] || [image.replace('sandbox-', ''), 'tag-other'];
   return `<span class="runtime-tag ${cls}">${label}</span>`;
@@ -48,6 +69,9 @@ function setRunStatus(type, icon, html) {
   bar.className = `status-bar show ${type}`;
   bar.innerHTML = `<div class="status-icon">${icon}</div><div class="status-content">${html}</div>`;
 }
+
+// Repo state between /run (clone + scan) and /run/approve (build + start).
+let repoState = { container: null, repo: '', plan: null, mode: 'prompt' };
 
 async function runSandbox() {
   const repo = document.getElementById('repoInput').value.trim();
@@ -62,7 +86,7 @@ async function runSandbox() {
   const btn = document.getElementById('runBtn');
   btn.disabled = true;
   btn.closest('.card').classList.add('loading');
-  setRunStatus('loading', '', `Cloning and starting <strong>${repo}</strong>...<br><small style="color:var(--text3)">This may take up to 30 seconds.</small>`);
+  setRunStatus('loading', '', `Cloning <strong>${escHtml(repo)}</strong> and looking for services…`);
 
   try {
     const res = await fetch(`${API}/run`, {
@@ -70,41 +94,184 @@ async function runSandbox() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo, instructions, mode: currentMode }),
     });
-
     const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Unknown error');
 
-    if (!res.ok) throw new Error(data.error || data || 'Unknown error');
+    repoState = { container: data.container, repo, plan: null, mode: data.mode || currentMode };
+    await waitForPlan(data.container);
+  } catch (err) {
+    setRunStatus('error', '', `<strong>Error:</strong> ${escHtml(err.message)}`);
+    toast(err.message, 'error');
+    btn.disabled = false;
+    btn.closest('.card').classList.remove('loading');
+  }
+}
 
-    const url = data.url;
-    const container = data.container;
-    const mode = data.mode || currentMode;
+// The clone runs server-side, so poll until the scan produces something to approve.
+async function waitForPlan(container) {
+  for (let i = 0; i < 150; i++) {
+    const res = await fetch(`${API}/run/plan?container=${encodeURIComponent(container)}`);
+    if (res.ok) {
+      const d = await res.json();
+      if (d.status === 'failed') throw new Error(d.error || 'detection failed');
+      if (d.plan && d.status === 'awaiting-approval') {
+        repoState.plan = d.plan;
+        renderApproval(d.plan);
+        return;
+      }
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  throw new Error('timed out waiting for the repo scan');
+}
 
-    if (mode === 'dev') {
-      // Dev Mode: switch to IDE
+function renderApproval(plan) {
+  const btn = document.getElementById('runBtn');
+  btn.disabled = false;
+  btn.closest('.card').classList.remove('loading');
+
+  const rows = plan.services.map((s, i) => `
+    <div class="svc-row">
+      <label class="svc-toggle">
+        <input type="checkbox" id="svc-on-${i}" ${s.enabled ? 'checked' : ''}>
+      </label>
+      <div class="svc-main">
+        <div class="svc-head">
+          <span class="svc-name">${escHtml(s.name)}</span>
+          ${runtimeTag('sandbox-' + s.stack)}
+          <span class="svc-framework">${escHtml(s.framework)}</span>
+          ${s.primary ? '<span class="svc-primary">preview</span>' : ''}
+        </div>
+        <div class="svc-path">${escHtml(s.dir || 'repo root')}/</div>
+        <input class="svc-cmd" id="svc-cmd-${i}" value="${escHtml([s.install, s.start].filter(Boolean).join(' && '))}">
+      </div>
+      <input class="svc-port" id="svc-port-${i}" type="number" min="0" max="65535"
+             value="${s.port || ''}" placeholder="none" title="Container port">
+    </div>`).join('');
+
+  const buildNote = plan.needsBuild
+    ? `<div class="svc-build-note">Needs building — first repo using this toolchain combination, later ones reuse it.</div>`
+    : `<div class="svc-build-note ready">Already built — starts immediately.</div>`;
+
+  setRunStatus('info', '', `
+    <strong>Found ${plan.services.length} service${plan.services.length === 1 ? '' : 's'}</strong>
+    in ${escHtml(repoState.repo)}
+    <div class="svc-list">${rows}</div>
+    <div class="svc-image"><span>Image</span><code>${escHtml(plan.image)}</code></div>
+    ${buildNote}
+    <div class="link-row" style="margin-top:10px;">
+      <button class="btn btn-sm btn-ghost" onclick="cancelApproval()">Cancel</button>
+      <button class="btn btn-sm btn-success" onclick="approveRun()">Approve &amp; Build</button>
+    </div>
+  `);
+}
+
+function cancelApproval() {
+  if (repoState.container) fetch(`${API}/stop/${repoState.container}`, { method: 'POST' }).catch(() => {});
+  repoState = { container: null, repo: '', plan: null, mode: 'prompt' };
+  const bar = document.getElementById('runStatus');
+  bar.className = 'status-bar';
+  bar.innerHTML = '';
+}
+
+// Everything the user changed on the card, sent back as edits to the stored plan.
+function collectEdits(plan) {
+  return plan.services.map((s, i) => {
+    const cmd = document.getElementById(`svc-cmd-${i}`).value.trim();
+    const original = [s.install, s.start].filter(Boolean).join(' && ');
+    const edit = {
+      name: s.name,
+      enabled: document.getElementById(`svc-on-${i}`).checked,
+      port: parseInt(document.getElementById(`svc-port-${i}`).value, 10) || 0,
+    };
+    // Only sent when actually edited, so the install/start split the scanner
+    // worked out survives untouched rows.
+    if (cmd !== original) {
+      edit.install = '';
+      edit.start = cmd;
+    }
+    return edit;
+  });
+}
+
+async function approveRun() {
+  const plan = repoState.plan;
+  if (!plan) return;
+  const edits = collectEdits(plan);
+  if (!edits.some(e => e.enabled)) {
+    toast('Enable at least one service', 'error');
+    return;
+  }
+
+  const n = edits.filter(e => e.enabled).length;
+  setRunStatus('loading', '', `Building and starting ${n} service${n === 1 ? '' : 's'}…
+    <div class="link-row" style="margin-top:8px;">
+      <button class="btn btn-sm btn-ghost" onclick="viewLogs('${repoState.container}')">Logs</button>
+    </div>`);
+
+  try {
+    const res = await fetch(`${API}/run/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ container: repoState.container, services: edits }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'approval failed');
+    pollUntilRunning(repoState.container);
+  } catch (err) {
+    setRunStatus('error', '', `<strong>Error:</strong> ${escHtml(err.message)}`);
+    toast(err.message, 'error');
+  }
+}
+
+async function pollUntilRunning(container) {
+  for (let i = 0; i < 600; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    let d;
+    try {
+      const res = await fetch(`${API}/sandbox/status?container=${encodeURIComponent(container)}`);
+      if (!res.ok) continue;
+      d = await res.json();
+    } catch (_) { continue; }
+
+    if (d.status === 'failed' || d.status === 'exited' || d.status === 'dead') {
+      setRunStatus('error', '', `<strong>Failed:</strong> ${escHtml(d.error || 'see the logs')}
+        <div class="link-row" style="margin-top:8px;">
+          <button class="btn btn-sm btn-ghost" onclick="viewLogs('${container}')">Logs</button>
+        </div>`);
+      toast('Sandbox failed to start', 'error');
+      return;
+    }
+
+    // Dev Mode opens the IDE as soon as the container is up rather than waiting for
+    // the port to answer: an install takes minutes, and the IDE has its own
+    // "starting your app" state to sit in meanwhile.
+    if (repoState.mode === 'dev' && (d.status === 'running' || d.status === 'starting')) {
       setRunStatus('success', '', `<strong>Sandbox is live!</strong> Opening IDE...`);
       toast('Sandbox launched — opening IDE!');
-      initIDE(container, repo, data.port || data.url.split(':').pop());
-    } else {
-      // Prompt Mode: stay on landing, show URL
+      initIDE(container, repoState.repo, d.port);
+      loadSandboxes();
+      return;
+    }
+    if (d.status !== 'running') continue;
+
+    {
+      const links = (d.services || []).filter(s => s.url).map(s =>
+        `<a class="sandbox-link" href="${s.url}" target="_blank" rel="noopener">${escHtml(s.name)} ${escHtml(s.url)}</a>`
+      ).join('');
       setRunStatus('success', '', `
         <strong>Sandbox is live!</strong><br>
         <div class="link-row" style="margin-top:8px;">
-          <a class="sandbox-link" href="${url}" target="_blank" rel="noopener">${url}</a>
-          ${url.includes('8000') ? `<a class="sandbox-link" href="${url}/docs" target="_blank" rel="noopener">/docs</a>` : ''}
+          ${links}
           <button class="btn btn-sm btn-ghost" onclick="viewLogs('${container}')">Logs</button>
-          <button class="btn btn-sm btn-success" onclick="initIDE('${container}','${repo}', '${data.port || data.url.split(':').pop()}')">Open IDE</button>
+          <button class="btn btn-sm btn-success" onclick="initIDE('${container}','${escHtml(repoState.repo)}', '${d.port}')">Open IDE</button>
         </div>
         <small style="color:var(--text3); display:block; margin-top:6px;">Auto-destroys in 10 min -- Container: ${container}</small>
       `);
       toast('Sandbox launched!');
     }
-    setTimeout(loadSandboxes, 1000);
-  } catch (err) {
-    setRunStatus('error', '', `<strong>Error:</strong> ${err.message}`);
-    toast(err.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.closest('.card').classList.remove('loading');
+    loadSandboxes();
+    return;
   }
 }
 
@@ -127,21 +294,26 @@ async function loadSandboxes() {
       return;
     }
 
-    list.innerHTML = items.map(sb => `
+    list.innerHTML = items.map(sb => {
+      // Nothing is listening before approval, so Open/IDE would lead nowhere.
+      const pending = ['detecting', 'awaiting-approval', 'building', 'failed'].includes(sb.status);
+      const open = pending ? '' : `
+          ${sb.url ? `<a class="btn btn-sm btn-ghost" href="${escHtml(sb.url)}" target="_blank" rel="noopener">Open ↗</a>` : ''}
+          <button class="btn btn-sm btn-success" onclick="initIDE('${sb.container}','${sb.repo}', '${sb.port}')">IDE</button>`;
+      return `
       <div class="sandbox-item">
-        <div class="status-dot"></div>
+        <div class="status-dot${pending ? ' pending' : ''}"></div>
         <div class="sandbox-info">
           <div class="sandbox-name">${sb.container}</div>
           <div class="sandbox-repo">${sb.repo}</div>
+          ${pending ? `<div class="sandbox-status">${escHtml(sb.status)}</div>` : ''}
         </div>
-        <div class="sandbox-actions">
-          <a class="btn btn-sm btn-ghost" href="http://127.0.0.1:${sb.port}" target="_blank" rel="noopener">Open ↗</a>
-          <button class="btn btn-sm btn-success" onclick="initIDE('${sb.container}','${sb.repo}', '${sb.port}')">IDE</button>
+        <div class="sandbox-actions">${open}
           <button class="btn btn-sm btn-ghost" onclick="viewLogs('${sb.container}')">Logs</button>
           <button class="btn btn-sm btn-danger" onclick="stopSandbox('${sb.container}')">Stop</button>
         </div>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
   } catch (err) {
     console.error('Failed to load sandboxes:', err);
   }
@@ -598,10 +770,9 @@ function pollBuildLogs() {
 
 function openBuiltApp() {
   if (!builderState.container) return;
-  const port = builderState.url ? builderState.url.split(':').pop() : '';
   closeBuilder();
   setTimeout(() => {
-    initIDE(builderState.container, `generated:${builderState.prd.name}`, port);
+    initIDE(builderState.container, `generated:${builderState.prd.name}`, '');
   }, 150);
 }
 
@@ -632,7 +803,7 @@ async function loadBuildHistory() {
           </div>
           <div class="${statusDot}"></div>
           ${r.status === 'ready' && r.container ? `
-            <button class="btn btn-sm btn-success" onclick="initIDE('${r.container}','generated:${escHtml(r.appName)}','${(r.url || '').split(':').pop()}')">
+            <button class="btn btn-sm btn-success" onclick="initIDE('${r.container}','generated:${escHtml(r.appName)}','')">
               IDE
             </button>` : ''}
         </div>`;

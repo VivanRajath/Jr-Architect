@@ -5,9 +5,9 @@
 // The prompt is .gitagent/skills/knowledge-builder/SKILL.md — a file in the repo,
 // so nothing here hardcodes what the document says.
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync } from "./workspace-fs.js";
 import { join, extname, basename } from "node:path";
-import { query } from "gitclaw";
+import { safeQuery as query } from "./agent-home.js";
 import { loadSkill, KNOWLEDGE_SKILL, parseFrontmatter } from "./registry.js";
 
 export const KNOWLEDGE_DIR = "knowledge";
@@ -324,7 +324,7 @@ export async function buildKnowledge({ dir, model, agent, maxTokens, onStep } = 
 
   const basePrompt = buildKnowledgePrompt(persona, inputs, basename(dir));
 
-  // llama-3.3 drops sections non-deterministically. Retries are cheap here (own
+  // Small models drop sections non-deterministically. Retries are cheap here (own
   // key), and naming the specific fault moves it where repeating the ask does not.
   const attempts = Math.max(1, (Number(process.env.KNOWLEDGE_RETRIES) || 2) + 1);
   const faults = (d) => missingSections(d).length + invalidPaths(dir, d).length;

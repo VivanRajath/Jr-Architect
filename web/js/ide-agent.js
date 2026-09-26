@@ -188,6 +188,139 @@ function clearLoad(t) {
 
 // Render the layered edit pipeline's result as a clickable file list. Rows for
 // edited/created files open a before/after diff on click.
+// The card under a blocked file: which pack refused it, the rule in its own words,
+// a link to the file that rule lives in, and the three replies.
+function renderDenial(f) {
+  const d = f.denial || {};
+  const box = document.createElement('div');
+  box.className = 'agent-denial';
+
+  const head = document.createElement('div');
+  head.className = 'agent-denial-head';
+  head.innerHTML =
+    `<span class="agent-denial-pack">${escapeHtml(d.pack || 'guardrail')}</span>` +
+    (d.tier === 'floor' ? '<span class="ga-badge">code floor</span>' : '');
+  box.appendChild(head);
+
+  const quote = document.createElement('div');
+  quote.className = 'agent-denial-why';
+  quote.textContent = d.why || 'denied';
+  box.appendChild(quote);
+
+  if (d.rulePath) {
+    const link = document.createElement('button');
+    link.className = 'ga-chip';
+    link.textContent = d.rulePath.split('/').pop();
+    link.title = `Open ${d.rulePath}`;
+    link.onclick = () => gaOpenEditor(d.rulePath, d.pack || 'Guardrail rules',
+      'The rules this guardrail enforces. Edit them and the next review uses your version.');
+    box.appendChild(link);
+  }
+
+  // The code floor is not a judgement call — there is nothing to argue with, so it
+  // gets no Fix/Override, only the explanation.
+  if (!d.answerable || !f.proposed) return box;
+
+  const actions = document.createElement('div');
+  actions.className = 'agent-denial-actions';
+
+  const fix = document.createElement('button');
+  fix.className = 'ga-btn primary';
+  fix.textContent = 'Fix it';
+  fix.title = 'Send the rule back to the developer and try again';
+  fix.onclick = () => guardrailFix(f, box);
+  actions.appendChild(fix);
+
+  const over = document.createElement('button');
+  over.className = 'ga-btn';
+  over.textContent = 'Override…';
+  over.title = 'Apply anyway, with a reason on the record';
+  over.onclick = () => guardrailOverride(f, box);
+  actions.appendChild(over);
+
+  box.appendChild(actions);
+  return box;
+}
+
+async function guardrailFix(f, box) {
+  const btns = box.querySelectorAll('button');
+  btns.forEach((b) => { b.disabled = true; });
+  const status = document.createElement('div');
+  status.className = 'agent-denial-status';
+  status.textContent = 'Rewriting to satisfy the rule…';
+  box.appendChild(status);
+  try {
+    const res = await fetch('/agent/guardrail/fix', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        container: IDE.container, path: f.path, proposed: f.proposed,
+        why: f.denial.why, pack: f.denial.pack,
+        provider: (document.getElementById('agent-provider') || {}).value,
+      }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      status.className = 'agent-denial-status ok';
+      status.textContent = 'Fixed and applied — the guardrail approved the rewrite.';
+      showToast(`${f.path} fixed and applied`, 'success');
+      if (typeof loadFileTree === 'function') loadFileTree();
+      revealChangesInPreview();
+    } else if (data.reason === 'still-denied') {
+      status.className = 'agent-denial-status bad';
+      status.textContent = `Still denied — ${data.denial || 'the rewrite violates the rule too'}`;
+      btns.forEach((b) => { b.disabled = false; });
+    } else {
+      status.className = 'agent-denial-status bad';
+      status.textContent = data.error || 'The developer produced no usable rewrite.';
+      btns.forEach((b) => { b.disabled = false; });
+    }
+  } catch {
+    status.className = 'agent-denial-status bad';
+    status.textContent = 'Could not reach the agent service.';
+    btns.forEach((b) => { b.disabled = false; });
+  }
+}
+
+async function guardrailOverride(f, box) {
+  // A reason is required, not optional: an unexplained override is
+  // indistinguishable from having no guardrail at all.
+  const reason = prompt(
+    `Override the guardrail on ${f.path}?\n\n` +
+    `Denied for: ${f.denial.why}\n\n` +
+    `This is recorded in .gitagent/audit/. Why is it acceptable here?`, '');
+  if (reason == null) return;
+  if (reason.trim().length < 8) { showToast('An override needs a reason', 'error'); return; }
+
+  const btns = box.querySelectorAll('button');
+  btns.forEach((b) => { b.disabled = true; });
+  try {
+    const res = await fetch('/agent/guardrail/override', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        container: IDE.container, path: f.path, proposed: f.proposed,
+        reason, pack: f.denial.pack, why: f.denial.why,
+      }),
+    });
+    const data = await res.json();
+    const status = document.createElement('div');
+    status.className = 'agent-denial-status ' + (data.ok ? 'ok' : 'bad');
+    status.textContent = data.ok
+      ? `Overridden and applied — recorded in ${data.audit}`
+      : (data.error || 'Could not override');
+    box.appendChild(status);
+    if (data.ok) {
+      showToast(`${f.path} overridden`, 'success');
+      if (typeof loadFileTree === 'function') loadFileTree();
+      revealChangesInPreview();
+    } else {
+      btns.forEach((b) => { b.disabled = false; });
+    }
+  } catch {
+    showToast('Could not reach the agent service', 'error');
+    btns.forEach((b) => { b.disabled = false; });
+  }
+}
+
 function renderEditSummary(container, files, turn) {
   // Use the shared escaper rather than a local textContent/innerHTML trick — the
   // local one had the same quote-blind behaviour that made the registry XSS possible.
@@ -222,6 +355,9 @@ function renderEditSummary(container, files, turn) {
       };
     }
     wrap.appendChild(row);
+    // A denial used to end here. Now it expands into the rule that fired and the
+    // three things you can actually do about it.
+    if (f.denial) wrap.appendChild(renderDenial(f));
   });
 
   // Explicit control so the change is visible and confirmable: re-apply the new
@@ -274,7 +410,7 @@ async function applyEditSummary(changed, btn) {
   if (typeof loadFileTree === 'function') loadFileTree();
   // /file/save already wrote each file through the container, so the recompile is
   // in flight — just reveal it (reloads now and after the recompile settles).
-  revealChangesInPreview(changed.map(f => f.path), true);
+  revealChangesInPreview();
   showToast(`Applied ${ok} change${ok === 1 ? '' : 's'} · preview updating`, ok ? 'success' : 'error');
   if (btn) { btn.disabled = false; btn.textContent = orig; }
 }
@@ -302,33 +438,22 @@ function finishAgentTurn() {
     loadFileTree();
     // Reload editors for files the agent touched (without clobbering unsaved edits).
     t.changedPaths.forEach(reloadOpenFileFromDisk);
-    // Reveal the change in the preview. The agent's auto-apply writes files
-    // host-side, which the containerized dev server won't notice on its own, so
-    // touch them inside the container to force a recompile, then reload.
+    // The agent service writes each change through the container before it
+    // reports it, so the recompile is already in flight — just reload.
     if (!IDE.previewUserClosed) {
-      revealChangesInPreview(Array.from(t.changedPaths), false);
+      revealChangesInPreview();
     } else {
       const preview = document.getElementById('ide-preview-panel');
-      if (preview && preview.style.display !== 'none') revealChangesInPreview(Array.from(t.changedPaths), false);
+      if (preview && preview.style.display !== 'none') revealChangesInPreview();
     }
   }
 }
 
-// Make an edit actually show in the live preview. The dev server runs inside the
-// sandbox and doesn't reliably see host-side writes (Docker bind-mount cache), so
-// we ask the backend to re-write the changed files THROUGH the container (unless
-// they were just saved via /file/save, which already does this) — that forces the
-// dev server to recompile. Then we reload the preview twice: once now (catches HMR
-// / an already-compiled route) and once after the recompile settles.
-async function revealChangesInPreview(paths, alreadySynced) {
-  try {
-    if (!alreadySynced && Array.isArray(paths) && paths.length && IDE.container) {
-      await fetch('/sandbox/sync', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ container: IDE.container, paths }),
-      });
-    }
-  } catch { /* best-effort */ }
+// Every writer (file save, edit pipeline, agent write tool, guardrail fix/override)
+// now writes THROUGH the container server-side, so the recompile is already in
+// flight by the time we get here. Reload twice: now (catches HMR / an
+// already-compiled route) and again once the recompile settles.
+function revealChangesInPreview() {
   if (typeof showChangesInPreview !== 'function') return;
   showChangesInPreview();
   setTimeout(() => showChangesInPreview(), 2200);
@@ -1276,6 +1401,64 @@ function gaDetailHTML(ref) {
   </div>`;
 }
 
+// What this pack WOULD have blocked in recent history — the answer to "can I trust
+// it" before it starts governing your work.
+function gaPreviewHTML(ref) {
+  const p = (GitAgent.previews || {})[ref];
+  if (!p) return '';
+  if (p.loading) return `<div class="ga-preview"><span class="ga-spin"></span><span class="ga-sub">Replaying your last ${p.commits || 10} commits…</span></div>`;
+  if (p.error) return `<div class="ga-preview"><span class="ga-know-text bad">${escapeHtml(p.error)}</span></div>`;
+  if (p.unusable) return `<div class="ga-preview"><span class="ga-sub">${escapeHtml(p.unusable)}</span></div>`;
+
+  const denied = (p.verdicts || []).filter((v) => v.decision === 'deny');
+  const allowed = (p.verdicts || []).filter((v) => v.decision === 'allow').length;
+  const rows = denied.map((v) => `
+    <div class="ga-preview-row">
+      <span class="ga-preview-x">✗</span>
+      <span class="ga-preview-path">${escapeHtml(v.path)}</span>
+      <span class="ga-sub">${escapeHtml(v.reason.replace(/^[^:]+:\s*/, ''))}</span>
+    </div>`).join('');
+  return `<div class="ga-preview">
+    <div class="ga-preview-head">
+      <b class="${denied.length ? 'bad' : 'ok'}">would block ${denied.length}</b>
+      <span class="ga-sub">· allow ${allowed} · across ${p.commits} commits</span>
+    </div>
+    ${rows || '<div class="ga-sub">Nothing in recent history violates this pack.</div>'}
+  </div>`;
+}
+
+async function gaPreview(ref) {
+  GitAgent.previews = GitAgent.previews || {};
+  GitAgent.previews[ref] = { loading: true, commits: 10 };
+  gaRender();
+  try {
+    const res = await fetch('/agent/registry/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ container: IDE.container, ref, commits: 10 }),
+    });
+    const data = await res.json();
+    GitAgent.previews[ref] = res.ok ? data : { error: data.error || 'Preview failed' };
+  } catch {
+    GitAgent.previews[ref] = { error: 'Could not reach the agent service' };
+  }
+  gaRender();
+}
+
+// Pin a pack at whatever it is running now, so the rules stop being "upstream today".
+async function gaPin(ref) {
+  try {
+    const res = await fetch('/agent/gitagent/pin', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ container: IDE.container, ref }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.error || 'Could not pin', 'error'); return; }
+    GitAgent.status = data.status;
+    showToast(`Pinned ${ref} at ${(data.pin || '').slice(0, 7)}`, 'success');
+    gaRender();
+  } catch { showToast('Could not reach the agent service', 'error'); }
+}
+
 async function gaToggleDetail(ref) {
   if (GitAgent.detail === ref) { GitAgent.detail = null; gaRender(); return; }
   GitAgent.detail = ref;
@@ -1509,16 +1692,19 @@ async function doctorRunCommand(command, btn, card) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ container: IDE.container, command }),
     });
-    const out = await res.text();
+    // The exit code, not the HTTP status, says whether the command worked.
+    const r = await res.json().catch(() => ({ output: '', exitCode: -1 }));
+    const ok = res.ok && r.exitCode === 0;
     if (card) {
       const pre = document.createElement('pre');
       pre.className = 'doctor-output';
-      pre.textContent = (out || '').slice(-2000);
+      const note = r.timedOut ? '\n[timed out]' : (ok ? '' : `\n[exit ${r.exitCode}]`);
+      pre.textContent = (r.output || '(no output)').slice(-2000) + note;
       card.appendChild(pre);
       scrollAgent(document.getElementById('agent-messages'));
     }
-    showToast(res.ok ? 'Command finished' : 'Command failed', res.ok ? 'success' : 'error');
-    if (btn) { btn.textContent = res.ok ? 'Ran' : 'Retry'; btn.disabled = !res.ok; }
+    showToast(ok ? 'Command finished' : 'Command failed', ok ? 'success' : 'error');
+    if (btn) { btn.textContent = ok ? 'Ran' : 'Retry'; btn.disabled = ok; }
     // Re-arm the doctor and reset the grace window so a follow-up check can run.
     IDE.doctorRan = false; IDE.launchedAt = Date.now();
   } catch (e) {

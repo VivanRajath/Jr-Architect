@@ -54,14 +54,14 @@ When a repository is launched, a **repo map** is generated at clone time (stack,
 
 One design choice is worth calling out, because it is what makes the agent reliable on a free model.
 
-The default model on the free tier (`llama-3.3-70b-versatile`) is a capable text generator but a weak tool-caller. So the Ask and Edit paths keep the model out of the function-calling loop entirely. The backend does the retrieval and applies the changes; the model only produces text.
+The default model on the free tier (`openai/gpt-oss-120b`) is a capable text generator, but free-tier models are uneven tool-callers. So the Ask and Edit paths keep the model out of the function-calling loop entirely. The backend does the retrieval and applies the changes; the model only produces text.
 
 - **Ask** searches the repo, injects the results (and the entry file for overview questions), and the model writes a grounded answer. It is instructed to answer concretely, not to describe what it would look at.
 - **Edit** runs a layered pipeline, **Orchestrator to Complexity Classifier to Guardrails to Developer**, and streams each layer's decision into the chat as a step. The Orchestrator routes the message (free heuristics for obvious cases, a one-word LLM classifier for genuinely ambiguous ones like "rebrand the heading"). Guardrails block edits to sensitive files and secret injection. The Developer layer returns each changed file's complete updated contents, and the backend overwrites the file and reloads the preview. The result is a clickable file list; click any file to open a before/after diff in a modal.
 
 Whole-file rewrite is used instead of SEARCH/REPLACE patch markers because a weak model garbles fragile patch syntax, and a reply truncated by the output cap simply fails to parse (no half-written file is ever saved). When a stronger provider is configured, the tool-driven Agent loop is available instead (`AGENT_EDIT_STRATEGY=agentic`).
 
-For the reasoning behind each of these decisions, and the trade-offs against frontier-model tools like Cursor and Antigravity, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For the reasoning behind each of these decisions, and the trade-offs against frontier-model tools like Cursor and Antigravity, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## GitAgent integration
 
@@ -114,7 +114,7 @@ An honest note on scope: the `system-prompt` adapter runs an agent's identity, r
 
 A short tour of the harder problems this project solves, and how.
 
-- **Reliable editing on a free-tier model.** `llama-3.3-70b-versatile` is a strong text generator but a weak tool-caller, so the Ask and Edit paths keep the model out of the function-calling loop entirely. The backend retrieves and applies; the model only writes text. Whole-file rewrites replace fragile patch syntax, so a reply truncated by the token cap fails to parse instead of corrupting a file.
+- **Reliable editing on a free-tier model.** `openai/gpt-oss-120b` is a strong text generator but only an adequate tool-caller under a tight token budget, so the Ask and Edit paths keep the model out of the function-calling loop entirely. The backend retrieves and applies; the model only writes text. Whole-file rewrites replace fragile patch syntax, so a reply truncated by the token cap fails to parse instead of corrupting a file.
 - **The repo's agent runs without the IDE.** `.gitagent/` only meant something while Jr Architect had the workspace open, which made a pulled compliance pack a suggestion: it blocked the agent and waved through the human typing the same line. `node agent-services/cli.js review --base main` now runs the *identical* pipeline against a git range — same manifest, same pulled packs, same code-level floor, same deny-wins semantics — with no IDE, no server and no Docker. Exit code 1 when a pack denies, which is all a merge gate needs; a GitHub Action is included. Every decision appends to `.gitagent/audit/<date>.jsonl`, so "which pack, which rule, which file, which commit" is answerable later and the answer is a git diff. A file that passed only because the review could not run is logged as `unreviewed`, never `allow` — an audit trail that overstates a check is worse than none.
 - **A knowledge agent with its own budget.** A file list is not knowledge: it says where things are and nothing about what they do, so an agent asked to summarise a repo could only paraphrase a directory listing. The Knowledge slot fixes that with an agent that runs once when a workspace opens, on a **dedicated API key** taken out of the chat pool, and reads roughly four times what a chat turn can afford — then writes `knowledge/overview.md`, which every later turn is grounded in. Its prompt is `.gitagent/skills/knowledge-builder/SKILL.md`: a real file you can open, edit and commit, not a hidden system prompt. Any registry agent can replace it. Every path the document cites is checked against the repo, and anything unverifiable is recorded in the file's own frontmatter rather than quietly presented as fact.
 - **Agentic retrieval instead of vector RAG.** A repo map (stack, layout, entry point, exported symbols) is generated at clone time and injected into every turn, with a ripgrep-style `search_code` tool for `file:line` snippets. Chosen deliberately: the free tier has no embeddings API, and for code, structure locates things more precisely than semantic similarity.
@@ -154,7 +154,7 @@ Requires Docker Desktop (running), Go 1.22+, and Node.js.
    ```
    The server starts on port 9000 and launches the agent service on 8001 automatically. Open http://localhost:9000.
 
-Run `go run .`, not `go run main.go`. The package spans several files, and naming one file compiles it in isolation and fails. Full setup, build, and troubleshooting steps are in the [runbook](runbook.md).
+Run `go run .`, not `go run main.go`. Naming one file compiles it in isolation and never links the `internal/` packages. Full setup, build, and troubleshooting steps are in the [runbook](docs/runbook.md).
 
 ## Configuration
 
@@ -180,12 +180,12 @@ web/vendor/         Monaco, xterm, and the webfonts — no CDN, works offline
 The whole directory is embedded into the Go binary with one `//go:embed all:web`
 and served by one `http.FileServer`, so **any front-end change requires a rebuild**
 (`go run .` or `go build`) and a browser hard-refresh (Ctrl+Shift+R). Adding a
-stylesheet means adding a file — `main.go` does not need to know about it.
+stylesheet means adding a file — no Go source needs to know about it.
 
 ## Documentation
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)**: the end-to-end system design, covering the component breakdown, request lifecycle, runtime detection, the agent pipeline, the API reference, the port and network map, and the security model.
-- **[runbook.md](runbook.md)**: step-by-step setup, build, and run instructions, plus troubleshooting for the common errors (Docker, PowerShell execution, Groq rate limits, the agent panel, and live preview).
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: the end-to-end system design, covering the component breakdown, request lifecycle, runtime detection, the agent pipeline, the API reference, the port and network map, and the security model.
+- **[docs/runbook.md](docs/runbook.md)**: step-by-step setup, build, and run instructions, plus troubleshooting for the common errors (Docker, PowerShell execution, Groq rate limits, the agent panel, and live preview).
 
 ## Note
 

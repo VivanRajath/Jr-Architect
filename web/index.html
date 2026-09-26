@@ -229,7 +229,7 @@
           <div class="builder-header-icon"><svg style="vertical-align:middle" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg></div>
           <div class="builder-header-text">
             <div class="builder-header-title" id="builderHeaderTitle">What do you want to build?</div>
-            <div class="builder-header-sub" id="builderHeaderSub">Powered by Groq + llama-3.3-70b</div>
+            <div class="builder-header-sub" id="builderHeaderSub">Powered by Groq + gpt-oss-120b</div>
           </div>
           <button class="builder-close" onclick="closeBuilder()">&times;</button>
         </div>
@@ -491,6 +491,8 @@
       <div class="ide-preview-panel" id="ide-preview-panel" style="display:none;">
         <div class="preview-header">
           <span>Live Preview</span>
+          <select id="preview-service" class="preview-service" style="display:none;"
+            onchange="switchPreviewService(this.value)" title="Which service the preview shows"></select>
           <div style="display:flex;gap:4px;">
             <button onclick="refreshPreview()" title="Refresh"><svg width="12" height="12" viewBox="0 0 24 24"
                 fill="none" stroke="currentColor" stroke-width="2">

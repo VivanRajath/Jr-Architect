@@ -11,8 +11,14 @@ export function guardEditBlocks(blocks) {
   const allowed = [];
   const blocked = [];
   for (const b of blocks) {
-    if (GUARD_SENSITIVE_PATH.test(b.path)) { blocked.push({ ...b, reason: "sensitive/generated file" }); continue; }
-    if (GUARD_SECRET.test(b.content)) { blocked.push({ ...b, reason: "would introduce a secret" }); continue; }
+    if (GUARD_SENSITIVE_PATH.test(b.path)) {
+      blocked.push({ ...b, tier: "floor", pack: "code floor", why: "sensitive or generated file", reason: "sensitive/generated file" });
+      continue;
+    }
+    if (GUARD_SECRET.test(b.content)) {
+      blocked.push({ ...b, tier: "floor", pack: "code floor", why: "would commit a secret", reason: "would introduce a secret" });
+      continue;
+    }
     allowed.push(b);
   }
   return { allowed, blocked };
@@ -51,7 +57,11 @@ export function buildGuardrailPrompt(rules, message, blocks) {
 
 // Only an explicit allow:false denies: a dropped verdict row must not take an
 // unrelated file down with it.
-export function applyGuardrailVerdicts(blocks, verdicts, names) {
+//
+// A blocked entry carries `pack` and `why` separately from the display `reason`.
+// The UI needs them apart to answer a denial: which pack to name, which rule file
+// to open, and what constraint to hand back to the Developer on a retry.
+export function applyGuardrailVerdicts(blocks, verdicts, names, pack) {
   const denied = new Map();
   for (const v of verdicts) {
     if (!v || v.allow !== false) continue;                  // only an explicit false denies
@@ -60,8 +70,8 @@ export function applyGuardrailVerdicts(blocks, verdicts, names) {
   const allowed = [];
   const blocked = [];
   for (const b of blocks) {
-    const reason = denied.get(b.path);
-    if (reason) blocked.push({ ...b, reason: `${names}: ${reason}` });
+    const why = denied.get(b.path);
+    if (why) blocked.push({ ...b, pack: pack || names, why, tier: "pack", reason: `${names}: ${why}` });
     else allowed.push(b);
   }
   return { allowed, blocked };
@@ -97,7 +107,10 @@ export async function reviewEditBlocks(dir, agents, message, blocks, model, step
       step("Guardrails", `review failed (${why}) · blocking (fail-closed)`);
       return {
         allowed: [],
-        blocked: blocks.map((b) => ({ ...b, reason: `guardrail review unavailable (${why})` })),
+        blocked: blocks.map((b) => ({
+          ...b, tier: "pack", pack: names, why: `review unavailable (${why})`,
+          reason: `guardrail review unavailable (${why})`,
+        })),
         reviewed: false, why,
       };
     }
@@ -105,7 +118,7 @@ export async function reviewEditBlocks(dir, agents, message, blocks, model, step
     return { allowed: blocks, blocked: [], reviewed: false, why };
   }
 
-  const out = applyGuardrailVerdicts(blocks, verdicts, names);
+  const out = applyGuardrailVerdicts(blocks, verdicts, names, rules.length === 1 ? rules[0].name : names);
   step("Guardrails", out.blocked.length ? `denied ${out.blocked.length} file(s)` : "approved");
   return { ...out, reviewed: true };
 }

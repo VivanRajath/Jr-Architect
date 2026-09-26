@@ -1,4 +1,4 @@
-FROM oven/bun
+FROM docker.io/oven/bun
 
 WORKDIR /workspace
 

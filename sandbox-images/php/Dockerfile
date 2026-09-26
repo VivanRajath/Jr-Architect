@@ -1,4 +1,4 @@
-FROM php:8.3-cli
+FROM docker.io/library/php:8.3-cli
 
 WORKDIR /workspace
 

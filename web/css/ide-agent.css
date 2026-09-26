@@ -1246,3 +1246,85 @@
 }
 .agent-edit-apply:hover:not(:disabled) { filter: brightness(1.08); }
 .agent-edit-apply:disabled { opacity: .6; cursor: default; }
+
+/* ── A denial you can answer ─────────────────────────────────────────────── */
+.agent-denial {
+  margin: var(--sp-1) 0 var(--sp-3) 26px;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--red);
+  border-radius: var(--r-md);
+  background: var(--red-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.agent-denial-head { display: flex; align-items: center; gap: var(--sp-2); }
+
+.agent-denial-pack {
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  color: var(--red);
+  font-weight: 600;
+}
+
+/* The rule in its own words — the thing that was missing from every denial. */
+.agent-denial-why {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.agent-denial-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-1); }
+
+.agent-denial-status { font-size: var(--fs-2xs); color: var(--text3); }
+.agent-denial-status.ok { color: var(--green); }
+.agent-denial-status.bad { color: var(--red); }
+
+.ga-btn.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+.ga-btn.primary:hover:not(:disabled) { filter: brightness(1.08); color: var(--on-accent); }
+.ga-btn:disabled { opacity: .55; cursor: default; }
+
+/* ── Pack state: unpinned / drifted / pinned ─────────────────────────────── */
+.ga-slot-state { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding-left: 14px; }
+
+.ga-badge.warn {
+  color: var(--yellow);
+  border-color: var(--yellow);
+  background: var(--yellow-soft);
+  cursor: help;
+}
+button.ga-badge.warn { cursor: pointer; }
+
+/* ── What a pack would have blocked in recent history ────────────────────── */
+.ga-preview {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.ga-preview-head { display: flex; align-items: baseline; gap: var(--sp-2); font-size: var(--fs-sm); }
+.ga-preview-head .bad { color: var(--red); }
+.ga-preview-head .ok { color: var(--green); }
+
+.ga-preview-row { display: flex; align-items: baseline; gap: var(--sp-2); font-size: var(--fs-2xs); min-width: 0; }
+.ga-preview-x { color: var(--red); flex-shrink: 0; }
+.ga-preview-path {
+  font-family: var(--mono);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+  max-width: 45%;
+}

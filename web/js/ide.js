@@ -5,6 +5,8 @@ const IDE = {
   // Live-preview readiness state
   appReady: false, previewPending: false, previewAutoOpened: false, previewUserClosed: false,
   framework: '', uiEntry: null, saveRefreshTimer: null,
+  // Multi-service containers: every service with a port, and the one previewed
+  services: [], activeService: '',
   // Multi-terminal support
   terminals: [],
   activeTerminalId: null,
@@ -21,6 +23,7 @@ function initIDE(containerId, repoUrl, port) {
   // Reset per-sandbox state
   IDE.appReady = false; IDE.previewPending = false; IDE.previewAutoOpened = false;
   IDE.previewUserClosed = false; IDE.framework = ''; IDE.uiEntry = null;
+  IDE.services = []; IDE.activeService = '';
   IDE.launchedAt = Date.now(); IDE.doctorRan = false; IDE.doctorRunning = false;
   document.body.classList.add('ide-mode');
   document.getElementById('landing-page').style.display = 'none';
@@ -617,7 +620,12 @@ async function saveCurrentFile() {
 // reload the iframe on save — a full reload re-reads files from disk and shows the
 // change.
 function hmrStack() {
-  return /next\.js|CRA/i.test(IDE.framework || '');
+  return /next\.js|CRA/i.test(activeFramework());
+}
+
+// Django's runserver restarts on a .py change, so a 400ms reload lands mid-restart.
+function saveReloadDelay() {
+  return /django/i.test(activeFramework()) ? 1800 : 400;
 }
 
 function reflectSaveInPreview() {
@@ -626,7 +634,7 @@ function reflectSaveInPreview() {
   if (!panel || panel.style.display === 'none' || !IDE.appReady) return;
   // Debounce so a burst of saves triggers a single reload.
   clearTimeout(IDE.saveRefreshTimer);
-  IDE.saveRefreshTimer = setTimeout(() => refreshPreview(), 400);
+  IDE.saveRefreshTimer = setTimeout(() => refreshPreview(), saveReloadDelay());
 }
 
 // ── Multi-Terminal Support ──
@@ -831,6 +839,7 @@ async function fetchStatus() {
     const res = await fetch(`/sandbox/status?container=${IDE.container}`);
     const data = await res.json();
     IDE.previewUrl = data.url;
+    if (Array.isArray(data.services)) syncServiceSwitcher(data.services);
 
     // The backend reports "running" only once the app's port actually answers
     // (see sandboxStatusHandler), so it's a real readiness signal. Drive the
@@ -922,13 +931,56 @@ function onAppReady() {
   if (open && IDE.previewPending) loadPreviewIntoIframe();
 }
 
+// A merged-image container runs every service at once, so the preview has to say
+// which one it is showing. Hidden until there is a choice to make.
+function syncServiceSwitcher(services) {
+  const sel = document.getElementById('preview-service');
+  if (!sel) return;
+  IDE.services = services.filter(s => s.url);
+  if (IDE.services.length < 2) {
+    sel.style.display = 'none';
+    return;
+  }
+  if (!IDE.services.some(s => s.name === IDE.activeService)) {
+    IDE.activeService = (IDE.services.find(s => s.primary) || IDE.services[0]).name;
+  }
+  const sig = IDE.services.map(s => s.name + ':' + s.port).join(',');
+  if (sel.dataset.sig !== sig) {
+    sel.innerHTML = IDE.services
+      .map(s => `<option value="${esc(s.name)}">${esc(s.name)} :${s.port}</option>`).join('');
+    sel.dataset.sig = sig;
+  }
+  sel.value = IDE.activeService;
+  sel.style.display = '';
+  // Polling would otherwise put the primary service's url back every 5s.
+  const active = IDE.services.find(s => s.name === IDE.activeService);
+  if (active) { IDE.port = active.port; IDE.previewUrl = active.url; }
+}
+
+function switchPreviewService(name) {
+  const svc = (IDE.services || []).find(s => s.name === name);
+  if (!svc) return;
+  IDE.activeService = svc.name;
+  IDE.port = svc.port;
+  IDE.previewUrl = svc.url;
+  IDE.uiEntry = null; // the locate control pointed at the other service's code
+  refreshPreview();
+}
+
+// The preview shows one service, and that is the one whose reload rules apply.
+function activeFramework() {
+  const svc = (IDE.services || []).find(s => s.name === IDE.activeService);
+  return (svc && svc.framework) || IDE.framework || '';
+}
+
 function loadPreviewIntoIframe() {
   IDE.previewPending = false;
   hidePreviewLoading();
   const iframe = document.getElementById('preview-iframe');
-  const url = IDE.previewUrl || `http://127.0.0.1:${IDE.port}`;
+  // The server hands out the preview URL; until it has, keep showing the loader.
+  if (!IDE.previewUrl) { showPreviewLoading(); IDE.previewPending = true; return; }
   iframe.style.display = '';
-  iframe.src = url;
+  iframe.src = IDE.previewUrl;
 }
 
 function showPreviewLoading() {
@@ -976,10 +1028,15 @@ function showChangesInPreview() {
     IDE.previewPending = true;
     return false;
   }
+  if (!IDE.previewUrl) {
+    showPreviewLoading();
+    IDE.previewPending = true;
+    return false;
+  }
   IDE.previewPending = false;
   hidePreviewLoading();
   const iframe = document.getElementById('preview-iframe');
-  const base = IDE.previewUrl || `http://127.0.0.1:${IDE.port}`;
+  const base = IDE.previewUrl;
   const bust = (base.includes('?') ? '&' : '?') + '_jr=' + Date.now();
   iframe.style.display = '';
   iframe.src = base + bust;
@@ -992,7 +1049,8 @@ function showChangesInPreview() {
 async function getUIEntry() {
   if (IDE.uiEntry) return IDE.uiEntry;
   try {
-    const res = await fetch(`/sandbox/entry?container=${IDE.container}`);
+    const svc = IDE.activeService ? `&service=${encodeURIComponent(IDE.activeService)}` : '';
+    const res = await fetch(`/sandbox/entry?container=${IDE.container}${svc}`);
     if (!res.ok) return null;
     IDE.uiEntry = await res.json(); // { path, dir }
     // Enrich the tooltip with the actual path once we know it.
@@ -1038,8 +1096,7 @@ function revealInTree(path) {
 }
 
 function openPreviewExternal() {
-  const url = IDE.previewUrl || `http://127.0.0.1:${IDE.port}`;
-  window.open(url, '_blank');
+  if (IDE.previewUrl) window.open(IDE.previewUrl, '_blank', 'noopener');
 }
 
 // ── Panel Tabs ──

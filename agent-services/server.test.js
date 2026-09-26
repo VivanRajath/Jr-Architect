@@ -13,7 +13,7 @@ process.env.GITAGENT_REGISTRY_INDEX = "http://127.0.0.1:1/index.json";
 const {
   resolveTurnMode, heuristicMode, extractSearchTerms, parseEditBlocks, applyEditBlocks, gatherEditFiles,
   classifyEditComplexity, guardEditBlocks, buildGuardrailPrompt, reviewEditBlocks,
-  applyGuardrailVerdicts, server,
+  applyGuardrailVerdicts, makeShellTool, writtenPathFrom, server,
 } = await import("./server.js");
 
 // Drive the real routes over HTTP. Calling a route's helpers proves the helpers
@@ -27,7 +27,7 @@ async function withServer(fn) {
 }
 
 test("POST /agent/gitagent/install pulls an agent and reports what it wrote", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pull-route-"));
+  const dir = mkdtempSync(join(tmpdir(), "sandbox-pull-route-"));
   writeFileSync(join(dir, "agent.yaml"), "name: demo\n");
   // A pre-seeded clone: installAgent sees .git and reuses it, so no network.
   mkdirSync(join(dir, ".gitagent", "agents", "acme__guard", ".git"), { recursive: true });
@@ -76,7 +76,7 @@ test("reviewEditBlocks is a no-op when no guardrail agent is installed", async (
   const steps = [];
   // No model call happens on this path — if one did, the test would hang/throw.
   const out = await reviewEditBlocks("/tmp", { enabled: true, guardrails: [] }, "make it dark",
-    blocks, "groq:llama-3.3-70b-versatile", (n, d) => steps.push(`${n}:${d}`));
+    blocks, "groq:openai/gpt-oss-120b", (n, d) => steps.push(`${n}:${d}`));
   assert.deepEqual(out.allowed, blocks);
   assert.deepEqual(out.blocked, []);
   // `reviewed:false` is the contract that keeps the audit trail honest: these files
@@ -86,7 +86,7 @@ test("reviewEditBlocks is a no-op when no guardrail agent is installed", async (
   assert.equal(steps.length, 0);
   // An agent that ships no rules and no soul is likewise nothing to enforce.
   const empty = await reviewEditBlocks("/tmp", { enabled: true, guardrails: [{ name: "a/b", rules: "", soul: "" }] },
-    "make it dark", blocks, "groq:llama-3.3-70b-versatile", () => {});
+    "make it dark", blocks, "groq:openai/gpt-oss-120b", () => {});
   assert.deepEqual(empty.allowed, blocks);
   assert.equal(empty.reviewed, false);
 });
@@ -247,4 +247,21 @@ test("gatherEditFiles includes the UI entry and style files for a theme change",
   const paths = files.map((f) => f.path);
   assert.ok(paths.includes("app/page.tsx"));
   assert.ok(paths.includes("app/globals.css"));
+});
+
+test("writtenPathFrom finds the target of a write tool call", () => {
+  assert.equal(writtenPathFrom({ path: "app/page.tsx" }), "app/page.tsx");
+  assert.equal(writtenPathFrom({ file_path: "./src/App.tsx" }), "src/App.tsx");
+  assert.equal(writtenPathFrom({ filename: "  a.md  " }), "a.md");
+  assert.equal(writtenPathFrom({ content: "no path here" }), null);
+  assert.equal(writtenPathFrom(null), null);
+});
+
+// The agent's shell must never fall back to the host: an unbound session gets a
+// refusal, not a command run outside the container.
+test("makeShellTool refuses to run without a bound container", async () => {
+  const tool = makeShellTool(null);
+  assert.equal(tool.name, "shell");
+  assert.match(await tool.handler({ command: "ls" }), /no sandbox container/);
+  assert.match(await makeShellTool("c1").handler({ command: "   " }), /empty command/);
 });

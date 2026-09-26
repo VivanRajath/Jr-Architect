@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jr Architect - Beta sign in</title>
+  <link rel="stylesheet" href="/css/tokens.css" />
+  <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="/css/login.css" />
+</head>
+<body>
+  <main class="login">
+    <h1 class="login-title">Jr Architect</h1>
+    <p class="login-sub">Private beta. Enter the beta code you were given.</p>
+    <form id="login-form" class="login-form">
+      <label for="code" class="login-label">Beta code</label>
+      <input id="code" name="code" type="password" autocomplete="current-password" required autofocus class="login-input" />
+      <button type="submit" class="login-btn">Continue</button>
+      <p id="login-error" class="login-error" role="alert"></p>
+    </form>
+  </main>
+  <script src="/js/login.js"></script>
+</body>
+</html>

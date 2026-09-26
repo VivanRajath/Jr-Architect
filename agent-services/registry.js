@@ -14,7 +14,9 @@
 // Everything here is best-effort and non-fatal: any failure (no network, bad
 // manifest, clone error) degrades to the built-in personas so edits never break.
 
-import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync } from "node:fs";
+import { mkdtempSync, cpSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync, SAFE_GIT, isSafePath } from "./workspace-fs.js";
 import { join, resolve, dirname, sep } from "node:path";
 import { execFile } from "node:child_process";
 
@@ -369,7 +371,7 @@ function installPath(dir, entry) {
 // the empty directory reads as "installed" and the persona silently loads blank.
 function gitIn(cwd, args) {
   return new Promise((res, rej) => {
-    execFile("git", args, { cwd, timeout: CLONE_TIMEOUT_MS }, (err, stdout) =>
+    execFile("git", [...SAFE_GIT, ...args], { cwd, timeout: CLONE_TIMEOUT_MS }, (err, stdout) =>
       err ? rej(err) : res(String(stdout).trim()));
   });
 }
@@ -408,17 +410,24 @@ export async function installAgent(dir, entry, pin) {
     rmSync(target, { recursive: true, force: true });
   }
   mkdirSync(resolve(dir, AGENTS_DIR), { recursive: true });
+  // Checkout runs outside the bind mount, where the sandbox cannot rewrite .git/config mid-install.
+  const staging = mkdtempSync(join(tmpdir(), "jr-agent-clone-"));
+  const cloned = join(staging, "repo");
   try {
-    await gitIn(process.cwd(), ["clone", "--depth", "1", entry.repository, target]);
+    await gitIn(staging, ["clone", "--depth", "1", entry.repository, cloned]);
     if (pin) {
       // A --depth 1 clone has only the tip, so an older commit has to be fetched
       // explicitly before it can be checked out.
-      await gitIn(target, ["fetch", "--depth", "1", "origin", pin]);
-      await gitIn(target, ["checkout", "--detach", "FETCH_HEAD"]);
+      await gitIn(cloned, ["fetch", "--depth", "1", "origin", pin]);
+      await gitIn(cloned, ["checkout", "--detach", "FETCH_HEAD"]);
     }
+    if (!isSafePath(target)) throw new Error("install path leaves the workspace");
+    cpSync(cloned, target, { recursive: true, verbatimSymlinks: true });
   } catch (e) {
     rmSync(target, { recursive: true, force: true });
     throw e;
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
   }
   return { path: target, sha: await headSha(target) };
 }

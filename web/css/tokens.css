@@ -72,6 +72,9 @@
   --tag-static: #B45309;
   --tag-rust: #C2410C;
   --tag-java: #DC2626;
+  --tag-php: #4F46E5;
+  --tag-ruby: #BE123C;
+  --tag-dotnet: #7C3AED;
   --tag-other: #475569;
 
   /* Self-hosted (vendor/fonts/fonts.css); the stacks are the fallback while
@@ -190,6 +193,9 @@ body.dark-mode {
   --tag-static: #FBBF24;
   --tag-rust: #FB923C;
   --tag-java: #F87171;
+  --tag-php: #818CF8;
+  --tag-ruby: #FB7185;
+  --tag-dotnet: #C084FC;
   --tag-other: #94A3B8;
 }
 

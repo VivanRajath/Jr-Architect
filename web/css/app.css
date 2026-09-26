@@ -512,6 +512,153 @@ textarea:focus {
   border: 1px solid color-mix(in srgb, var(--tag-other) 26%, transparent);
 }
 
+.tag-php {
+  background: color-mix(in srgb, var(--tag-php) 14%, transparent);
+  color: var(--tag-php);
+  border: 1px solid color-mix(in srgb, var(--tag-php) 26%, transparent);
+}
+
+.tag-ruby {
+  background: color-mix(in srgb, var(--tag-ruby) 14%, transparent);
+  color: var(--tag-ruby);
+  border: 1px solid color-mix(in srgb, var(--tag-ruby) 26%, transparent);
+}
+
+.tag-dotnet {
+  background: color-mix(in srgb, var(--tag-dotnet) 14%, transparent);
+  color: var(--tag-dotnet);
+  border: 1px solid color-mix(in srgb, var(--tag-dotnet) 26%, transparent);
+}
+
+/* Approval card: one row per detected service. */
+.status-bar.info {
+  border-color: var(--border);
+  background: var(--surface2);
+}
+
+.svc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 8px;
+}
+
+.svc-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.svc-row:has(.svc-toggle input:not(:checked)) {
+  opacity: 0.5;
+}
+
+.svc-toggle {
+  display: flex;
+  align-items: center;
+  margin-top: 3px;
+}
+
+.svc-toggle input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.svc-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.svc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.svc-name {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.svc-framework {
+  font-size: var(--fs-xs);
+  color: var(--text3);
+}
+
+.svc-primary {
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent2);
+  border: 1px solid var(--accent-glow);
+}
+
+.svc-path {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text3);
+  margin: 3px 0 6px;
+}
+
+.svc-cmd {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  padding: 6px 8px;
+}
+
+.svc-port {
+  width: 72px;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  padding: 6px 8px;
+  text-align: center;
+}
+
+.svc-image {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text3);
+}
+
+.svc-image code {
+  font-family: var(--mono);
+  color: var(--text2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+}
+
+.svc-build-note {
+  font-size: var(--fs-xs);
+  color: var(--text2);
+  background: var(--yellow-soft);
+  border-radius: var(--r-sm);
+  padding: 6px 8px;
+  margin-top: 6px;
+}
+
+.svc-build-note.ready {
+  background: var(--green-soft);
+}
+
+
 /* Sandboxes list */
 .sandboxes-header {
   display: flex;
@@ -623,6 +770,19 @@ textarea:focus {
   flex-shrink: 0;
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
   animation: pulse-green 2s infinite;
+}
+
+/* Cloned but not built yet — no port answers, so it must not read as live. */
+.status-dot.pending {
+  background: var(--yellow);
+  box-shadow: none;
+  animation: none;
+}
+
+.sandbox-status {
+  font-size: var(--fs-xs);
+  color: var(--text3);
+  text-transform: capitalize;
 }
 
 @keyframes pulse-green {
