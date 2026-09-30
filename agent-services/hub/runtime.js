@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { safeQuery as query } from "../agent-home.js";
 import {
-  parseJsonLoose, PROVIDER_MODELS, providerHasKey, rotateGroqKey, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR, friendlyModelError,
+  parseJsonLoose, PROVIDER_MODELS, providerHasKey, rotateGroqKey, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR, friendlyModelError, dropRejectedKey,
 } from "../llm.js";
 import { GUARD_SECRET } from "../guardrails.js";
 import {
@@ -370,6 +370,7 @@ export async function drive(run, defIn, ctx) {
       return settle(run, def, value, errs, ctx);
     }
     const err = res.error || "the model returned nothing";
+    if (res.error && dropRejectedKey(model, res.error)) { attempt--; continue; }
     if (attempt < AGENT_TOOLCALL_RETRIES && (RETRIABLE_TURN_ERROR.test(err) || !res.error)) continue;
     return finish(run, "failed", { error: friendlyModelError(err) }, ctx);
   }

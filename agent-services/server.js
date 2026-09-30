@@ -25,7 +25,7 @@ import { reviewRange, writeAudit, AUDIT_DIR } from "./review.js";
 import {
   PROVIDER_MODELS, providerHasKey, NO_KEY_MESSAGE, KNOWLEDGE_KEY,
   rotateGroqKey, collectTurn, stripFences, parseJsonLoose,
-  AGENT_MAX_OUTPUT_TOKENS, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR,
+  AGENT_MAX_OUTPUT_TOKENS, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR, dropRejectedKey, pruneGroqKeys,
   firstAvailableProvider, modelFor,
 } from "./llm.js";
 import {
@@ -597,6 +597,7 @@ async function streamTurn(ws, queryOptions, model, container) {
       turnError = err.message || String(err);
     }
 
+    if (turnError && !streamedAny && dropRejectedKey(model, turnError)) continue;
     if (turnError && !streamedAny && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(turnError)) {
       attempt++;
       console.log(`[agent] retrying turn (attempt ${attempt + 1}/${AGENT_TOOLCALL_RETRIES + 1}) after: ${String(turnError).slice(0, 100)}`);
@@ -1242,6 +1243,7 @@ app.post("/agent/chat", async (req, res) => {
     } catch (err) {
       errText = err.message || String(err);
     }
+    if (!fullResponse && errText && dropRejectedKey(model, errText)) { attempt--; continue; }
     if (!fullResponse && errText && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(errText)) {
       console.log(`[agent] REST retry (attempt ${attempt + 2}/${AGENT_TOOLCALL_RETRIES + 1}) after: ${String(errText).slice(0, 100)}`);
       continue;
@@ -1959,6 +1961,7 @@ if (!process.env.AGENT_NO_LISTEN) {
   // so nothing legitimate ever needed an external interface.
   // AGENT_HOST is an explicit opt-out for anyone deliberately running it remotely.
   const HOST = process.env.AGENT_HOST || "127.0.0.1";
+  pruneGroqKeys().catch((e) => console.error("[agent] could not check the Groq keys:", e.message));
   server.listen(PORT, HOST, () => {
     console.log(`[agent-service] running on ${HOST}:${PORT}`);
   });

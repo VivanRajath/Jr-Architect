@@ -43,7 +43,7 @@ const ALL_GROQ_KEYS = (() => {
 })();
 
 // One key is reserved for the knowledge builder — see knowledge-worker.js.
-export const KNOWLEDGE_KEY =
+export let KNOWLEDGE_KEY =
   (process.env.GROQ_KNOWLEDGE_API_KEY || "").trim() ||
   (ALL_GROQ_KEYS.length >= 2 ? ALL_GROQ_KEYS[ALL_GROQ_KEYS.length - 1] : "");
 
@@ -71,6 +71,40 @@ if (GROQ_KEYS.length > 1) console.error(`[agent] Groq key pool: ${GROQ_KEYS.leng
 // usually works. Only retried before any output escaped, so nothing is duplicated.
 export const AGENT_TOOLCALL_RETRIES = Number(process.env.AGENT_TOOLCALL_RETRIES) || 2;
 export const RETRIABLE_TURN_ERROR = /tool call validation|tool choice is none|not in request\.tools|malformed|failed to call a function|failed_generation|adjust your prompt|could not parse|invalid (?:tool|function)|Connection error|rate limit|\b429\b|temporarily|ECONNRESET|fetch failed/i;
+
+const REJECTED_KEY = /\b401\b|invalid api key|incorrect api key/i;
+
+// A key the provider rejects leaves the pool for the rest of the process, so one stale .env line cannot fail every other turn.
+export function dropRejectedKey(model, error) {
+  if (!model || !model.startsWith("groq:") || !REJECTED_KEY.test(String(error || ""))) return false;
+  const i = GROQ_KEYS.indexOf(process.env.GROQ_API_KEY);
+  if (i < 0 || GROQ_KEYS.length < 2) return false;
+  GROQ_KEYS.splice(i, 1);
+  process.env.GROQ_API_KEY = GROQ_KEYS[0];
+  console.error(`[agent] dropped a Groq key the provider rejected (401) · ${GROQ_KEYS.length} left`);
+  return true;
+}
+
+// Checks every configured key once at startup (each goes only to Groq) and keeps the ones that work.
+export async function pruneGroqKeys(fetchImpl = fetch) {
+  const all = [...new Set([...GROQ_KEYS, KNOWLEDGE_KEY].filter(Boolean))];
+  if (all.length < 2) return { kept: all.length, dropped: 0 };
+  const status = await Promise.all(all.map((k) => fetchImpl("https://api.groq.com/openai/v1/models", {
+    headers: { Authorization: `Bearer ${k}` }, signal: AbortSignal.timeout(10000),
+  }).then((r) => r.status).catch(() => 0)));
+  // Only a definite 401 condemns a key; a network failure proves nothing.
+  const dead = new Set(all.filter((_, i) => status[i] === 401));
+  if (!dead.size || dead.size === all.length) {
+    if (dead.size) console.error("[agent] every Groq key was rejected (401); check GROQ_API_KEY in .env");
+    return { kept: all.length - dead.size, dropped: 0 };
+  }
+  for (let i = GROQ_KEYS.length - 1; i >= 0; i--) if (dead.has(GROQ_KEYS[i])) GROQ_KEYS.splice(i, 1);
+  if (dead.has(KNOWLEDGE_KEY)) KNOWLEDGE_KEY = GROQ_KEYS.length >= 2 ? GROQ_KEYS.pop() : "";
+  if (!GROQ_KEYS.length && KNOWLEDGE_KEY) GROQ_KEYS.push(KNOWLEDGE_KEY);
+  if (!GROQ_KEYS.includes(process.env.GROQ_API_KEY)) process.env.GROQ_API_KEY = GROQ_KEYS[0];
+  console.error(`[agent] dropped ${dead.size} Groq key(s) that the provider rejected (401); ${GROQ_KEYS.length} left for chat${KNOWLEDGE_KEY ? ", 1 for the knowledge builder" : ""}. Remove them from .env.`);
+  return { kept: GROQ_KEYS.length + (KNOWLEDGE_KEY && !GROQ_KEYS.includes(KNOWLEDGE_KEY) ? 1 : 0), dropped: dead.size };
+}
 
 let groqCursor = 0;
 // Land consecutive requests on different orgs' TPM buckets.
@@ -151,6 +185,7 @@ export async function collectTurn(queryOptions, model) {
     } catch (err) {
       error = err.message || String(err);
     }
+    if (!text && error && dropRejectedKey(model, error)) { attempt--; continue; }
     if (!text && error && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(error)) continue;
     return { text, error };
   }
