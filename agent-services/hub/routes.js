@@ -7,7 +7,7 @@ import {
 } from "./definition.js";
 import * as store from "./store.js";
 import { startRun, prepareRun, drive, resolveApproval, sendCallback, publicRun, checkPublicUrl, privateNetAllowed } from "./runtime.js";
-import { draftAgent, refineAgent } from "./builder.js";
+import { draftAgent, refineAgent, followUpQuestions } from "./builder.js";
 import * as wf from "./workflows.js";
 
 const MAX_ACTIVE_RUNS_PER_USER = 2;
@@ -222,6 +222,12 @@ export function createHubRouter({ allowLLM }) {
     if (description.length < 15) throw new HttpError(400, "Describe what the agent should do in a sentence or two.");
     spendLLM(user);
     res.json(await tracked(user, () => draftAgent(description, req.body.provider)));
+  });
+
+  r.post("/builder/questions", async (req, res) => {
+    const user = userOf(req);
+    spendLLM(user);
+    res.json(await tracked(user, () => followUpQuestions(req.body && req.body.answers, req.body && req.body.provider)));
   });
 
   r.post("/refine", async (req, res) => {

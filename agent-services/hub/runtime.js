@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { safeQuery as query } from "../agent-home.js";
 import {
-  parseJsonLoose, PROVIDER_MODELS, providerHasKey, rotateGroqKey, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR,
+  parseJsonLoose, PROVIDER_MODELS, providerHasKey, rotateGroqKey, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR, friendlyModelError,
 } from "../llm.js";
 import { GUARD_SECRET } from "../guardrails.js";
 import {
@@ -371,7 +371,7 @@ export async function drive(run, defIn, ctx) {
     }
     const err = res.error || "the model returned nothing";
     if (attempt < AGENT_TOOLCALL_RETRIES && (RETRIABLE_TURN_ERROR.test(err) || !res.error)) continue;
-    return finish(run, "failed", { error: `model error: ${err.slice(0, 200)}` }, ctx);
+    return finish(run, "failed", { error: friendlyModelError(err) }, ctx);
   }
 }
 
@@ -380,7 +380,7 @@ export function prepareRun(defIn, input, ctx) {
   const def = normalizeDefinition(defIn);
   const run = newRun(def, input, ctx);
   const v = validateDefinition(def);
-  if (!v.ok) return finish(run, "failed", { error: `agent is not valid: ${v.errors.map((e) => e.message).join("; ")}` }, ctx);
+  if (!v.ok) return finish(run, "failed", { error: `Finish the agent first: ${v.errors.map((e) => e.message).join(" ")}` }, ctx);
   const inputErrs = checkInput(def, input);
   if (inputErrs.length) return finish(run, "rejected", { error: `input rejected: ${inputErrs.join("; ")}` }, ctx);
   step(run, "start", `Running ${def.identity.name} v${def.version}`);

@@ -82,9 +82,17 @@ function toggleTheme() {
 const hubChannel = 'BroadcastChannel' in window ? new BroadcastChannel('jr-agent-hub') : null;
 
 function openStudio(agentId) {
-  const url = agentId ? `/studio.html?agent=${encodeURIComponent(agentId)}` : '/studio.html';
-  const w = window.open(url, agentId ? `jr-studio-${agentId}` : '_blank', 'width=1360,height=900');
-  if (!w) location.href = url;
+  location.href = agentId ? `/studio.html?agent=${encodeURIComponent(agentId)}` : '/studio.html';
+}
+
+// Back goes to the page that opened this one when it is ours (Hub, home, a workflow), else to the Hub.
+function goBack(fallback = '/hub.html') {
+  let target = fallback;
+  try {
+    const ref = new URL(document.referrer);
+    if (ref.origin === location.origin && ref.pathname !== location.pathname) target = ref.pathname + ref.search + ref.hash;
+  } catch { /* no referrer */ }
+  location.href = target;
 }
 
 const STATUS_LABEL = {

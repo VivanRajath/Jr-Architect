@@ -143,7 +143,7 @@ function renderPalette() {
   const types = F.meta.nodeTypes;
   $('f-palette').innerHTML = `
     <span class="h-label" style="margin-top:0">Your agents</span>
-    ${F.agents.length ? F.agents.map((a) => item('agent', a.identity.name, a.identity.description || a.purpose || 'Hub agent', a.id)).join('') : '<div class="h-muted" style="margin-bottom: var(--sp-3)">No agents yet. <a href="/studio.html" target="_blank">Create one</a>.</div>'}
+    ${F.agents.length ? F.agents.map((a) => item('agent', a.identity.name, a.identity.description || a.purpose || 'Hub agent', a.id)).join('') : '<div class="h-muted" style="margin-bottom: var(--sp-3)">No agents yet. <a href="/studio.html">Create one</a>.</div>'}
     <span class="h-label">Logic</span>
     ${['if', 'set', 'approval'].map((t) => item(t, types[t].label, types[t].description)).join('')}
     <span class="h-label">In and out</span>
@@ -551,7 +551,7 @@ function configForm(n) {
       return `
       <label class="h-label">Agent</label>
       <select class="h-select" data-cfg="agentId"><option value="">Choose…</option>${F.agents.map((x) => `<option value="${esc(x.id)}" ${x.id === c.agentId ? 'selected' : ''}>${esc(x.identity.name)} (v${esc(x.version)})</option>`).join('')}</select>
-      ${a ? `<div class="h-help">${esc(a.purpose)} · tools: ${a.tools.map((t) => esc(t.id)).join(', ') || 'none'} · ${a.humanInTheLoop.approveOutput || a.humanInTheLoop.approveTools.length ? 'has approval points' : 'no approval points'} · <a href="/studio.html?agent=${esc(a.id)}" target="_blank">open in Studio</a></div>` : ''}
+      ${a ? `<div class="h-help">${esc(a.purpose)} · tools: ${a.tools.map((t) => esc(t.id)).join(', ') || 'none'} · ${a.humanInTheLoop.approveOutput || a.humanInTheLoop.approveTools.length ? 'has approval points' : 'no approval points'} · <a href="/studio.html?agent=${esc(a.id)}">open in Studio</a></div>` : ''}
       <label class="h-label">Agent input</label>
       ${tpl('input', 6, a ? `This agent expects: ${Object.keys((a.inputSchema && a.inputSchema.properties) || {}).map(esc).join(', ') || 'any value'}. <button class="h-link" id="p-fill">Map fields from $json</button>` : '')}`;
     }

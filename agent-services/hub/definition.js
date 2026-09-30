@@ -174,28 +174,27 @@ export function validateDefinition(def) {
   const errors = [];
   const warnings = [];
   const d = normalizeDefinition(def);
-  if (!d.identity.name || d.identity.name === "New agent") warnings.push({ section: "identity", message: "Give the agent a specific name." });
-  if (!d.purpose) errors.push({ section: "purpose", message: "Say what the agent is for." });
-  if (!d.instructions && !d.responsibilities.length) errors.push({ section: "instructions", message: "Add instructions or at least one responsibility." });
+  if (!d.identity.name || d.identity.name === "New agent") errors.push({ section: "identity", message: "Give the agent a name." });
+  if (!d.purpose) errors.push({ section: "purpose", message: "Fill in \"What should the agent do?\"." });
+  if (d.purpose && !d.instructions && !d.responsibilities.length) warnings.push({ section: "instructions", message: "Optional: a few steps under \"How should it do it?\" make answers more consistent. Improve can write them for you." });
   if (!providerHasKey(d.model.provider)) {
-    errors.push({ section: "model", message: `No API key is configured for ${d.model.provider} on this server.` });
+    errors.push({ section: "model", message: `This server has no API key for ${d.model.provider}. Pick another provider under Advanced, or add the key to .env.` });
   }
   for (const t of d.tools) {
     const need = TOOL_CATALOG[t.id].permission;
-    if (need === "repos" && !d.permissions.repos.length) errors.push({ section: "permissions", message: `${t.id} needs at least one allowed repository (or * for any public repo).` });
-    if (need === "domains" && !d.permissions.domains.length) errors.push({ section: "permissions", message: `${t.id} needs at least one allowed domain.` });
-    if (need === "memory" && d.memory.mode !== "persistent") errors.push({ section: "memory", message: "memory.save needs persistent memory." });
+    if (need === "repos" && !d.permissions.repos.length) errors.push({ section: "permissions", message: `Reading GitHub needs at least one repository it may read (or * for any public one).` });
+    if (need === "domains" && !d.permissions.domains.length) errors.push({ section: "permissions", message: `Reading websites needs at least one website it may read.` });
+    if (need === "memory" && d.memory.mode !== "persistent") errors.push({ section: "memory", message: "Saving memory notes needs memory set to \"Keep notes between runs\"." });
   }
   if (d.permissions.repos.length && !d.tools.some((t) => t.id === "repo.read")) warnings.push({ section: "permissions", message: "Repositories are allowed but repo.read is not enabled." });
   if (d.permissions.domains.length && !d.tools.some((t) => t.id === "web.fetch")) warnings.push({ section: "permissions", message: "Domains are allowed but web.fetch is not enabled." });
   if (d.permissions.repos.includes("*")) warnings.push({ section: "permissions", message: "repo.read may read any public repository." });
   if (d.tools.length && d.runtime.maxSteps < 2) warnings.push({ section: "runtime", message: "With tools, allow at least 2 steps: one to call a tool, one to answer." });
-  if (!d.guardrails.rules.length) warnings.push({ section: "guardrails", message: "No guardrail rules: the agent is limited only by its instructions." });
   if (d.runtime.outputFormat === "json" && d.outputSchema.type === "object" && !Object.keys(d.outputSchema.properties).length) {
-    warnings.push({ section: "outputSchema", message: "The output schema has no fields, so any object passes." });
+    warnings.push({ section: "outputSchema", message: "Add at least one field to \"What it returns\", so callers know what they get back." });
   }
   if (/approv|human|review before|confirm/i.test(d.instructions + d.purpose) && !d.humanInTheLoop.approveOutput && !d.humanInTheLoop.approveTools.length) {
-    warnings.push({ section: "humanInTheLoop", message: "The instructions mention approval, but no approval point is configured, so nothing will actually pause." });
+    warnings.push({ section: "humanInTheLoop", message: "The instructions mention approval, but \"A person approves every result\" is off, so nothing will actually pause." });
   }
   const bytes = Buffer.byteLength(JSON.stringify(d));
   if (bytes > MAX_DEF_BYTES) errors.push({ section: "context", message: `The definition is ${Math.round(bytes / 1024)} KB; the limit is 64 KB.` });

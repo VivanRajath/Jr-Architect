@@ -874,8 +874,7 @@ function escHtml(s) {
 
 // Agent Hub summary on the home page: counts, the latest few items, and shortcuts into the Hub windows.
 function openHubWindow(url) {
-  const w = window.open(url, '_blank', 'width=1440,height=900');
-  if (!w) location.href = url;
+  location.href = url;
 }
 
 async function loadHubSummary() {

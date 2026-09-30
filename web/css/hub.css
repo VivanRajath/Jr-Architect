@@ -49,6 +49,7 @@ body.h-page {
   transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 .h-btn:hover { background: var(--accent2); }
+a.h-btn { text-decoration: none; }
 .h-btn:disabled { opacity: .5; cursor: not-allowed; }
 .h-btn-ghost { background: var(--surface2); color: var(--text2); border-color: var(--border); }
 .h-btn-ghost:hover { background: var(--hover-strong); }
@@ -219,3 +220,24 @@ body.h-page {
   .h-main, .s-form { padding: var(--sp-4); }
   .h-kv { grid-template-columns: 1fr; }
 }
+
+/* Studio: advanced settings fold */
+.s-advanced { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); margin-bottom: var(--sp-6); }
+.s-advanced > summary { cursor: pointer; padding: var(--sp-4) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-1); list-style: none; }
+.s-advanced > summary::-webkit-details-marker { display: none; }
+.s-advanced > summary span { font-weight: var(--fw-semibold); }
+.s-advanced > summary span::before { content: '▸ '; color: var(--text3); }
+.s-advanced[open] > summary span::before { content: '▾ '; }
+.s-advanced > summary small { color: var(--text3); font-size: var(--fs-xs); }
+.s-advanced > .s-section { padding: var(--sp-5); margin: 0; border-top: 1px solid var(--border); border-bottom: 0; }
+
+/* Studio: builder interview */
+.s-chat-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--sp-4); margin-bottom: var(--sp-5); flex-wrap: wrap; }
+.s-chat { display: flex; flex-direction: column; gap: var(--sp-3); max-height: 52vh; overflow: auto; padding: var(--sp-2) 0; }
+.s-msg { max-width: 78%; padding: var(--sp-3) var(--sp-4); border-radius: var(--r-lg); font-size: var(--fs-sm); line-height: var(--lh-relaxed); white-space: pre-wrap; }
+.s-msg.bot { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: var(--r-sm); }
+.s-msg.bot small { display: block; color: var(--text3); font-size: var(--fs-xs); margin-top: var(--sp-1); }
+.s-msg.user { align-self: flex-end; background: var(--accent); color: var(--on-accent); border-bottom-right-radius: var(--r-sm); }
+.s-typing { color: var(--text3); font-style: italic; }
+.s-chat-input { display: flex; gap: var(--sp-3); align-items: flex-end; }
+.s-chat-input .h-textarea { min-height: 52px; }

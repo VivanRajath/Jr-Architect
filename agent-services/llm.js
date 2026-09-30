@@ -156,6 +156,17 @@ export async function collectTurn(queryOptions, model) {
   }
 }
 
+// Provider errors in words a person can act on; the raw text stays at the end for debugging.
+export function friendlyModelError(raw) {
+  const msg = String(raw || "the model returned nothing");
+  if (/\b401\b|invalid api key|incorrect api key|unauthori[sz]ed/i.test(msg)) return `The AI provider rejected this server's API key. Put a valid key in .env (for example GROQ_API_KEY) and restart. (${msg.slice(0, 80)})`;
+  if (/\b429\b|rate limit|too many requests|tokens per minute/i.test(msg)) return "The AI provider is rate-limiting this server. Wait a minute and try again.";
+  if (/\b413\b|too large|context length|maximum context/i.test(msg)) return "The request was too large for the model. Shorten the instructions, knowledge or input and try again.";
+  if (/\b404\b|model .*not (found|exist)|does not exist/i.test(msg)) return `That model is not available with this server's key. Pick another model in the Model section. (${msg.slice(0, 80)})`;
+  if (/connection error|fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(msg)) return "Could not reach the AI provider. Check the internet connection and try again.";
+  return msg.slice(0, 200);
+}
+
 // If the model wrapped a body in a ```lang … ``` fence, strip it.
 export function stripFences(body) {
   const t = body.replace(/^\s+|\s+$/g, "");

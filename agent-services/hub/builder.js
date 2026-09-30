@@ -1,5 +1,5 @@
 // Agent Builder and Improve: the model suggests, the user decides; nothing here saves anything.
-import { collectTurn, parseJsonLoose, toollessAgentHome, modelFor, AGENT_MAX_OUTPUT_TOKENS } from "../llm.js";
+import { collectTurn, parseJsonLoose, toollessAgentHome, modelFor, AGENT_MAX_OUTPUT_TOKENS, friendlyModelError } from "../llm.js";
 import {
   normalizeDefinition, diffDefinitions, TOOL_CATALOG, SECTIONS, MEMORY_MODES,
 } from "./definition.js";
@@ -50,7 +50,7 @@ export async function draftAgent(description, provider) {
   const model = modelFor(provider);
   const { text, error } = await turn(buildDraftPrompt(description), model);
   const parsed = parseJsonLoose(text);
-  if (!parsed || !parsed.definition) throw Object.assign(new Error(error ? `the model failed: ${error.slice(0, 160)}` : "the model did not return a usable design; try rephrasing"), { status: 502 });
+  if (!parsed || !parsed.definition) throw Object.assign(new Error(error ? friendlyModelError(error) : "The model did not return a usable design; try rephrasing your answers."), { status: 502 });
   const definition = normalizeDefinition(parsed.definition);
   const explanations = {};
   for (const s of SECTIONS) {
@@ -59,6 +59,36 @@ export async function draftAgent(description, provider) {
   }
   const list = (v) => (Array.isArray(v) ? v : []).map((x) => String(x).trim().slice(0, 300)).filter(Boolean).slice(0, 12);
   return { definition, explanations, edgeCases: list(parsed.edgeCases), questions: list(parsed.questions) };
+}
+
+// Asked when the model cannot be reached, so the interview still covers what matters most.
+export const FALLBACK_QUESTIONS = [
+  { q: "Is there anything the agent must never do or say?", options: ["Never promise refunds or discounts", "Never share personal data", "Nothing special"] },
+  { q: "Should a person approve the agent's result before it is used?", options: ["Yes, always", "Only for risky cases", "No, use it directly"] },
+  { q: "What tone or style should its answers have?", options: ["Short and factual", "Friendly and warm", "Formal"] },
+];
+
+export function buildQuestionsPrompt(answers) {
+  const known = answers.map((a) => `Q: ${String(a.q).slice(0, 200)}\nA: ${String(a.a).slice(0, 800)}`).join("\n\n");
+  return [
+    "You interview a non-technical person to design an AI agent for them, one short question at a time.",
+    `What they told you so far:\n${known}`,
+    "Write 2 to 4 follow-up questions that are specific to THIS agent and what they said. Good topics: missing details about the input or output, categories or labels it should use, rules or things it must never do, when a person should approve, what to do with unclear or unusual inputs, which websites or GitHub repositories it needs to read.",
+    "Do not ask anything they already answered. No technical jargon (no 'schema', 'prompt', 'token'). Each question must be answerable in one sentence.",
+    "For each question give 2 to 4 short example answers the person can click.",
+    'Reply with ONLY JSON: {"questions":[{"q":"...","options":["...","..."]}]}',
+    NO_CALLS,
+  ].join("\n\n");
+}
+
+export async function followUpQuestions(answers, provider) {
+  const list = (Array.isArray(answers) ? answers : []).filter((a) => a && a.q && a.a).slice(0, 12);
+  const { text } = await turn(buildQuestionsPrompt(list), modelFor(provider));
+  const parsed = parseJsonLoose(text);
+  const qs = (parsed && Array.isArray(parsed.questions) ? parsed.questions : [])
+    .map((x) => ({ q: String((x && x.q) || "").trim().slice(0, 240), options: (Array.isArray(x && x.options) ? x.options : []).map((o) => String(o).trim().slice(0, 100)).filter(Boolean).slice(0, 4) }))
+    .filter((x) => x.q.length > 5).slice(0, 4);
+  return qs.length ? { questions: qs, fallback: false } : { questions: FALLBACK_QUESTIONS, fallback: true };
 }
 
 export function buildRefinePrompt(definition, feedback) {
@@ -83,7 +113,7 @@ export async function refineAgent(definition, feedback, provider) {
   const { text, error } = await turn(buildRefinePrompt(definition, feedback), model);
   const parsed = parseJsonLoose(text);
   if (!parsed || !parsed.changes || typeof parsed.changes !== "object") {
-    throw Object.assign(new Error(error ? `the model failed: ${error.slice(0, 160)}` : "the model did not return usable changes; try rephrasing"), { status: 502 });
+    throw Object.assign(new Error(error ? friendlyModelError(error) : "The model did not return usable changes; try rephrasing."), { status: 502 });
   }
   return applyChanges(definition, parsed.changes, parsed.summary, parsed.notes);
 }

@@ -11,17 +11,13 @@ const SECTION_TITLES = {
   inputSchema: 'Input format', outputSchema: 'Output format', humanInTheLoop: 'Human approval', runtime: 'Runtime',
 };
 const NAV = [
-  ['identity', 'Identity'], ['purpose', 'Purpose & instructions'], ['model', 'Model'], ['tools', 'Tools'], ['context', 'Context'],
-  ['memory', 'Memory'], ['guardrails', 'Guardrails'], ['permissions', 'Permissions'], ['io', 'Input & output'],
-  ['humanInTheLoop', 'Human approval'], ['runtime', 'Runtime'],
+  ['identity', '1. Name'], ['purpose', '2. What it does'], ['io', '3. Input & output'], ['guardrails', '4. Rules'], ['advanced', 'Advanced'],
 ];
-const NAV_OF = { responsibilities: 'purpose', instructions: 'purpose', inputSchema: 'io', outputSchema: 'io' };
-const EXAMPLES = [
-  'Read customer support emails, identify the type of issue, summarize the problem, draft a response, and ask for human approval before sending anything.',
-  'Review a GitHub repository and produce a short report of security risks and missing tests, as structured JSON for a Slack message.',
-  'Turn meeting notes into a list of action items with an owner and a due date for each.',
-  'Check a product page on our website and flag prices or claims that contradict our pricing policy.',
-];
+// Validation names sections by field; this maps each onto the part of the form that holds it.
+const NAV_OF = {
+  instructions: 'purpose', inputSchema: 'io', outputSchema: 'io', humanInTheLoop: 'guardrails',
+  model: 'advanced', tools: 'advanced', permissions: 'advanced', context: 'advanced', memory: 'advanced', runtime: 'advanced', responsibilities: 'advanced',
+};
 const IMPROVE_CHIPS = [
   'Make the agent more strict.', "Don't let it modify production files.", 'Make the responses shorter.',
   'It should ask for approval before doing anything destructive.', 'Make the instructions clearer.',
@@ -57,52 +53,128 @@ function startCustom() {
 
 // --- builder ---
 
-function startBuilder() {
-  ST.builder = { description: '', suggestion: null, use: {}, decided: {}, edgeCases: false };
-  renderBuilderAsk();
-  show('builder');
-}
+// The first three questions are always asked; the rest are written by the model from the answers.
+const BASE_QUESTIONS = [
+  { q: 'What does your agent need to do?', hint: 'Describe the job in a sentence or two, the way you would explain it to a new colleague.',
+    options: ['Sort customer support emails and draft replies', 'Review a GitHub repository for security risks', 'Turn meeting notes into action items', 'Check product pages against our pricing policy'] },
+  { q: 'What will you give it to work on?', hint: 'This becomes its input.',
+    options: ['A customer email', 'A GitHub repository link', 'Notes or a block of text', 'A web page address'] },
+  { q: 'What should it give back?', hint: 'This becomes its output. Name the pieces you want, if you know them.',
+    options: ['A category and a short summary', 'A drafted reply', 'A yes/no decision with a reason', 'A list of action items with owners'] },
+];
 
 function providerOptions(selected) {
   return ST.meta.providers.map((p) => `<option value="${esc(p.id)}" ${p.id === selected ? 'selected' : ''} ${p.hasKey ? '' : 'disabled'}>${esc(p.id)}${p.hasKey ? '' : ' (no key on this server)'}</option>`).join('');
 }
 
-function renderBuilderAsk(busy = false) {
-  const b = ST.builder;
-  const firstKey = (ST.meta.providers.find((p) => p.hasKey) || {}).id || 'groq';
-  $('view-builder').innerHTML = `
-    <h1>Describe your agent</h1>
-    <p class="h-muted">Say what it should do, what it gets as input, what it should produce, and anything it must never do. Plain English is fine.</p>
-    <div class="s-examples">${EXAMPLES.map((e, i) => `<button class="s-example" data-ex="${i}">${esc(e.slice(0, 90))}…</button>`).join('')}</div>
-    <textarea id="b-desc" class="h-textarea" rows="7" placeholder="I want an agent that…">${esc(b.description)}</textarea>
-    <div class="h-row" style="margin-top: var(--sp-4)">
-      <label class="h-muted" for="b-provider">Design with</label>
-      <select id="b-provider" class="h-select" style="width:auto">${providerOptions(firstKey)}</select>
-      <span class="h-spacer"></span>
-      <button class="h-btn h-btn-ghost" onclick="show('start')">Back</button>
-      <button class="h-btn" id="b-go" ${busy ? 'disabled' : ''}>${busy ? 'Designing… (10 to 40 seconds)' : 'Design my agent'}</button>
-    </div>`;
-  document.querySelectorAll('[data-ex]').forEach((x) => x.addEventListener('click', () => { $('b-desc').value = EXAMPLES[x.dataset.ex]; }));
-  $('b-go').addEventListener('click', runBuilder);
+function startBuilder() {
+  ST.chat = {
+    answers: [], queue: BASE_QUESTIONS.slice(), current: null, phase: 'asking', followupsLoaded: false,
+    provider: (ST.meta.providers.find((p) => p.hasKey) || {}).id || 'groq', note: '',
+  };
+  ST.builder = null;
+  nextQuestion();
+  show('builder');
 }
 
-async function runBuilder() {
-  const description = $('b-desc').value.trim();
-  const provider = $('b-provider').value;
-  if (description.length < 15) { hubToast('Describe the agent in a sentence or two.', 'error'); return; }
-  ST.builder.description = description;
-  renderBuilderAsk(true);
+function nextQuestion() {
+  const c = ST.chat;
+  c.current = c.queue.shift() || null;
+  if (!c.current && !c.followupsLoaded && c.answers.length >= 3) { loadFollowups(); return; }
+  if (!c.current && c.phase === 'asking') {
+    c.current = { q: 'Anything else it should know? Rules, tone, examples, edge cases.', hint: 'Optional. Or press "Design my agent".', options: ['No, that is everything'], last: true };
+  }
+  renderChat();
+}
+
+async function loadFollowups() {
+  const c = ST.chat;
+  c.followupsLoaded = true;
+  c.phase = 'thinking';
+  renderChat();
   try {
-    const s = await hubApi('POST', '/builder', { description, provider });
-    ST.builder.suggestion = s;
-    ST.builder.provider = provider;
-    ST.builder.use = {};
-    ST.builder.decided = {};
+    const { questions } = await hubApi('POST', '/builder/questions', { answers: c.answers, provider: c.provider });
+    c.queue.push(...questions);
+  } catch (e) {
+    hubToast(e.message, 'error');
+  }
+  c.phase = 'asking';
+  nextQuestion();
+}
+
+function answer(text) {
+  const c = ST.chat;
+  const t = String(text || '').trim();
+  if (!c.current) return;
+  if (!t && c.answers.length < 3) { hubToast('Answer this one so the agent knows what to do.', 'error'); return; }
+  const wasLast = c.current.last;
+  if (t && !(wasLast && /^no, that is everything$/i.test(t))) c.answers.push({ q: c.current.q, a: t });
+  else if (!t) c.answers.push({ q: c.current.q, a: '(skipped)' });
+  if (wasLast) { designFromChat(); return; }
+  nextQuestion();
+}
+
+function renderChat() {
+  const c = ST.chat;
+  const bubbles = c.answers.map((x) => `
+    <div class="s-msg bot">${esc(x.q)}</div>
+    <div class="s-msg user">${esc(x.a)}</div>`).join('');
+  const thinking = c.phase === 'thinking' ? '<div class="s-msg bot s-typing">Thinking of a few questions about your agent…</div>'
+    : c.phase === 'designing' ? '<div class="s-msg bot s-typing">Designing your agent… (10 to 40 seconds)</div>' : '';
+  const cur = c.current && c.phase === 'asking' ? `<div class="s-msg bot"><strong>${esc(c.current.q)}</strong>${c.current.hint ? `<small>${esc(c.current.hint)}</small>` : ''}</div>` : '';
+  const canDesign = c.answers.length >= 3 && c.phase === 'asking';
+  $('view-builder').innerHTML = `
+    <div class="s-chat-head">
+      <div><h1>Agent Builder</h1><p class="h-muted">Answer a few questions. You will see the design and can change anything before it is saved.</p></div>
+      <label class="h-row h-muted">Model <select id="c-provider" class="h-select" style="width:auto">${providerOptions(c.provider)}</select></label>
+    </div>
+    <div class="s-chat" id="c-log">${bubbles}${cur}${thinking}</div>
+    ${c.current && c.phase === 'asking' ? `
+      <div class="s-chips">${(c.current.options || []).map((o) => `<button class="s-example" data-opt="${esc(o)}">${esc(o)}</button>`).join('')}</div>
+      <div class="s-chat-input">
+        <textarea id="c-input" class="h-textarea" rows="2" placeholder="Type your answer, or pick one above. Enter to send."></textarea>
+        <button class="h-btn" id="c-send">Send</button>
+      </div>` : ''}
+    <div class="s-builder-foot">
+      <button class="h-btn h-btn-ghost" id="c-back">Back</button>
+      <button class="h-link" id="c-restart">Start over</button>
+      <span class="h-spacer"></span>
+      ${c.current && c.answers.length >= 3 && c.phase === 'asking' ? '<button class="h-btn h-btn-ghost" id="c-skip">Skip question</button>' : ''}
+      <button class="h-btn" id="c-design" ${canDesign ? '' : 'disabled'}>Design my agent</button>
+    </div>`;
+  const log = $('c-log');
+  log.scrollTop = log.scrollHeight;
+  $('c-provider').addEventListener('change', (e) => { c.provider = e.target.value; });
+  $('c-back').addEventListener('click', () => show('start'));
+  $('c-restart').addEventListener('click', startBuilder);
+  $('c-design').addEventListener('click', designFromChat);
+  if ($('c-skip')) $('c-skip').addEventListener('click', () => answer(''));
+  document.querySelectorAll('[data-opt]').forEach((b) => b.addEventListener('click', () => answer(b.dataset.opt)));
+  const input = $('c-input');
+  if (input) {
+    input.focus();
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); answer(input.value); } });
+    $('c-send').addEventListener('click', () => answer(input.value));
+  }
+}
+
+async function designFromChat() {
+  const c = ST.chat;
+  if (c.answers.length < 3) return;
+  c.phase = 'designing';
+  c.current = null;
+  renderChat();
+  const description = c.answers.filter((x) => x.a !== '(skipped)').map((x) => `${x.q}\n${x.a}`).join('\n\n');
+  try {
+    const s = await hubApi('POST', '/builder', { description, provider: c.provider });
+    ST.builder = { description, suggestion: s, provider: c.provider, use: {}, decided: {}, edgeCases: false };
     for (const k of ST.meta.sections) if (!IMPORTANT.includes(k)) ST.builder.use[k] = true;
     renderBuilderReview();
   } catch (e) {
     hubToast(e.message, 'error');
-    renderBuilderAsk(false);
+    c.phase = 'asking';
+    c.current = { q: 'Something went wrong while designing. Add anything, or press "Design my agent" to try again.', options: [], last: true };
+    renderChat();
   }
 }
 
@@ -167,7 +239,7 @@ function renderBuilderReview() {
     ${s.edgeCases.length ? `<section class="s-suggest"><div class="s-suggest-head"><h3>Edge cases to handle</h3>
       <label class="h-row h-muted"><input type="checkbox" id="b-edge" ${b.edgeCases ? 'checked' : ''}> Add to the instructions</label></div>${ul(s.edgeCases)}</section>` : ''}
     <div class="s-builder-foot">
-      <button class="h-btn h-btn-ghost" id="b-back">Change the description</button>
+      <button class="h-btn h-btn-ghost" id="b-back">Back to the questions</button>
       <span class="h-spacer"></span>
       <span class="h-muted">${pending.length ? `Decide on: ${pending.map((k) => SECTION_TITLES[k]).join(', ')}` : 'Ready'}</span>
       <button class="h-btn" id="b-continue" ${pending.length ? 'disabled' : ''}>Continue to the editor</button>
@@ -176,7 +248,7 @@ function renderBuilderReview() {
   document.querySelectorAll('[data-use]').forEach((x) => x.addEventListener('change', () => { b.use[x.dataset.use] = x.checked; renderBuilderReview(); }));
   const edge = $('b-edge');
   if (edge) edge.addEventListener('change', () => { b.edgeCases = edge.checked; });
-  $('b-back').addEventListener('click', () => renderBuilderAsk(false));
+  $('b-back').addEventListener('click', () => { ST.chat.phase = 'asking'; nextQuestion(); });
   $('b-continue').addEventListener('click', acceptBuilder);
 }
 
@@ -192,14 +264,17 @@ function acceptBuilder() {
   if (b.edgeCases && s.edgeCases.length) def.instructions = `${def.instructions}\n\nEdge cases:\n${s.edgeCases.map((e) => `- ${e}`).join('\n')}`.trim();
   if (b.provider) def.model.provider = b.provider;
   ST.why = s.explanations;
-  openEditor(def, false);
+  openEditor(def, false, true);
   hubToast('Review the design, then Save to create the agent');
 }
 
 // --- editor ---
 
-function openEditor(def, saved) {
+function openEditor(def, saved, touched = saved) {
   ST.def = def;
+  // A blank Custom agent stays quiet until the user starts filling it in.
+  ST.touched = touched;
+  ST.advancedOpen = false;
   ST.saved = saved ? JSON.stringify(def) : '';
   ST.schemaRows = {};
   show('editor');
@@ -226,12 +301,20 @@ function isDirty() {
 
 function renderNav() {
   const issues = {};
-  const v = ST.preview && ST.preview.validation;
+  const v = ST.touched && ST.preview && ST.preview.validation;
   if (v) {
     for (const w of v.warnings) issues[NAV_OF[w.section] || w.section] = issues[NAV_OF[w.section] || w.section] || 'warn';
     for (const e of v.errors) issues[NAV_OF[e.section] || e.section] = 'bad';
   }
   $('s-nav').innerHTML = NAV.map(([k, label]) => `<a href="#sec-${k}" data-nav="${k}">${esc(label)}<span class="dot ${issues[k] || ''}"></span></a>`).join('');
+  $('s-nav').querySelectorAll('[data-nav]').forEach((a) => a.addEventListener('click', () => goTo(a.dataset.nav)));
+}
+
+// Advanced lives in a closed <details>, so jumping there opens it first.
+function goTo(section) {
+  if (section === 'advanced' && $('sec-advanced')) { $('sec-advanced').open = true; ST.advancedOpen = true; }
+  const el = $(`sec-${section}`);
+  if (el) el.scrollIntoView();
 }
 
 function whyNote(...keys) {
@@ -248,113 +331,101 @@ function field(label, inner, help = '') {
 function renderForm() {
   const d = ST.def;
   const tools = ST.meta.tools;
+  const open = ST.advancedOpen ? 'open' : '';
   $('s-form').innerHTML = `
     <section class="s-section" id="sec-identity">
-      <h2>Identity</h2><p class="h-help">Who the agent is. The name also becomes its id and folder name.</p>
+      <h2>1. Name</h2>
       ${whyNote('identity')}
-      <div class="h-grid2">
-        ${field('Name', `<input class="h-input" data-bind="identity.name" value="${esc(d.identity.name)}">`)}
-        ${field('Tags', `<input class="h-input" data-bind="identity.tags" data-kind="csv" value="${esc(d.identity.tags.join(', '))}" placeholder="support, email">`, 'Comma separated.')}
-      </div>
-      ${field('Description', `<input class="h-input" data-bind="identity.description" value="${esc(d.identity.description)}" placeholder="One sentence people see in the Hub">`)}
+      ${field('What is it called?', `<input class="h-input" data-bind="identity.name" value="${esc(d.identity.name === 'New agent' ? '' : d.identity.name)}" placeholder="e.g. Support Email Triage">`)}
+      ${field('One line about it (optional)', `<input class="h-input" data-bind="identity.description" value="${esc(d.identity.description)}" placeholder="Shown on its card in the Hub">`)}
     </section>
 
     <section class="s-section" id="sec-purpose">
-      <h2>Purpose & instructions</h2><p class="h-help">What the agent is for and how it should work. This is the core of the derived system prompt.</p>
-      ${whyNote('purpose', 'responsibilities', 'instructions')}
-      ${field('Purpose', `<textarea class="h-textarea" rows="3" data-bind="purpose">${esc(d.purpose)}</textarea>`)}
-      ${field('Responsibilities', `<textarea class="h-textarea" rows="4" data-bind="responsibilities" data-kind="lines">${lines(d.responsibilities)}</textarea>`, 'One per line.')}
-      ${field('Instructions', `<textarea class="h-textarea" rows="9" data-bind="instructions">${esc(d.instructions)}</textarea>`, 'Step by step works best. Use the Improve tab to have it rewritten.')}
-    </section>
-
-    <section class="s-section" id="sec-model">
-      <h2>Model</h2><p class="h-help">Your model, through the keys configured on this server.</p>
-      ${whyNote('model')}
-      <div class="h-grid2">
-        ${field('Provider', `<select class="h-select" data-bind="model.provider">${providerOptions(d.model.provider)}</select>`)}
-        ${field('Model id', `<input class="h-input mono" data-bind="model.name" value="${esc(d.model.name)}" placeholder="${esc((ST.meta.providers.find((p) => p.id === d.model.provider) || {}).model || '')}">`, 'Leave empty for the provider default.')}
-      </div>
-      ${field('Max output tokens', `<input class="h-input" type="number" min="200" max="3000" data-bind="model.maxOutputTokens" data-kind="number" value="${d.model.maxOutputTokens}">`)}
-    </section>
-
-    <section class="s-section" id="sec-tools">
-      <h2>Tools</h2><p class="h-help">The only actions the runtime will carry out. A tool not ticked here is refused even if the model asks for it.</p>
-      ${whyNote('tools')}
-      <div style="display:flex; flex-direction:column; gap: var(--sp-3)">
-        ${Object.entries(tools).map(([id, t]) => `<label class="h-check"><input type="checkbox" data-tool="${esc(id)}" ${d.tools.some((x) => x.id === id) ? 'checked' : ''}>
-          <span><strong>${esc(t.label)} <code>${esc(id)}</code></strong><small>${esc(t.description)} Needs: ${esc(t.permission)}.</small></span></label>`).join('')}
-      </div>
-      <div class="h-help">Actions like sending email or posting to Slack belong in the n8n workflow that calls this agent; the agent returns the draft or decision.</div>
-    </section>
-
-    <section class="s-section" id="sec-context">
-      <h2>Context</h2><p class="h-help">Knowledge the agent always has, and worked examples of good answers.</p>
-      ${whyNote('context')}
-      ${field('Reference knowledge', `<textarea class="h-textarea" rows="5" data-bind="context.knowledge" placeholder="Policies, product facts, tone of voice…">${esc(d.context.knowledge)}</textarea>`)}
-      <label class="h-label">Examples</label>
-      <div id="ex-list">${d.context.examples.map((e, i) => `
-        <div class="s-example-pair">
-          <div class="h-grid2">
-            <textarea class="h-textarea" rows="3" data-ex="${i}" data-exf="input" placeholder="Input">${esc(e.input)}</textarea>
-            <textarea class="h-textarea" rows="3" data-ex="${i}" data-exf="output" placeholder="Ideal output">${esc(e.output)}</textarea>
-          </div>
-          <button class="h-link" data-ex-del="${i}">Remove</button>
-        </div>`).join('')}</div>
-      ${d.context.examples.length < 5 ? '<button class="h-btn h-btn-ghost h-btn-sm" id="ex-add">+ Add example</button>' : ''}
-    </section>
-
-    <section class="s-section" id="sec-memory">
-      <h2>Memory</h2><p class="h-help">Persistent memory lets the agent save short notes (with the memory.save tool) that later runs see.</p>
-      ${whyNote('memory')}
-      <div class="h-grid2">
-        ${field('Mode', `<select class="h-select" data-bind="memory.mode">${ST.meta.memoryModes.map((m) => `<option ${m === d.memory.mode ? 'selected' : ''}>${m}</option>`).join('')}</select>`, 'none: every run starts fresh. run: within one run. persistent: across runs.')}
-        ${field('Notes kept', `<input class="h-input" type="number" min="1" max="100" data-bind="memory.maxNotes" data-kind="number" value="${d.memory.maxNotes}">`)}
-      </div>
-    </section>
-
-    <section class="s-section" id="sec-guardrails">
-      <h2>Guardrails</h2><p class="h-help">Rules go into the prompt. Blocked terms and secret detection are enforced by the runtime on input, tool results and output, whatever the model does.</p>
-      ${whyNote('guardrails')}
-      ${field('Rules', `<textarea class="h-textarea" rows="5" data-bind="guardrails.rules" data-kind="lines" placeholder="Never promise refunds.">${lines(d.guardrails.rules)}</textarea>`, 'One per line.')}
-      ${field('Blocked terms', `<input class="h-input" data-bind="guardrails.blockedTerms" data-kind="csv" value="${esc(d.guardrails.blockedTerms.join(', '))}" placeholder="confidential, internal-only">`, 'Comma separated. A run whose input or output contains one is stopped.')}
-      <label class="h-check"><input type="checkbox" data-bind="guardrails.blockSecrets" data-kind="bool" ${d.guardrails.blockSecrets ? 'checked' : ''}><span><strong>Block secrets</strong><small>Stop any run whose input or output contains something that looks like an API key or private key.</small></span></label>
-    </section>
-
-    <section class="s-section" id="sec-permissions">
-      <h2>Permissions</h2><p class="h-help">Exactly what the tools may touch. Checked by the runtime on every call.</p>
-      ${whyNote('permissions')}
-      <div class="h-grid2">
-        ${field('Repositories (repo.read)', `<textarea class="h-textarea mono" rows="4" data-bind="permissions.repos" data-kind="lines" placeholder="owner/name">${lines(d.permissions.repos)}</textarea>`, 'One per line. * allows any public repository.')}
-        ${field('Domains (web.fetch)', `<textarea class="h-textarea mono" rows="4" data-bind="permissions.domains" data-kind="lines" placeholder="docs.example.com">${lines(d.permissions.domains)}</textarea>`, 'One per line. Subdomains are included. HTTPS only; private addresses are always refused on a public server.')}
-      </div>
+      <h2>2. What it does</h2>
+      ${whyNote('purpose', 'instructions')}
+      ${field('What should the agent do?', `<textarea class="h-textarea" rows="3" data-bind="purpose" placeholder="e.g. Read a customer email, work out what the problem is, and draft a short reply.">${esc(d.purpose)}</textarea>`)}
+      ${field('How should it do it? (optional)', `<textarea class="h-textarea" rows="6" data-bind="instructions" placeholder="Steps, tone, anything it should always check. Leave empty and use Improve on the right to have this written for you.">${esc(d.instructions)}</textarea>`)}
     </section>
 
     <section class="s-section" id="sec-io">
-      <h2>Input & output</h2><p class="h-help">The contract with n8n or any caller. Input is checked before the model runs; JSON output is checked against the schema, with one automatic retry.</p>
+      <h2>3. Input & output</h2><p class="h-help">What the agent is given, and what it hands back. Callers such as n8n rely on these fields.</p>
       ${whyNote('inputSchema', 'outputSchema')}
-      <label class="h-label">Input fields</label>
+      <label class="h-label">What it receives</label>
       <div id="schema-inputSchema"></div>
-      ${field('Output format', `<select class="h-select" data-bind="runtime.outputFormat" data-rerender="io">${['json', 'text'].map((f) => `<option ${f === d.runtime.outputFormat ? 'selected' : ''}>${f}</option>`).join('')}</select>`)}
-      ${d.runtime.outputFormat === 'json' ? '<label class="h-label">Output fields</label><div id="schema-outputSchema"></div>' : ''}
+      ${field('What it returns', `<select class="h-select" data-bind="runtime.outputFormat" data-rerender="io"><option value="json" ${d.runtime.outputFormat === 'json' ? 'selected' : ''}>Structured fields (best for workflows)</option><option value="text" ${d.runtime.outputFormat === 'text' ? 'selected' : ''}>Plain text</option></select>`)}
+      ${d.runtime.outputFormat === 'json' ? '<div id="schema-outputSchema"></div>' : ''}
     </section>
 
-    <section class="s-section" id="sec-humanInTheLoop">
-      <h2>Human approval</h2><p class="h-help">Where a run pauses until a person approves, in this Hub or from n8n. Enforced by the runtime, not left to the prompt.</p>
-      ${whyNote('humanInTheLoop')}
-      <label class="h-check"><input type="checkbox" data-bind="humanInTheLoop.approveOutput" data-kind="bool" ${d.humanInTheLoop.approveOutput ? 'checked' : ''}><span><strong>Approve the final output</strong><small>The result is held until a person approves or rejects it.</small></span></label>
-      <label class="h-label">Approve before these tools run</label>
-      <div id="hitl-tools">${hitlTools()}</div>
-      ${field('Notes for the agent about approval', `<textarea class="h-textarea" rows="2" data-bind="humanInTheLoop.instructions">${esc(d.humanInTheLoop.instructions)}</textarea>`)}
+    <section class="s-section" id="sec-guardrails">
+      <h2>4. Rules</h2>
+      ${whyNote('guardrails', 'humanInTheLoop')}
+      ${field('Things it must never do (optional)', `<textarea class="h-textarea" rows="3" data-bind="guardrails.rules" data-kind="lines" placeholder="Never promise refunds.&#10;Never share customer data.">${lines(d.guardrails.rules)}</textarea>`, 'One per line.')}
+      <label class="h-check"><input type="checkbox" data-bind="humanInTheLoop.approveOutput" data-kind="bool" ${d.humanInTheLoop.approveOutput ? 'checked' : ''}><span><strong>A person approves every result before it is used</strong><small>The run pauses until someone approves or rejects it.</small></span></label>
     </section>
 
-    <section class="s-section" id="sec-runtime">
-      <h2>Runtime</h2><p class="h-help">Limits for one run. A step is one model call; tool calls need a step each.</p>
-      ${whyNote('runtime')}
-      <div class="h-grid2">
-        ${field('Max steps', `<input class="h-input" type="number" min="1" max="8" data-bind="runtime.maxSteps" data-kind="number" value="${d.runtime.maxSteps}">`)}
-        ${field('Timeout (seconds)', `<input class="h-input" type="number" min="10" max="120" data-bind="runtime.timeoutSeconds" data-kind="number" value="${d.runtime.timeoutSeconds}">`)}
-      </div>
-    </section>`;
+    <details class="s-advanced" id="sec-advanced" ${open}>
+      <summary><span>Advanced settings (optional)</span><small>Model, tools, knowledge, memory, limits. The defaults work for most agents.</small></summary>
+
+      <section class="s-section" id="sec-model">
+        <h2>Model</h2>
+        ${whyNote('model')}
+        <div class="h-grid2">
+          ${field('Provider', `<select class="h-select" data-bind="model.provider">${providerOptions(d.model.provider)}</select>`)}
+          ${field('Model id', `<input class="h-input mono" data-bind="model.name" value="${esc(d.model.name)}" placeholder="${esc((ST.meta.providers.find((p) => p.id === d.model.provider) || {}).model || '')}">`, 'Leave empty for the default.')}
+        </div>
+        ${field('Longest answer (tokens)', `<input class="h-input" type="number" min="200" max="3000" data-bind="model.maxOutputTokens" data-kind="number" value="${d.model.maxOutputTokens}">`)}
+      </section>
+
+      <section class="s-section" id="sec-tools">
+        <h2>Tools</h2><p class="h-help">Only needed if the agent must look something up itself. Sending email or posting to Slack happens in the workflow that calls the agent.</p>
+        ${whyNote('tools')}
+        <div style="display:flex; flex-direction:column; gap: var(--sp-3)">
+          ${Object.entries(tools).map(([id, t]) => `<label class="h-check"><input type="checkbox" data-tool="${esc(id)}" ${d.tools.some((x) => x.id === id) ? 'checked' : ''}>
+            <span><strong>${esc(t.label)}</strong><small>${esc(t.description)}</small></span></label>`).join('')}
+        </div>
+        ${d.tools.some((t) => t.id === 'repo.read') ? field('Repositories it may read', `<textarea class="h-textarea mono" rows="3" data-bind="permissions.repos" data-kind="lines" placeholder="owner/name">${lines(d.permissions.repos)}</textarea>`, 'One per line. * allows any public repository.') : ''}
+        ${d.tools.some((t) => t.id === 'web.fetch') ? field('Websites it may read', `<textarea class="h-textarea mono" rows="3" data-bind="permissions.domains" data-kind="lines" placeholder="docs.example.com">${lines(d.permissions.domains)}</textarea>`, 'One per line; subdomains included.') : ''}
+        ${d.tools.length ? `<label class="h-label">Ask a person before these run</label><div id="hitl-tools">${hitlTools()}</div>` : '<div id="hitl-tools" hidden></div>'}
+      </section>
+
+      <section class="s-section" id="sec-context">
+        <h2>Knowledge & examples</h2>
+        ${whyNote('context')}
+        ${field('Facts it should always know', `<textarea class="h-textarea" rows="4" data-bind="context.knowledge" placeholder="Policies, product facts, tone of voice…">${esc(d.context.knowledge)}</textarea>`)}
+        <label class="h-label">Examples of good answers</label>
+        <div id="ex-list">${d.context.examples.map((e, i) => `
+          <div class="s-example-pair">
+            <div class="h-grid2">
+              <textarea class="h-textarea" rows="3" data-ex="${i}" data-exf="input" placeholder="Input">${esc(e.input)}</textarea>
+              <textarea class="h-textarea" rows="3" data-ex="${i}" data-exf="output" placeholder="Ideal output">${esc(e.output)}</textarea>
+            </div>
+            <button class="h-link" data-ex-del="${i}">Remove</button>
+          </div>`).join('')}</div>
+        ${d.context.examples.length < 5 ? '<button class="h-btn h-btn-ghost h-btn-sm" id="ex-add">+ Add example</button>' : ''}
+      </section>
+
+      <section class="s-section" id="sec-more">
+        <h2>More rules and memory</h2>
+        ${whyNote('memory', 'responsibilities')}
+        ${field('Responsibilities', `<textarea class="h-textarea" rows="3" data-bind="responsibilities" data-kind="lines">${lines(d.responsibilities)}</textarea>`, 'One per line; added to the instructions.')}
+        ${field('Blocked words', `<input class="h-input" data-bind="guardrails.blockedTerms" data-kind="csv" value="${esc(d.guardrails.blockedTerms.join(', '))}" placeholder="confidential, internal-only">`, 'Comma separated. A run whose input or answer contains one is stopped.')}
+        <label class="h-check"><input type="checkbox" data-bind="guardrails.blockSecrets" data-kind="bool" ${d.guardrails.blockSecrets ? 'checked' : ''}><span><strong>Block secrets</strong><small>Stop a run whose input or answer contains something that looks like an API key.</small></span></label>
+        <div class="h-grid2" style="margin-top: var(--sp-4)">
+          ${field('Memory between runs', `<select class="h-select" data-bind="memory.mode"><option value="none" ${d.memory.mode === 'none' ? 'selected' : ''}>None</option><option value="run" ${d.memory.mode === 'run' ? 'selected' : ''}>Within one run</option><option value="persistent" ${d.memory.mode === 'persistent' ? 'selected' : ''}>Keep notes between runs</option></select>`)}
+          ${field('Tags', `<input class="h-input" data-bind="identity.tags" data-kind="csv" value="${esc(d.identity.tags.join(', '))}" placeholder="support, email">`)}
+        </div>
+      </section>
+
+      <section class="s-section" id="sec-runtime">
+        <h2>Limits</h2>
+        ${whyNote('runtime')}
+        <div class="h-grid2">
+          ${field('Max steps', `<input class="h-input" type="number" min="1" max="8" data-bind="runtime.maxSteps" data-kind="number" value="${d.runtime.maxSteps}">`, 'A step is one model call.')}
+          ${field('Timeout (seconds)', `<input class="h-input" type="number" min="10" max="120" data-bind="runtime.timeoutSeconds" data-kind="number" value="${d.runtime.timeoutSeconds}">`)}
+        </div>
+      </section>
+    </details>`;
+  $('sec-advanced').addEventListener('toggle', (e) => { ST.advancedOpen = e.target.open; });
   renderSchema('inputSchema');
   if (d.runtime.outputFormat === 'json') renderSchema('outputSchema');
   bindForm();
@@ -384,6 +455,7 @@ function readInput(el) {
 }
 
 function changed(rerender) {
+  ST.touched = true;
   if (rerender === 'io') { renderForm(); }
   updateHeader();
   schedulePreview();
@@ -402,9 +474,8 @@ function bindForm() {
     ST.def.tools = ST.def.tools.filter((t) => t.id !== id);
     if (el.checked) ST.def.tools.push({ id });
     else ST.def.humanInTheLoop.approveTools = ST.def.humanInTheLoop.approveTools.filter((t) => t !== id);
-    $('hitl-tools').innerHTML = hitlTools();
-    bindHitl();
     changed();
+    renderForm();
   }));
   bindHitl();
   form.querySelectorAll('[data-ex]').forEach((el) => el.addEventListener('input', () => {
@@ -536,6 +607,11 @@ function renderSide() {
 
 function sideCheck(body) {
   if (!ST.preview) { body.innerHTML = '<div class="h-muted">Checking…</div>'; return; }
+  if (!ST.touched) {
+    body.innerHTML = `<div class="h-callout">Fill in the four numbered parts on the left: a name, what it does, what it receives and returns, and any rules. Checks appear here as you go.</div>
+      <div class="h-help">Not sure how to phrase the instructions? Write one sentence in "What it does", then use the Improve tab.</div>`;
+    return;
+  }
   const v = ST.preview.validation;
   const item = (k, i) => `<div class="s-issue" data-goto="${esc(NAV_OF[i.section] || i.section)}"><span class="h-pill ${k}">${k === 'bad' ? 'error' : 'advice'}</span><span>${esc(i.message)}</span></div>`;
   body.innerHTML = `
@@ -552,7 +628,7 @@ function sideCheck(body) {
       ${ST.def.humanInTheLoop.approveOutput || ST.def.humanInTheLoop.approveTools.length ? '<li>Runs pause at the approval points</li>' : ''}
       <li>At most ${ST.def.runtime.maxSteps} steps and ${ST.def.runtime.timeoutSeconds}s per run</li>
     </ul>`;
-  body.querySelectorAll('[data-goto]').forEach((x) => x.addEventListener('click', () => { const s = $(`sec-${x.dataset.goto}`); if (s) s.scrollIntoView(); }));
+  body.querySelectorAll('[data-goto]').forEach((x) => x.addEventListener('click', () => goTo(x.dataset.goto)));
 }
 
 function sidePrompt(body) {
@@ -653,6 +729,8 @@ function sideTest(body) {
 async function runTest() {
   let input;
   try { input = JSON.parse($('t-input').value || 'null'); } catch { hubToast('Input is not valid JSON', 'error'); return; }
+  ST.touched = true;
+  renderNav();
   const saved = ST.agentId && !isDirty();
   const btn = $('t-run');
   btn.disabled = true;
@@ -689,6 +767,7 @@ async function save() {
   const btn = $('s-save');
   const message = $('s-message').value.trim();
   btn.disabled = true;
+  ST.touched = true;
   try {
     if (ST.agentId) {
       const out = await hubApi('PUT', `/agents/${ST.agentId}`, { definition: ST.def, message: message || 'Update agent' });

@@ -372,9 +372,7 @@ function openImport() {
 // --- workflows ---
 
 function openFlow(id, agentId) {
-  const url = id ? `/flows.html?id=${encodeURIComponent(id)}` : agentId ? `/flows.html?agent=${encodeURIComponent(agentId)}` : '/flows.html';
-  const w = window.open(url, id ? `jr-flow-${id}` : '_blank', 'width=1440,height=900');
-  if (!w) location.href = url;
+  location.href = id ? `/flows.html?id=${encodeURIComponent(id)}` : agentId ? `/flows.html?agent=${encodeURIComponent(agentId)}` : '/flows.html';
 }
 
 async function loadWorkflows() {

@@ -63,7 +63,7 @@ test("normalize drops unknown tools and keeps the schema subset", () => {
 
 test("validation catches tools without permissions and approval that is only words", () => {
   const v = def.validateDefinition({ ...sample(), permissions: { repos: [] } });
-  assert.ok(v.errors.some((e) => /repo\.read needs/.test(e.message)));
+  assert.ok(v.errors.some((e) => /Reading GitHub needs/.test(e.message)));
   const w = def.validateDefinition({ ...sample(), instructions: "Ask for human approval before sending." });
   assert.ok(w.warnings.some((e) => e.section === "humanInTheLoop"));
 });
@@ -263,4 +263,24 @@ test("the hub API is per user, and the hook needs the agent's token", async () =
     const revoked = await call("POST", `/agent/hub/hook/${id}/run`, { input: { email: "x" } }, { Authorization: `Bearer ${conn.body.token}` });
     assert.strictEqual(revoked.status, 401);
   });
+});
+
+test("follow-up questions come from the answers, with a fallback when the model fails", async () => {
+  const prompts = [];
+  builder._setBuilderTurnForTests(async (p) => { prompts.push(p); return { text: '{"questions":[{"q":"Which categories should it use?","options":["bug","billing","other"]},{"q":"x"}]}', error: null }; });
+  const out = await builder.followUpQuestions([{ q: "What does your agent need to do?", a: "Sort support emails" }], "groq");
+  assert.match(prompts[0], /Sort support emails/);
+  assert.deepStrictEqual(out.questions.map((q) => q.q), ["Which categories should it use?"]);
+  assert.strictEqual(out.fallback, false);
+  builder._setBuilderTurnForTests(async () => ({ text: "", error: "401 Invalid API Key" }));
+  const fb = await builder.followUpQuestions([{ q: "a", a: "b" }], "groq");
+  assert.strictEqual(fb.fallback, true);
+  assert.ok(fb.questions.length >= 2);
+});
+
+test("provider errors are explained in plain words", async () => {
+  const { friendlyModelError } = await import("./llm.js");
+  assert.match(friendlyModelError("401 Invalid API Key"), /rejected this server's API key/);
+  assert.match(friendlyModelError("429 Rate limit reached"), /rate-limiting/);
+  assert.strictEqual(friendlyModelError("something odd"), "something odd");
 });
