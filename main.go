@@ -113,7 +113,9 @@ func main() {
 	builder.SetTemplates(builderTemplates)
 
 	core.ReapOrphans()
-	core.EnsureSandboxNetwork()
+	if core.EngineUp() {
+		core.EnsureSandboxNetwork()
+	}
 	core.StartJanitor()
 	go core.PreheatImages()
 	if cfg.SpawnAgent {

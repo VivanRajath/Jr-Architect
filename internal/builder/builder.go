@@ -582,6 +582,7 @@ func ScaffoldHandler(w http.ResponseWriter, r *http.Request) {
 		core.JSONError(w, err.Error(), 429)
 		return
 	}
+	core.EnsureNetworkBeforeRun()
 	addBuildRecord(BuildRecord{
 		ID:        buildID,
 		AppName:   prd.Name,

@@ -32,6 +32,13 @@ var sandboxNetwork = ""
 // Dropped because nothing a repo installs or serves needs them, and each widens what a hostile repo can try.
 var droppedCaps = []string{"NET_RAW", "MKNOD", "SYS_CHROOT", "AUDIT_WRITE", "SETFCAP"}
 
+// Called before each start: if the engine was down at boot, the isolated network is created now instead of never.
+func EnsureNetworkBeforeRun() {
+	if sandboxNetwork == "" && !IsPodman() {
+		EnsureSandboxNetwork()
+	}
+}
+
 func EnsureSandboxNetwork() {
 	if IsPodman() {
 		Logf("docker", "podman: each rootless container gets its own network namespace, no shared bridge needed")
@@ -130,6 +137,10 @@ func ImageExists(image string) bool {
 
 // Nil means every image; JR_PREHEAT_IMAGES narrows it, and the rest build the first time a repo needs them.
 func PreheatImages() {
+	if !EngineUp() {
+		fmt.Println("Skipping sandbox image builds: " + EngineDownMessage() + " Images build on first use once it is up; Agent Hub and Workflows work without it.")
+		return
+	}
 	want := map[string]bool{}
 	for _, name := range Cfg.PreheatImages {
 		want["sandbox-"+name] = true

@@ -872,7 +872,38 @@ function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Agent Hub summary on the home page: counts, the latest few items, and shortcuts into the Hub windows.
+function openHubWindow(url) {
+  const w = window.open(url, '_blank', 'width=1440,height=900');
+  if (!w) location.href = url;
+}
+
+async function loadHubSummary() {
+  try {
+    const [a, f] = await Promise.all([fetch('/agent/hub/agents').then(r => r.json()), fetch('/agent/hub/workflows').then(r => r.json())]);
+    const agents = a.agents || [];
+    const flows = f.workflows || [];
+    document.getElementById('hubAgentCount').textContent = agents.length;
+    document.getElementById('hubFlowCount').textContent = flows.length;
+    document.getElementById('hubAgentWord').textContent = agents.length === 1 ? 'agent' : 'agents';
+    document.getElementById('hubFlowWord').textContent = flows.length === 1 ? 'workflow' : 'workflows';
+    const recent = [
+      ...agents.map(x => ({ kind: 'Agent', name: x.definition.identity.name, at: x.updatedAt, url: `/studio.html?agent=${encodeURIComponent(x.definition.id)}` })),
+      ...flows.map(x => ({ kind: 'Workflow', name: x.name, at: x.updatedAt, url: `/flows.html?id=${encodeURIComponent(x.id)}` })),
+    ].sort((x, y) => y.at - x.at).slice(0, 4);
+    const box = document.getElementById('hubRecent');
+    box.innerHTML = recent.length
+      ? recent.map(r => `<button class="hub-recent-item" data-url="${escHtml(r.url)}"><span class="hub-kind">${r.kind}</span>${escHtml(r.name)}<small>${new Date(r.at).toLocaleDateString()}</small></button>`).join('')
+      : '<div class="hub-card-lead" style="margin:0">Nothing yet. Start with an agent: describe what it should do in plain English.</div>';
+    box.querySelectorAll('[data-url]').forEach(b => b.addEventListener('click', () => openHubWindow(b.dataset.url)));
+  } catch {
+    document.getElementById('hubRecent').innerHTML = '<div class="hub-card-lead" style="margin:0">The agent service is starting; refresh in a moment.</div>';
+  }
+}
+
 // Initial load
+loadHubSummary();
+window.addEventListener('focus', loadHubSummary);
 loadSandboxes();
 loadBuildHistory();
 setInterval(loadSandboxes, 5000);

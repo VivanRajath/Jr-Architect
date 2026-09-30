@@ -35,10 +35,6 @@
         <h1>Run Any Repo <span>Instantly</span></h1>
         <p class="subtitle">Paste a GitHub URL and get a live sandbox in seconds. Use Prompt Mode for quick runs or Dev
           Mode for a full cloud IDE experience.</p>
-        <a class="btn btn-ghost btn-sm hub-link" href="/hub.html">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          Agent Hub: build and manage your agents
-        </a>
       </header>
   
       <!-- Run a sandbox -->
@@ -122,6 +118,28 @@
         <div id="runStatus" class="status-bar"></div>
       </div>
   
+      <!-- Agent Hub -->
+      <div class="card hub-card" id="hubCard">
+        <div class="sandboxes-header">
+          <div class="section-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            Agent Hub
+          </div>
+          <a class="btn btn-sm btn-ghost" href="/hub.html">Open Hub</a>
+        </div>
+        <p class="hub-card-lead">Build your own AI agents, then drag them into workflows with conditions, human approvals and
+          HTTP calls, like n8n. Your model, your tools, your guardrails.</p>
+        <div class="hub-stats">
+          <a class="hub-stat" href="/hub.html"><strong id="hubAgentCount">–</strong><span id="hubAgentWord">agents</span></a>
+          <a class="hub-stat" href="/hub.html#workflows"><strong id="hubFlowCount">–</strong><span id="hubFlowWord">workflows</span></a>
+        </div>
+        <div id="hubRecent" class="hub-recent"></div>
+        <div class="link-row hub-actions">
+          <button class="btn btn-sm" onclick="openHubWindow('/studio.html')">+ New agent</button>
+          <button class="btn btn-sm btn-ghost" onclick="openHubWindow('/flows.html')">+ New workflow</button>
+        </div>
+      </div>
+
       <!-- Build History -->
       <div class="card" id="buildHistoryCard" style="display:none;">
         <div class="sandboxes-header">

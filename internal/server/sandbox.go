@@ -380,6 +380,12 @@ func primaryOf(services []core.Service) core.Service {
 	return core.Service{}
 }
 
+// Swapped in tests so /run can be exercised without a container engine.
+var (
+	engineUp      = core.EngineUp
+	ensureNetwork = core.EnsureNetworkBeforeRun
+)
+
 func runHandler(w http.ResponseWriter, r *http.Request) {
 	core.CORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -394,6 +400,11 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 	if mode == "" {
 		mode = "prompt"
 	}
+	if !engineUp() {
+		core.JSONError(w, core.EngineDownMessage(), 503)
+		return
+	}
+	ensureNetwork()
 	sb, err := startSandbox(core.UserOf(r), req.Repo, req.Instructions, mode, req.AutoApprove)
 	if err != nil {
 		code := 400

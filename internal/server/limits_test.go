@@ -25,6 +25,9 @@ func TestRunAndScaffoldReturn429WhenFull(t *testing.T) {
 		}
 	}
 
+	oldEngine, oldNet := engineUp, ensureNetwork
+	engineUp, ensureNetwork = func() bool { return true }, func() {}
+	defer func() { engineUp, ensureNetwork = oldEngine, oldNet }()
 	rec := httptest.NewRecorder()
 	runHandler(rec, asUser(httptest.NewRequest("POST", "/run", strings.NewReader(`{"repo":"https://github.com/a/b"}`)), "u-new"))
 	if rec.Code != 429 || !strings.Contains(rec.Body.String(), "capacity") {
@@ -38,5 +41,16 @@ func TestRunAndScaffoldReturn429WhenFull(t *testing.T) {
 	}
 	if len(core.AllSandboxes()) != 1 {
 		t.Fatalf("a refused request left %d sandboxes registered", len(core.AllSandboxes()))
+	}
+}
+
+func TestRunExplainsAStoppedEngine(t *testing.T) {
+	oldEngine := engineUp
+	engineUp = func() bool { return false }
+	defer func() { engineUp = oldEngine }()
+	rec := httptest.NewRecorder()
+	runHandler(rec, asUser(httptest.NewRequest("POST", "/run", strings.NewReader(`{"repo":"https://github.com/a/b"}`)), "u-new"))
+	if rec.Code != 503 || !strings.Contains(rec.Body.String(), "not running") {
+		t.Fatalf("/run with the engine down = %d %s, want 503 with a clear reason", rec.Code, rec.Body.String())
 	}
 }
