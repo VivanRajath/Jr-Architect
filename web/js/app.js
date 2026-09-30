@@ -71,7 +71,51 @@ function setRunStatus(type, icon, html) {
 }
 
 // Repo state between /run (clone + scan) and /run/approve (build + start).
-let repoState = { container: null, repo: '', plan: null, mode: 'prompt' };
+let repoState = { container: null, repo: '', plan: null, mode: 'prompt', startedAt: 0 };
+
+// The server reports one of these stages (plus 'ready'/'failed'); each is a row the user can follow.
+const RUN_STEPS = [
+  ['clone', 'Clone the repository'],
+  ['approve', 'Review what was found'],
+  ['image', 'Prepare the runtime'],
+  ['install', 'Install dependencies'],
+  ['start', 'Start the app'],
+  ['preview', 'Open the live preview'],
+];
+
+function fmtElapsed(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+function renderProgress(stage, detail) {
+  const idx = stage === 'ready' ? RUN_STEPS.length : RUN_STEPS.findIndex(s => s[0] === stage);
+  const rows = RUN_STEPS.map(([key, label], i) => {
+    const state = i < idx ? 'done' : i === idx ? 'active' : 'todo';
+    const extra = state === 'active' && detail ? `<div class="run-step-detail">${escHtml(detail)}</div>` : '';
+    return `<li class="run-step ${state}"><span class="run-step-dot"></span><span>${label}</span>${extra}</li>`;
+  }).join('');
+  // Once the build has started the IDE can open; it keeps showing progress until the preview is up.
+  const canOpen = idx >= 2 && repoState.container;
+  setRunStatus('loading', '', `
+    <div class="run-progress">
+      <div class="run-progress-head">
+        <strong>Setting up ${escHtml(repoState.repo.replace(/https?:\/\/github\.com\//, ''))}</strong>
+        <span class="run-elapsed">${fmtElapsed(Date.now() - repoState.startedAt)}</span>
+      </div>
+      <ol class="run-steps">${rows}</ol>
+      <div class="link-row">
+        ${canOpen ? `<button class="btn btn-sm btn-success" onclick="openIDEFromRun()">Open IDE now</button>` : ''}
+        ${repoState.container ? `<button class="btn btn-sm btn-ghost" onclick="viewLogs('${repoState.container}')">Raw logs</button>` : ''}
+      </div>
+    </div>`);
+}
+
+function openIDEFromRun() {
+  if (!repoState.container) return;
+  initIDE(repoState.container, repoState.repo, '');
+  loadSandboxes();
+}
 
 async function runSandbox() {
   const repo = document.getElementById('repoInput').value.trim();
@@ -86,7 +130,8 @@ async function runSandbox() {
   const btn = document.getElementById('runBtn');
   btn.disabled = true;
   btn.closest('.card').classList.add('loading');
-  setRunStatus('loading', '', `Cloning <strong>${escHtml(repo)}</strong> and looking for services…`);
+  repoState = { container: null, repo, plan: null, mode: currentMode, startedAt: Date.now() };
+  renderProgress('clone', 'Cloning the repository and looking for services');
 
   try {
     const res = await fetch(`${API}/run`, {
@@ -97,7 +142,8 @@ async function runSandbox() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Unknown error');
 
-    repoState = { container: data.container, repo, plan: null, mode: data.mode || currentMode };
+    repoState.container = data.container;
+    repoState.mode = data.mode || currentMode;
     await waitForPlan(data.container);
   } catch (err) {
     setRunStatus('error', '', `<strong>Error:</strong> ${escHtml(err.message)}`);
@@ -110,6 +156,7 @@ async function runSandbox() {
 // The clone runs server-side, so poll until the scan produces something to approve.
 async function waitForPlan(container) {
   for (let i = 0; i < 150; i++) {
+    renderProgress('clone', 'Cloning the repository and looking for services');
     const res = await fetch(`${API}/run/plan?container=${encodeURIComponent(container)}`);
     if (res.ok) {
       const d = await res.json();
@@ -161,14 +208,15 @@ function renderApproval(plan) {
     ${buildNote}
     <div class="link-row" style="margin-top:10px;">
       <button class="btn btn-sm btn-ghost" onclick="cancelApproval()">Cancel</button>
-      <button class="btn btn-sm btn-success" onclick="approveRun()">Approve &amp; Build</button>
+      <button class="btn btn-sm btn-ghost" onclick="approveRun(false)">Approve &amp; watch progress</button>
+      <button class="btn btn-sm btn-success" onclick="approveRun(true)">Approve &amp; open IDE</button>
     </div>
   `);
 }
 
 function cancelApproval() {
   if (repoState.container) fetch(`${API}/stop/${repoState.container}`, { method: 'POST' }).catch(() => {});
-  repoState = { container: null, repo: '', plan: null, mode: 'prompt' };
+  repoState = { container: null, repo: '', plan: null, mode: 'prompt', startedAt: 0 };
   const bar = document.getElementById('runStatus');
   bar.className = 'status-bar';
   bar.innerHTML = '';
@@ -194,7 +242,7 @@ function collectEdits(plan) {
   });
 }
 
-async function approveRun() {
+async function approveRun(openIDE = false) {
   const plan = repoState.plan;
   if (!plan) return;
   const edits = collectEdits(plan);
@@ -203,11 +251,7 @@ async function approveRun() {
     return;
   }
 
-  const n = edits.filter(e => e.enabled).length;
-  setRunStatus('loading', '', `Building and starting ${n} service${n === 1 ? '' : 's'}…
-    <div class="link-row" style="margin-top:8px;">
-      <button class="btn btn-sm btn-ghost" onclick="viewLogs('${repoState.container}')">Logs</button>
-    </div>`);
+  renderProgress('image', 'Starting the build');
 
   try {
     const res = await fetch(`${API}/run/approve`, {
@@ -217,6 +261,7 @@ async function approveRun() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'approval failed');
+    if (openIDE) openIDEFromRun();
     pollUntilRunning(repoState.container);
   } catch (err) {
     setRunStatus('error', '', `<strong>Error:</strong> ${escHtml(err.message)}`);
@@ -234,8 +279,11 @@ async function pollUntilRunning(container) {
       d = await res.json();
     } catch (_) { continue; }
 
-    if (d.status === 'failed' || d.status === 'exited' || d.status === 'dead') {
-      setRunStatus('error', '', `<strong>Failed:</strong> ${escHtml(d.error || 'see the logs')}
+    // The IDE took over (Open IDE now); it shows the same progress itself.
+    if (document.body.classList.contains('ide-mode')) return;
+
+    if (d.stage === 'failed') {
+      setRunStatus('error', '', `<strong>Failed:</strong> ${escHtml(d.detail || d.error || 'see the logs')}
         <div class="link-row" style="margin-top:8px;">
           <button class="btn btn-sm btn-ghost" onclick="viewLogs('${container}')">Logs</button>
         </div>`);
@@ -243,30 +291,29 @@ async function pollUntilRunning(container) {
       return;
     }
 
-    // Dev Mode opens the IDE as soon as the container is up rather than waiting for
-    // the port to answer: an install takes minutes, and the IDE has its own
-    // "starting your app" state to sit in meanwhile.
-    if (repoState.mode === 'dev' && (d.status === 'running' || d.status === 'starting')) {
-      setRunStatus('success', '', `<strong>Sandbox is live!</strong> Opening IDE...`);
-      toast('Sandbox launched — opening IDE!');
-      initIDE(container, repoState.repo, d.port);
-      loadSandboxes();
+    // Dev Mode opens the IDE as soon as the container is up; the IDE shows the rest of the progress.
+    if (repoState.mode === 'dev' && ['install', 'start', 'preview', 'ready'].includes(d.stage)) {
+      toast('Sandbox started — opening IDE');
+      openIDEFromRun();
       return;
     }
-    if (d.status !== 'running') continue;
+    if (d.stage !== 'ready') {
+      renderProgress(d.stage, d.detail);
+      continue;
+    }
 
     {
       const links = (d.services || []).filter(s => s.url).map(s =>
         `<a class="sandbox-link" href="${s.url}" target="_blank" rel="noopener">${escHtml(s.name)} ${escHtml(s.url)}</a>`
       ).join('');
       setRunStatus('success', '', `
-        <strong>Sandbox is live!</strong><br>
+        <strong>Your app is live</strong> <span class="run-elapsed">ready in ${fmtElapsed(Date.now() - repoState.startedAt)}</span><br>
         <div class="link-row" style="margin-top:8px;">
           ${links}
           <button class="btn btn-sm btn-ghost" onclick="viewLogs('${container}')">Logs</button>
           <button class="btn btn-sm btn-success" onclick="initIDE('${container}','${escHtml(repoState.repo)}', '${d.port}')">Open IDE</button>
         </div>
-        <small style="color:var(--text3); display:block; margin-top:6px;">Auto-destroys in 10 min -- Container: ${container}</small>
+        <small style="color:var(--text3); display:block; margin-top:6px;">Stops after 15 minutes without activity (45 minutes at most).</small>
       `);
       toast('Sandbox launched!');
     }

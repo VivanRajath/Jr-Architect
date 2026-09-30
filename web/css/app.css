@@ -1525,3 +1525,65 @@ textarea:focus {
   }
 }
   </style>
+
+/* Run progress: one row per stage the server reports */
+.run-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-4);
+}
+
+.run-elapsed {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text3);
+}
+
+.run-steps {
+  list-style: none;
+  margin: var(--sp-4) 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.run-step {
+  display: grid;
+  grid-template-columns: var(--sp-5) 1fr;
+  align-items: center;
+  column-gap: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text3);
+}
+
+.run-step-dot {
+  width: var(--sp-4);
+  height: var(--sp-4);
+  border-radius: var(--r-pill);
+  border: var(--sp-hair) solid var(--border2);
+}
+
+.run-step.done { color: var(--text2); }
+.run-step.done .run-step-dot { background: var(--green); border-color: var(--green); }
+
+.run-step.active { color: var(--text); font-weight: var(--fw-semibold); }
+.run-step.active .run-step-dot {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 var(--sp-1) var(--accent-soft);
+  animation: run-step-pulse 1.2s ease-in-out infinite;
+}
+
+.run-step-detail {
+  grid-column: 2;
+  margin-top: var(--sp-1);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+  color: var(--text2);
+  overflow-wrap: anywhere;
+}
+
+@keyframes run-step-pulse {
+  50% { background: var(--accent-soft); }
+}

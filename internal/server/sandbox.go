@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -214,6 +215,7 @@ func launch(container, workdir string, plan core.Plan, services []core.Service, 
 		go gitagent.RegisterWithAgentService(container, workdir, stack, ownerOf(container))
 	}
 
+	core.UpdateSandbox(container, func(s *core.Sandbox) { s.Stage = "image" })
 	if err := core.EnsureImage(container, plan.Image); err != nil {
 		core.AddLog(container, "Failed to prepare the sandbox image: "+err.Error())
 		return err
@@ -233,6 +235,9 @@ func launch(container, workdir string, plan core.Plan, services []core.Service, 
 		core.Run("", core.CLI(), "rm", "-f", "-v", container)
 		return nil
 	}
+	core.UpdateSandbox(container, func(s *core.Sandbox) { s.Stage = "container" })
+	// The tunnel comes up while dependencies install, instead of adding its own wait at the end.
+	core.OpenPreviews(container)
 
 	primary := primaryOf(services)
 	if primary.HostPort == 0 {
@@ -249,7 +254,6 @@ func launch(container, workdir string, plan core.Plan, services []core.Service, 
 		s.Status = core.StatusRunning
 		s.LastActive = time.Now()
 	})
-	core.OpenPreviews(container)
 	return nil
 }
 
@@ -591,17 +595,94 @@ func sandboxStatusHandler(w http.ResponseWriter, r *http.Request) {
 		services = append(services, entry)
 	}
 
+	url := core.PrimaryPreviewURL(sb)
+	stage, detail := stageOf(sb, status, url)
 	writeJSON(w, map[string]interface{}{
 		"container": sb.Container,
 		"port":      sb.Port,
 		"repo":      sb.Repo,
 		"status":    status,
-		"url":       core.PrimaryPreviewURL(sb),
+		"stage":     stage,
+		"detail":    detail,
+		"url":       url,
 		"framework": sb.Framework,
 		"image":     sb.Image,
 		"services":  services,
 		"error":     sb.Error,
 	})
+}
+
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
+
+// The newest meaningful line of a log, so the UI can say what is happening right now.
+func lastLogLine(out string) string {
+	lines := strings.Split(ansiEscape.ReplaceAllString(out, ""), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		// npm redraws progress with \r, so only the text after the last one is current.
+		l := lines[i]
+		if j := strings.LastIndex(l, "\r"); j >= 0 {
+			l = l[j+1:]
+		}
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "--- ") {
+			if len(l) > 160 {
+				l = l[:160] + "…"
+			}
+			return l
+		}
+	}
+	return ""
+}
+
+// Install versus start comes from the supervisor's marker in the primary service's log.
+func appPhase(sb core.Sandbox) (string, string) {
+	p, ok := sb.PrimaryService()
+	if !ok && len(sb.Services) > 0 {
+		p = sb.Services[0]
+	}
+	if p.Name != "" {
+		if out, err := core.Output("", core.CLI(), "exec", sb.Container, "tail", "-n", "40", serviceLog(p)); err == nil {
+			if strings.Contains(out, "--- starting") {
+				return "start", lastLogLine(out)
+			}
+			// npm and pip run quietly here, so silence usually just means the download is still going.
+			if line := lastLogLine(out); line != "" {
+				return "install", line
+			}
+			return "install", "Downloading and installing packages, usually 1 to 3 minutes on a first run"
+		}
+	}
+	out, _ := core.Output("", core.CLI(), "logs", "--tail", "20", sb.Container)
+	return "start", lastLogLine(out)
+}
+
+// One step name the UI can show, with the line of output that explains it.
+func stageOf(sb core.Sandbox, status, url string) (string, string) {
+	switch status {
+	case core.StatusDetecting:
+		return "clone", "Cloning the repository and looking for services"
+	case core.StatusAwaiting:
+		return "approve", "Review what was found, then start it"
+	case core.StatusFailed, "exited", "dead", "unknown":
+		msg := sb.Error
+		if msg == "" {
+			msg = "The sandbox stopped. Open the logs to see why."
+		}
+		return "failed", msg
+	case core.StatusBuilding:
+		if sb.Stage != "container" {
+			return "image", "Preparing the " + strings.TrimPrefix(sb.Image, "sandbox-") + " runtime (the first build of a new kind of project takes a few minutes)"
+		}
+		return appPhase(sb)
+	case "starting":
+		return appPhase(sb)
+	}
+	if sb.Port == 0 {
+		return "ready", "Running; this project serves no web page to preview"
+	}
+	if url == "" {
+		return "preview", "Opening the public preview link"
+	}
+	return "ready", "Your app is live"
 }
 
 func portAnswers(port int) bool {

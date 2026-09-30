@@ -847,6 +847,7 @@ async function fetchStatus() {
     const running = data.status === 'running';
     if (running && !IDE.appReady) { IDE.appReady = true; onAppReady(); }
     else if (!running) { IDE.appReady = false; }
+    showStageInPreview(data.stage, data.detail);
 
     // Intelligent IDE: if the app is still not answering well after a grace
     // window (a slow install is normal, a broken build is not), let the agent
@@ -981,6 +982,24 @@ function loadPreviewIntoIframe() {
   if (!IDE.previewUrl) { showPreviewLoading(); IDE.previewPending = true; return; }
   iframe.style.display = '';
   iframe.src = IDE.previewUrl;
+}
+
+// The waiting panel says which step the sandbox is on and the newest line of its output.
+const STAGE_TITLES = {
+  clone: 'Cloning the repository…',
+  approve: 'Waiting for approval…',
+  image: 'Preparing the runtime…',
+  install: 'Installing dependencies…',
+  start: 'Starting the dev server…',
+  preview: 'Opening the preview link…',
+  failed: 'The app did not start',
+};
+function showStageInPreview(stage, detail) {
+  const title = document.getElementById('preview-loading-title');
+  const sub = document.getElementById('preview-loading-sub');
+  if (!title || !sub || !STAGE_TITLES[stage]) return;
+  title.textContent = STAGE_TITLES[stage];
+  if (detail) sub.textContent = detail;
 }
 
 function showPreviewLoading() {

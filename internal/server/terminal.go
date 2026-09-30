@@ -124,7 +124,8 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 	// container is created asynchronously (after clone + runtime detection). A
 	// terminal opened during that window would hit "No such container", so wait for
 	// the container to be running before exec'ing a shell.
-	if !waitForContainerRunning(ctx, cli, containerName, conn, 120*time.Second) {
+	// A first build of a new runtime can take minutes, and the IDE now opens before it finishes.
+	if !waitForContainerRunning(ctx, cli, containerName, conn, 15*time.Minute) {
 		conn.WriteMessage(websocket.TextMessage, []byte("\r\n\x1b[31m[sandbox did not start in time — reload the page to retry]\x1b[0m\r\n"))
 		return
 	}

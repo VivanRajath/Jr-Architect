@@ -35,6 +35,8 @@ type Sandbox struct {
 	PreviewToken string `json:"-"`
 	// Filled in for responses only.
 	URL string `json:"url,omitempty"`
+	// Where the build is while Status is still "building": "image" or "container".
+	Stage string `json:"-"`
 }
 
 // The service the preview opens, or false when nothing serves HTTP.

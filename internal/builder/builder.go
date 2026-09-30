@@ -723,6 +723,8 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 		core.Run("", core.CLI(), "rm", "-f", "-v", container)
 		return nil
 	}
+	core.UpdateSandbox(container, func(s *core.Sandbox) { s.Stage = "container" })
+	core.OpenPreviews(container)
 
 	if !core.WaitForServer(port) {
 		core.AddLog(container, "Warning: server not ready yet — check logs")
@@ -739,7 +741,6 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 		s.Status = core.StatusRunning
 		s.LastActive = time.Now()
 	})
-	core.OpenPreviews(container)
 
 	return nil
 }
