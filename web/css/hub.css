@@ -98,6 +98,7 @@ body.h-page {
 .h-code { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: var(--sp-3); font-family: var(--mono); font-size: var(--fs-xs); white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; color: var(--text2); }
 
 /* Hub list */
+.h-section-tabs { padding: 0; margin-bottom: var(--sp-6); }
 .h-intro { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-5); margin-bottom: var(--sp-6); flex-wrap: wrap; }
 .h-intro h1 { font-size: var(--fs-2xl); font-weight: var(--fw-bold); line-height: var(--lh-tight); }
 .h-intro p { color: var(--text2); max-width: 620px; margin-top: var(--sp-2); }

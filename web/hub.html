@@ -22,6 +22,11 @@
   </header>
 
   <main class="h-main">
+    <nav class="h-tabs h-section-tabs" aria-label="Hub sections">
+      <button class="h-tab active" data-section="agents">Agents</button>
+      <button class="h-tab" data-section="workflows">Workflows</button>
+    </nav>
+    <div id="sec-agents">
     <section class="h-intro">
       <div>
         <h1>Your agents</h1>
@@ -35,6 +40,18 @@
       </div>
     </section>
     <div id="agent-list" class="h-cards" aria-live="polite"></div>
+    </div>
+    <div id="sec-workflows" hidden>
+      <section class="h-intro">
+        <div>
+          <h1>Workflows</h1>
+          <p>Drag your agents onto a canvas and wire them together with conditions, human approvals and HTTP calls,
+            like n8n. Every agent step still runs through its own tools, permissions and guardrails.</p>
+        </div>
+        <div class="h-row"><button class="h-btn" onclick="openFlow()">+ New workflow</button></div>
+      </section>
+      <div id="workflow-list" class="h-cards" aria-live="polite"></div>
+    </div>
   </main>
 
   <aside id="drawer" class="h-drawer" aria-hidden="true">

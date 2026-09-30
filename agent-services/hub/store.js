@@ -22,7 +22,7 @@ export function userKey(user) {
   return createHash("sha256").update(String(user)).digest("hex").slice(0, 24);
 }
 
-const userDir = (user) => join(hubRoot(), userKey(user));
+export const userDir = (user) => join(hubRoot(), userKey(user));
 const agentDir = (user, id) => join(userDir(user), "agents", id);
 const stateDir = (user, id) => join(userDir(user), "state", id);
 
@@ -31,7 +31,7 @@ function assertId(id) {
 }
 
 // Our own repos only, so hooks never run; identity is fixed so commits work on a fresh machine.
-function git(dir, args) {
+export function git(dir, args) {
   return new Promise((resolve, reject) => {
     execFile("git", ["-c", "user.name=Jr-Architect", "-c", "user.email=agents@jr-architect.local",
       "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", ...args],
@@ -42,7 +42,7 @@ function git(dir, args) {
 
 // Saves of one agent are serialized so two commits never interleave.
 const locks = new Map();
-async function withLock(key, fn) {
+export async function withLock(key, fn) {
   const prev = locks.get(key) || Promise.resolve();
   let release;
   const next = new Promise((r) => { release = r; });
@@ -51,10 +51,10 @@ async function withLock(key, fn) {
   try { return await fn(); } finally { release(); if (locks.get(key) === next) locks.delete(key); }
 }
 
-function readJSON(p, fallback) {
+export function readJSON(p, fallback) {
   try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return fallback; }
 }
-function writeJSON(p, v) {
+export function writeJSON(p, v) {
   fs.mkdirSync(join(p, ".."), { recursive: true });
   const tmp = `${p}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(v, null, 2));
@@ -193,35 +193,46 @@ export function definitionFromImport(body) {
 const keysPath = (user) => join(userDir(user), "keys.json");
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
-export async function issueKey(user, id) {
+// Agents and workflows each get their own token namespace, so an agent token can never run a workflow of the same name.
+const KEY_KINDS = { agent: { prefix: "jrk", slot: (id) => id }, workflow: { prefix: "jrw", slot: (id) => `wf:${id}` } };
+
+export function keyInfo(user, id, kind = "agent") {
+  const e = readJSON(keysPath(user), {})[KEY_KINDS[kind].slot(id)];
+  return e ? { prefix: e.prefix, createdAt: e.createdAt, lastUsedAt: e.lastUsedAt || null } : null;
+}
+
+export async function issueKey(user, id, kind = "agent") {
   assertId(id);
+  const k = KEY_KINDS[kind];
   return withLock(keysPath(user), async () => {
     const keys = readJSON(keysPath(user), {});
     const secret = randomBytes(24).toString("hex");
-    const token = `jrk_${userKey(user)}_${id}_${secret}`;
-    keys[id] = { hash: sha256(token), prefix: token.slice(0, 12 + id.length) + "…", createdAt: Date.now(), owner: user };
+    const token = `${k.prefix}_${userKey(user)}_${id}_${secret}`;
+    keys[k.slot(id)] = { hash: sha256(token), prefix: token.slice(0, 12 + id.length) + "…", createdAt: Date.now(), owner: user };
     writeJSON(keysPath(user), keys);
     return token;
   });
 }
 
-export async function revokeKey(user, id) {
+export async function revokeKey(user, id, kind = "agent") {
+  const slot = KEY_KINDS[kind].slot(id);
   return withLock(keysPath(user), async () => {
     const keys = readJSON(keysPath(user), {});
-    if (!keys[id]) return false;
-    delete keys[id];
+    if (!keys[slot]) return false;
+    delete keys[slot];
     writeJSON(keysPath(user), keys);
     return true;
   });
 }
 
 // Returns { user, id } for a valid token bound to that agent, else null.
-export function resolveKey(token, id) {
-  const m = /^jrk_([a-f0-9]{24})_([a-z0-9][a-z0-9-]{0,47})_([a-f0-9]{48})$/.exec(String(token || ""));
-  if (!m || m[2] !== id) return null;
-  const keysFile = join(hubRoot(), m[1], "keys.json");
+export function resolveKey(token, id, kind = "agent") {
+  const k = KEY_KINDS[kind];
+  const m = /^(jr[kw])_([a-f0-9]{24})_([a-z0-9][a-z0-9-]{0,47})_([a-f0-9]{48})$/.exec(String(token || ""));
+  if (!m || m[1] !== k.prefix || m[3] !== id) return null;
+  const keysFile = join(hubRoot(), m[2], "keys.json");
   const keys = readJSON(keysFile, {});
-  const entry = keys[id];
+  const entry = keys[k.slot(id)];
   if (!entry || !entry.hash) return null;
   const a = Buffer.from(sha256(token));
   const b = Buffer.from(entry.hash);

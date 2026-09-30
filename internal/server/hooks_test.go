@@ -27,6 +27,9 @@ func TestHookReachesTheHubWithoutASession(t *testing.T) {
 	if gotPath != "/agent/hub/hook/triage/run" || gotUser != "hook" || gotAuth != "Bearer jrk_x" {
 		t.Fatalf("backend saw path=%q user=%q auth=%q", gotPath, gotUser, gotAuth)
 	}
+	if rec := do(h, "POST", "/hooks/workflows/triage-flow/run", `{}`, nil); rec.Code != 200 || gotPath != "/agent/hub/hook-wf/triage-flow/run" {
+		t.Fatalf("workflow hook status %d, backend path %q", rec.Code, gotPath)
+	}
 }
 
 func TestHookExemptionDoesNotOpenTheAgentAPI(t *testing.T) {

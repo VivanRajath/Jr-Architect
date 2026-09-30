@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Workflow Editor - Jr Architect</title>
+  <link rel="stylesheet" href="/css/tokens.css" />
+  <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="/css/hub.css" />
+  <link rel="stylesheet" href="/css/flows.css" />
+</head>
+
+<body class="h-page f-page">
+  <header class="h-top f-top">
+    <div class="h-brand">
+      <a href="/hub.html#workflows" target="jr-agent-hub">Agent Hub</a>
+      <input id="f-name" class="f-name" aria-label="Workflow name" value="New workflow">
+    </div>
+    <span class="h-pill" id="f-version" hidden></span>
+    <span class="s-dirty" id="f-dirty" hidden>Unsaved changes</span>
+    <span class="h-spacer"></span>
+    <button class="h-btn h-btn-ghost h-btn-sm" id="f-runs-btn">Executions</button>
+    <button class="h-btn h-btn-ghost h-btn-sm" id="f-hook-btn">Webhook</button>
+    <button class="h-btn h-btn-ok" id="f-run">Run workflow</button>
+    <button class="h-btn" id="f-save">Save</button>
+    <button class="h-btn h-btn-ghost h-btn-sm" onclick="toggleTheme()" title="Toggle dark mode">Theme</button>
+  </header>
+
+  <div class="f-shell">
+    <aside class="f-palette" id="f-palette" aria-label="Nodes"></aside>
+    <main class="f-canvas" id="f-canvas" tabindex="0" aria-label="Workflow canvas">
+      <div class="f-world" id="f-world">
+        <svg class="f-edges" id="f-edges" aria-hidden="true"></svg>
+      </div>
+      <div class="f-banner" id="f-banner" hidden></div>
+      <div class="f-hint" id="f-hint" hidden>Drag nodes from the left onto the canvas.<br>Connect them by dragging from a node's right dot to another node.</div>
+      <div class="f-tools">
+        <button class="h-btn h-btn-ghost h-btn-sm" id="f-zoom-out" aria-label="Zoom out">−</button>
+        <button class="h-btn h-btn-ghost h-btn-sm" id="f-fit">Fit</button>
+        <button class="h-btn h-btn-ghost h-btn-sm" id="f-zoom-in" aria-label="Zoom in">+</button>
+      </div>
+    </main>
+    <aside class="f-panel">
+      <div class="f-panel-body" id="f-panel"></div>
+    </aside>
+  </div>
+
+  <script src="/js/hub-common.js"></script>
+  <script src="/js/flow-editor.js"></script>
+</body>
+
+</html>

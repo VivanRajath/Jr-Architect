@@ -50,6 +50,7 @@ func Routes(mux *http.ServeMux, webFS fs.FS) {
 	mux.HandleFunc("/terminal/ws", terminalWSHandler)
 	mux.Handle("/agent/", agentProxyHandler())
 	mux.Handle(hookPrefix, hooksHandler())
+	mux.Handle(wfHookPrefix, hooksHandler())
 
 	mux.HandleFunc("/build/questions", llmLimited(builder.QuestionsHandler))
 	mux.HandleFunc("/build/prd", llmLimited(builder.PRDHandler))

@@ -72,6 +72,7 @@ async function openAgent(id, tab) {
     ${HUB.current.n8n ? '<span class="h-pill good">n8n connected</span>' : ''}`;
   document.getElementById('d-actions').innerHTML = `
     <button class="h-btn h-btn-sm" onclick="openStudio('${esc(id)}')">Edit in Studio</button>
+    <button class="h-btn h-btn-ghost h-btn-sm" onclick="openFlow('', '${esc(id)}')">Use in a workflow</button>
     <button class="h-btn h-btn-ghost h-btn-sm" onclick="duplicateAgent('${esc(id)}')">Duplicate</button>
     <button class="h-btn h-btn-ghost h-btn-sm" onclick="exportAgent('${esc(id)}')">Export</button>
     <button class="h-btn h-btn-danger h-btn-sm" onclick="deleteAgent('${esc(id)}')">Delete</button>`;
@@ -368,9 +369,68 @@ function openImport() {
   });
 }
 
+// --- workflows ---
+
+function openFlow(id, agentId) {
+  const url = id ? `/flows.html?id=${encodeURIComponent(id)}` : agentId ? `/flows.html?agent=${encodeURIComponent(agentId)}` : '/flows.html';
+  const w = window.open(url, id ? `jr-flow-${id}` : '_blank', 'width=1440,height=900');
+  if (!w) location.href = url;
+}
+
+async function loadWorkflows() {
+  const list = document.getElementById('workflow-list');
+  let workflows;
+  try { ({ workflows } = await hubApi('GET', '/workflows')); } catch (e) { list.innerHTML = `<div class="h-callout bad">${esc(e.message)}</div>`; return; }
+  if (!workflows.length) {
+    list.innerHTML = `<div class="h-empty" style="grid-column: 1 / -1"><h2>No workflows yet</h2>
+      <p>Start with a trigger, drop in an agent, branch on its answer, and ask a person before anything goes out.</p>
+      <div class="h-row" style="justify-content:center; margin-top: var(--sp-5)"><button class="h-btn" onclick="openFlow()">Create a workflow</button></div></div>`;
+    return;
+  }
+  list.innerHTML = workflows.map((w) => {
+    const agents = w.nodes.filter((n) => n.type === 'agent');
+    return `<article class="h-card" tabindex="0" data-wf="${esc(w.id)}">
+      <div class="h-row" style="justify-content:space-between"><h3>${esc(w.name)}</h3><span class="h-pill">v${esc(w.version)}</span></div>
+      <p>${esc(w.description || `${w.nodes.length} nodes, ${w.edges.length} connections`)}</p>
+      <div class="h-card-foot">
+        ${agents.map((n) => `<span class="h-pill accent">${esc(n.name)}</span>`).join('')}
+        ${w.nodes.some((n) => n.type === 'approval') ? '<span class="h-pill warn">human approval</span>' : ''}
+        ${w.webhook ? '<span class="h-pill good">webhook on</span>' : ''}
+        ${w.validation.ok ? '' : `<span class="h-pill bad">${w.validation.errors.length} issue(s)</span>`}
+      </div>
+      <div class="h-row" style="justify-content:space-between">
+        <span class="h-muted">Updated ${esc(timeAgo(w.updatedAt))}</span>
+        <span class="h-row"><button class="h-link" data-dup="${esc(w.id)}">Duplicate</button><button class="h-link" data-del="${esc(w.id)}">Delete</button></span>
+      </div>
+    </article>`;
+  }).join('');
+  list.querySelectorAll('[data-wf]').forEach((c) => {
+    c.addEventListener('click', (e) => { if (!e.target.closest('button')) openFlow(c.dataset.wf); });
+    c.addEventListener('keydown', (e) => { if (e.key === 'Enter') openFlow(c.dataset.wf); });
+  });
+  list.querySelectorAll('[data-dup]').forEach((b) => b.addEventListener('click', async () => {
+    try { await hubApi('POST', `/workflows/${b.dataset.dup}/duplicate`); hubToast('Duplicated'); loadWorkflows(); } catch (e) { hubToast(e.message, 'error'); }
+  }));
+  list.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Delete this workflow, its run history and its webhook token? Its past versions stay in the git history.')) return;
+    try { await hubApi('DELETE', `/workflows/${b.dataset.del}`); hubToast('Workflow deleted'); loadWorkflows(); } catch (e) { hubToast(e.message, 'error'); }
+  }));
+}
+
+function showSection(name) {
+  document.querySelectorAll('[data-section]').forEach((b) => b.classList.toggle('active', b.dataset.section === name));
+  document.getElementById('sec-agents').hidden = name !== 'agents';
+  document.getElementById('sec-workflows').hidden = name !== 'workflows';
+  if (name === 'workflows') { closeDrawer(); loadWorkflows(); }
+  history.replaceState(null, '', name === 'workflows' ? '#workflows' : location.pathname);
+}
+document.querySelectorAll('[data-section]').forEach((b) => b.addEventListener('click', () => showSection(b.dataset.section)));
+if (location.hash === '#workflows') showSection('workflows');
+
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { document.getElementById('modal-root').innerHTML = ''; closeDrawer(); } });
 if (hubChannel) hubChannel.onmessage = (e) => {
+  if (e.data && e.data.workflow) { loadWorkflows(); return; }
   loadAgents().then(() => { if (HUB.current && e.data && e.data.id === HUB.current.id) openAgent(HUB.current.id); });
 };
-window.addEventListener('focus', () => loadAgents());
+window.addEventListener('focus', () => { loadAgents(); if (!document.getElementById('sec-workflows').hidden) loadWorkflows(); });
 loadAgents();

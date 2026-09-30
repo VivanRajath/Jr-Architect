@@ -91,3 +91,49 @@ The response contains:
 An approval pause returns `202` with a `decisionUrl`; POST `{"approved": true}` to it to resume the run. `callbackUrl` (for example an n8n Wait node's resume URL) is called when a paused run ends. `"wait": false` returns at once, and you poll `GET /hooks/agents/<id>/runs/<runId>` for the result.
 
 `/hooks/agents/` is the only path that skips the beta-code login. The token can run only its own agent. Go limits each IP to 30 calls a minute, with bodies capped at 256 KB.
+
+## Workflows (visual editor)
+
+Hub → **Workflows** opens a canvas editor at `/flows.html`, much like n8n. Here is how you use it:
+
+- **Add nodes.** Drag them from the palette onto the canvas. Clicking a palette item instead adds it after the selected node and wires it in.
+- **Connect nodes.** Drag from a node's right dot to another node.
+- **Remove things.** Click a node or a connection and press Delete.
+- **Move around.** Scroll to zoom and drag the background to pan.
+
+| Node | What it does |
+| --- | --- |
+| Trigger | Starts the run, from the Run button (with test input) or the webhook |
+| Agent | Runs a Hub agent through the normal runtime. Its tools, permissions, guardrails and approvals all apply |
+| If | Sends the item to the `true` or `false` port |
+| Set fields | Builds a new JSON item |
+| Human approval | Pauses the run; it continues from `approved` or `rejected` |
+| HTTP request | Calls a public HTTPS URL, for example a Slack webhook. Private addresses are refused on a public server |
+| Output | The result returned to the caller |
+
+**Expressions.** Any setting can use `{{ $json.field }}` for the incoming item or `{{ $node["Name"].json.field }}` for an earlier node's result. They are path lookups only, never code.
+
+**Pausing.** A pause anywhere pauses the whole run: an approval node, or an approval inside an agent. You resume it from the banner on the canvas or over the API.
+
+**Versions and runs.** Each user's workflows live in one git repository (`workflows/<id>.json`), and every save is a version. Runs are kept under `wfstate/`. The Executions panel shows them on the canvas.
+
+**Limits.**
+
+- 40 nodes
+- 50 node executions per run, which also stops loops
+- 5 minutes per run
+
+### Webhook
+
+The Webhook panel issues a `jrw_` token that only runs that workflow. Agent tokens cannot run workflows.
+
+```
+POST /hooks/workflows/<id>/run
+Authorization: Bearer <token>
+{"input": {...}, "callbackUrl": "<optional>"}
+```
+
+The call returns one of two responses:
+
+- **`200`** with the run's `status` and `output`, when the run finishes.
+- **`202`** with `pending`, when the run is waiting for approval. Resume it with `POST /hooks/workflows/<id>/runs/<runId>/decision` and a body of `{"approved": true}`.

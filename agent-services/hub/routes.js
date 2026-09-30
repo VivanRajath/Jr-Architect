@@ -8,6 +8,7 @@ import {
 import * as store from "./store.js";
 import { startRun, prepareRun, drive, resolveApproval, sendCallback, publicRun, checkPublicUrl, privateNetAllowed } from "./runtime.js";
 import { draftAgent, refineAgent } from "./builder.js";
+import * as wf from "./workflows.js";
 
 const MAX_ACTIVE_RUNS_PER_USER = 2;
 const DRAFT_RUN_TTL = 30 * 60 * 1000;
@@ -72,6 +73,17 @@ function connectInfo(def, token) {
     exampleBody: body,
     curl: `curl -X POST ${base}/run -H "Authorization: Bearer ${token || "$JR_AGENT_TOKEN"}" -H "Content-Type: application/json" -d '${JSON.stringify(body)}'`,
     workflow: n8nWorkflow(def, token),
+    localOnly: !process.env.JR_PUBLIC_ORIGIN,
+  };
+}
+
+function wfHookInfo(w, token) {
+  const base = `${publicBase()}/hooks/workflows/${w.id}`;
+  const trigger = w.nodes.find((n) => n.type === "trigger");
+  const body = { input: trigger ? trigger.config.sample : {} };
+  return {
+    runUrl: `${base}/run`, pollUrl: `${base}/runs/{runId}`, decisionUrl: `${base}/runs/{runId}/decision`, exampleBody: body,
+    curl: `curl -X POST ${base}/run -H "Authorization: Bearer ${token || "$JR_WORKFLOW_TOKEN"}" -H "Content-Type: application/json" -d '${JSON.stringify(body)}'`,
     localOnly: !process.env.JR_PUBLIC_ORIGIN,
   };
 }
@@ -355,6 +367,182 @@ export function createHubRouter({ allowLLM }) {
     const out = await tracked(user, () => resolveApproval(run, def, { approved, note: req.body && req.body.note }, { user, agentId: id, source: "n8n" }));
     sendCallback(out);
     res.json(publicRun(out));
+  });
+
+  // --- visual workflows ---
+
+  const mustWorkflow = (user, id) => {
+    const w = wf.readWorkflow(user, id);
+    if (!w) throw new HttpError(404, "workflow not found");
+    return w;
+  };
+  const wfCtx = (user, source, extra = {}) => ({ user, source, spendLLM: () => spendLLM(user), ...extra });
+  const wfSummary = (user, w) => ({ ...w, validation: wf.validateWorkflow(w, user), webhook: store.keyInfo(user, w.id, "workflow") });
+
+  r.get("/workflows/meta", (req, res) => {
+    userOf(req);
+    res.json({ nodeTypes: wf.NODE_TYPES, ifOps: wf.IF_OPS, blank: wf.blankWorkflow(), publicBase: publicBase() });
+  });
+
+  r.get("/workflows", (req, res) => {
+    const user = userOf(req);
+    res.json({ workflows: wf.listWorkflows(user).map((w) => wfSummary(user, w)) });
+  });
+
+  r.post("/workflows", async (req, res) => {
+    const user = userOf(req);
+    const w = await wf.createWorkflow(user, req.body && req.body.workflow, (req.body && req.body.message) || "Create workflow");
+    res.status(201).json({ workflow: wfSummary(user, w) });
+  });
+
+  r.post("/workflows/validate", (req, res) => {
+    const user = userOf(req);
+    const w = wf.normalizeWorkflow(req.body && req.body.workflow);
+    res.json({ workflow: w, validation: wf.validateWorkflow(w, user) });
+  });
+
+  r.get("/workflows/:id", (req, res) => {
+    const user = userOf(req);
+    res.json({ workflow: wfSummary(user, mustWorkflow(user, req.params.id)) });
+  });
+
+  r.put("/workflows/:id", async (req, res) => {
+    const user = userOf(req);
+    const out = await wf.saveWorkflow(user, req.params.id, req.body && req.body.workflow, (req.body && req.body.message) || "Update workflow");
+    res.json({ changed: out.changed, workflow: wfSummary(user, out.workflow) });
+  });
+
+  r.delete("/workflows/:id", async (req, res) => {
+    const user = userOf(req);
+    if (!(await wf.deleteWorkflow(user, req.params.id))) throw new HttpError(404, "workflow not found");
+    await store.revokeKey(user, req.params.id, "workflow");
+    res.json({ deleted: true });
+  });
+
+  r.post("/workflows/:id/duplicate", async (req, res) => {
+    const user = userOf(req);
+    const src = mustWorkflow(user, req.params.id);
+    res.status(201).json({ workflow: await wf.createWorkflow(user, { ...src, name: `${src.name} copy` }, `Duplicate of ${src.id}`) });
+  });
+
+  r.get("/workflows/:id/versions", async (req, res) => {
+    const user = userOf(req);
+    mustWorkflow(user, req.params.id);
+    res.json({ versions: await wf.listWorkflowVersions(user, req.params.id) });
+  });
+
+  r.post("/workflows/:id/versions/:sha/restore", async (req, res) => {
+    const user = userOf(req);
+    mustWorkflow(user, req.params.id);
+    const out = await wf.restoreWorkflowVersion(user, req.params.id, req.params.sha);
+    res.json({ changed: out.changed, workflow: wfSummary(user, out.workflow) });
+  });
+
+  // The editor runs what is on the canvas; a saved workflow's runs are kept, an unsaved draft's live in memory.
+  r.post("/workflows/run", async (req, res) => {
+    const user = userOf(req);
+    const { workflowId, workflow, input } = req.body || {};
+    const w = workflowId ? mustWorkflow(user, workflowId) : wf.normalizeWorkflow(workflow);
+    if (!workflowId) w.id = "";
+    const run = await tracked(user, () => wf.startWorkflowRun(w, input, wfCtx(user, "editor")));
+    if (!workflowId && run.status === "awaiting_approval") {
+      sweepDrafts();
+      draftRuns.set(run.id, { user, run, def: w, expires: Date.now() + DRAFT_RUN_TTL, workflow: true });
+    }
+    res.json({ run: wf.publicWorkflowRun(run) });
+  });
+
+  r.post("/workflows/runs/:runId/decision", async (req, res) => {
+    const user = userOf(req);
+    const { workflowId, approved, note } = req.body || {};
+    let run; let w;
+    if (workflowId) {
+      w = mustWorkflow(user, workflowId);
+      run = wf.readWorkflowRun(user, workflowId, req.params.runId);
+    } else {
+      const d = draftRuns.get(req.params.runId);
+      if (d && d.user === user && d.workflow) { run = d.run; w = d.def; }
+    }
+    if (!run) throw new HttpError(404, "run not found");
+    const out = await tracked(user, () => wf.decideWorkflowRun(run, w, { approved, note }, wfCtx(user, "editor")));
+    if (!workflowId && out.status !== "awaiting_approval") draftRuns.delete(out.id);
+    wfCallback(out);
+    res.json({ run: wf.publicWorkflowRun(out) });
+  });
+
+  r.get("/workflows/:id/runs", (req, res) => {
+    const user = userOf(req);
+    mustWorkflow(user, req.params.id);
+    res.json({ runs: wf.listWorkflowRuns(user, req.params.id).map(wf.publicWorkflowRun) });
+  });
+
+  r.get("/workflows/:id/runs/:runId", (req, res) => {
+    const user = userOf(req);
+    const run = wf.readWorkflowRun(user, req.params.id, req.params.runId);
+    if (!run) throw new HttpError(404, "run not found");
+    res.json({ run: wf.publicWorkflowRun(run) });
+  });
+
+  r.post("/workflows/:id/connect", async (req, res) => {
+    const user = userOf(req);
+    const w = mustWorkflow(user, req.params.id);
+    const token = await store.issueKey(user, w.id, "workflow");
+    res.json({ token, key: store.keyInfo(user, w.id, "workflow"), ...wfHookInfo(w, token) });
+  });
+
+  r.get("/workflows/:id/connect", (req, res) => {
+    const user = userOf(req);
+    const w = mustWorkflow(user, req.params.id);
+    res.json({ key: store.keyInfo(user, w.id, "workflow"), ...wfHookInfo(w, "") });
+  });
+
+  r.delete("/workflows/:id/connect", async (req, res) => {
+    const user = userOf(req);
+    mustWorkflow(user, req.params.id);
+    res.json({ revoked: await store.revokeKey(user, req.params.id, "workflow") });
+  });
+
+  const wfCallback = async (run) => {
+    if (!run.callbackUrl || ["running", "awaiting_approval"].includes(run.status)) return;
+    try {
+      const u = await checkPublicUrl(run.callbackUrl, { allowHttp: privateNetAllowed() });
+      await fetch(u.toString(), { method: "POST", headers: { "Content-Type": "application/json" }, redirect: "manual", signal: AbortSignal.timeout(10000), body: JSON.stringify(wf.publicWorkflowRun(run)) });
+    } catch (e) { console.error(`[hub] workflow callback for ${run.id} failed: ${e.message}`); }
+  };
+
+  const wfHookAuth = (req) => {
+    const m = /^Bearer\s+(\S+)$/i.exec(req.get("authorization") || "");
+    const who = m && store.resolveKey(m[1], req.params.id, "workflow");
+    if (!who) throw new HttpError(401, "invalid or revoked workflow token");
+    return who;
+  };
+
+  r.post("/hook-wf/:id/run", async (req, res) => {
+    const { user, id } = wfHookAuth(req);
+    const w = mustWorkflow(user, id);
+    const body = req.body || {};
+    const input = body.input !== undefined ? body.input : body;
+    if (body.callbackUrl) await checkPublicUrl(String(body.callbackUrl), { allowHttp: privateNetAllowed() }).catch((e) => { throw new HttpError(400, `callbackUrl: ${e.message}`); });
+    const run = await tracked(user, () => wf.startWorkflowRun(w, input, wfCtx(user, "webhook")));
+    if (body.callbackUrl && run.status === "awaiting_approval") { run.callbackUrl = String(body.callbackUrl); wf.saveWorkflowRun(user, id, run); }
+    res.status(run.status === "awaiting_approval" ? 202 : 200).json({ ...wf.publicWorkflowRun(run), pollUrl: `${publicBase()}/hooks/workflows/${id}/runs/${run.id}` });
+  });
+
+  r.get("/hook-wf/:id/runs/:runId", (req, res) => {
+    const { user, id } = wfHookAuth(req);
+    const run = wf.readWorkflowRun(user, id, req.params.runId);
+    if (!run) throw new HttpError(404, "run not found");
+    res.json(wf.publicWorkflowRun(run));
+  });
+
+  r.post("/hook-wf/:id/runs/:runId/decision", async (req, res) => {
+    const { user, id } = wfHookAuth(req);
+    const w = mustWorkflow(user, id);
+    const run = wf.readWorkflowRun(user, id, req.params.runId);
+    if (!run) throw new HttpError(404, "run not found");
+    const out = await tracked(user, () => wf.decideWorkflowRun(run, w, { approved: !!(req.body && req.body.approved), note: req.body && req.body.note }, wfCtx(user, "webhook")));
+    wfCallback(out);
+    res.json(wf.publicWorkflowRun(out));
   });
 
   r.use(fail);
