@@ -103,7 +103,8 @@ func TestTerminalExecReportsExitCode(t *testing.T) {
 	}
 	name := "exec-exit-verify"
 	_ = exec.Command("docker", "rm", "-f", name).Run()
-	if out, err := exec.Command("docker", "run", "-d", "--name", name,
+	// Real sandboxes always mount /workspace, and ExecInContainer runs every command there.
+	if out, err := exec.Command("docker", "run", "-d", "--name", name, "-w", "/workspace",
 		"alpine:latest", "sh", "-c", "sleep 120").CombinedOutput(); err != nil {
 		t.Skip("could not start a container; skipping exec test: " + string(out))
 	}

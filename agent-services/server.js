@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSy
 import { join, extname, resolve, sep, dirname } from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
+import { timingSafeEqual } from "crypto";
 import {
   resolvePipelineAgents, personaPreamble, fetchRegistryIndex, findAgent,
   readPipelineManifest, writePipelineManifest, installedAgents,
@@ -47,6 +48,15 @@ process.on("uncaughtException", (err) => {
 });
 
 const app = express();
+
+// Loopback is no boundary under Docker Desktop (host.docker.internal reaches it), so only callers holding Go's token get in.
+export function fromJrArch(headers, token = process.env.JR_INTERNAL_TOKEN || "") {
+  if (!token) return true;
+  const got = Buffer.from(String(headers["x-jr-internal"] || ""));
+  const want = Buffer.from(token);
+  return got.length === want.length && timingSafeEqual(got, want);
+}
+app.use((req, res, next) => (fromJrArch(req.headers) ? next() : res.status(403).json({ error: "forbidden" })));
 app.use(express.json());
 
 const server = createServer(app);
@@ -61,12 +71,12 @@ export function isAllowedOrigin(origin) {
     return false;
   }
 }
-const wss = new WebSocketServer({ server, verifyClient: ({ origin }) => isAllowedOrigin(origin) });
+const wss = new WebSocketServer({ server, verifyClient: ({ origin, req }) => isAllowedOrigin(origin) && fromJrArch(req.headers) });
 
 // Active sessions: container -> { dir, stack, owner, wss clients }
 const sessions = new Map();
 
-// Go's proxy sets X-Jr-User on every call it forwards; only Go itself, on loopback, calls without one.
+// Go's proxy sets X-Jr-User on every call it forwards; only Go's own calls (token-checked above) come without one.
 function mayUse(user, session) {
   return user === undefined || user === "internal" || user === session.owner;
 }

@@ -94,9 +94,12 @@ func TestAgentProxyOverwritesSpoofedUser(t *testing.T) {
 	req.Header.Set("X-Jr-User", "u-victim")
 	req.Header.Set("X-Jr-Internal", "guess")
 	req.Header.Set("Cookie", "jr_session=abc")
+	old := core.Cfg.InternalToken
+	core.Cfg.InternalToken = "the-real-token-that-only-go-holds-0123456789"
+	defer func() { core.Cfg.InternalToken = old }()
 	newAgentProxy(backend.URL).ServeHTTP(httptest.NewRecorder(), asUser(req, "u-attacker"))
-	if seen != "u-attacker" || cookie != "" || internal != "" {
-		t.Fatalf("backend saw user=%q cookie=%q internal=%q; want the verified user and nothing else", seen, cookie, internal)
+	if seen != "u-attacker" || cookie != "" || internal != core.Cfg.InternalToken {
+		t.Fatalf("backend saw user=%q cookie=%q internal=%q; want the verified user, no cookie and Go's own token", seen, cookie, internal)
 	}
 }
 

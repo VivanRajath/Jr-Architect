@@ -39,9 +39,9 @@ func newAgentProxy(targetURL string) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		// Node trusts this header for ownership, so a client-supplied copy never survives.
+		// Node trusts these for ownership and to know the call came through Go; client copies never survive.
 		r.Header.Set("X-Jr-User", core.UserOf(r))
-		r.Header.Del("X-Jr-Internal")
+		r.Header.Set("X-Jr-Internal", core.Cfg.InternalToken)
 		r.Header.Del("Cookie")
 		proxy.ServeHTTP(w, r)
 	})

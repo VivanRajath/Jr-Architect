@@ -128,3 +128,15 @@ Run these as `jrarch`:
 | `/usr/local/lib/jrarch/preflight.sh` | Checks every hardening control. Exits 1 if any is missing. |
 | `LAN_IP=<windows LAN ip> ROUTER_IP=<router> bash ~/app/deploy/adversarial.sh [container]` | Attacks outward from a sandbox, with canary listeners so a "blocked" result means something |
 | `bash ~/app/deploy/validate.sh` | Full lifecycle on real Podman. Pauses `jrarch.service` while it runs. |
+
+## Docker Desktop mode: local development only
+
+The default `JR_CONTAINER_CLI=docker` path runs natively on Windows against Docker Desktop. `deploy/windows/validate-docker.sh` validates it end to end:
+
+```bash
+CLOUDFLARED=/path/to/cloudflared.exe WORK=/path/to/empty/dir bash deploy/windows/validate-docker.sh
+```
+
+It isn't a public deployment target. On Docker Desktop, `host.docker.internal` reaches the host's loopback, so one sandbox can reach another sandbox's published dev-server port. The WSL firewall can't block that, because Docker Desktop runs in its own VM.
+
+The Jr-Arch API still refuses a sandbox that gets there (401 without a session), and so does the agent (403 without Go's internal token). Run the public beta only on the hardened Podman distro above.

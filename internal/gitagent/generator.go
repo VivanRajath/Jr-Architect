@@ -616,11 +616,13 @@ func RegisterWithAgentService(container, workdir, stack, owner string) error {
 		return err
 	}
 
-	resp, err := http.Post(
-		fmt.Sprintf("http://127.0.0.1:%d/agent/register", core.Cfg.AgentPort),
-		"application/json",
-		bytes.NewReader(body),
-	)
+	req, err := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/agent/register", core.Cfg.AgentPort), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Jr-Internal", core.Cfg.InternalToken)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("agent service not reachable: %w", err)
 	}

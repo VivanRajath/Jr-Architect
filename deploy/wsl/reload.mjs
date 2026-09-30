@@ -12,9 +12,10 @@ ws.on("open", () => setTimeout(async () => {
   const cur = await fetch(`${api}/file?container=${container}&path=${encodeURIComponent(file)}`, { headers });
   if (!cur.ok) return done(1, `READ failed: HTTP ${cur.status}`);
   const content = (await cur.text()) + `\n// jr live-reload check ${Date.now()}\n`;
+  // Watchers can rebuild before the save request returns (Docker Desktop's write-through is slow), so listen from here.
+  saved = true;
   const res = await fetch(`${api}/file/save`, { method: "POST", headers, body: JSON.stringify({ container, path: file, content }) });
   if (!res.ok) return done(1, `SAVE failed: HTTP ${res.status}`);
-  saved = true;
 }, 3000));
 ws.on("message", (m) => {
   const s = m.toString();
