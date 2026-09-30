@@ -11,9 +11,7 @@ import (
 	"sandbox/internal/core"
 )
 
-// TestSandboxEntryHandler verifies the preview's "locate UI code" endpoint picks
-// the most-specific existing UI entry file and returns it as a forward-slash
-// workspace-relative path plus its directory.
+// TestSandboxEntryHandler verifies the preview's "locate UI code" endpoint picks the most-specific existing UI entry file and returns it as a forward-slash workspace-relative path plus its directory.
 func TestSandboxEntryHandler(t *testing.T) {
 	dir := t.TempDir()
 	// A Next.js app-router entry, nested under app/.

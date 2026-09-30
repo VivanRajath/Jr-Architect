@@ -9,10 +9,6 @@ import (
 )
 
 // corsHeaders used to send `Access-Control-Allow-Origin: *` on every handler.
-// This API has no authentication, so that let any website the developer happened
-// to visit call these endpoints cross-origin AND READ THE RESPONSE — enumerate
-// sandboxes, read workspace files, write workspace files. These tests pin the
-// replacement: echo an allowlisted loopback origin, or send nothing.
 func TestCORSOnlyEchoesLoopbackOrigins(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -45,8 +41,7 @@ func TestCORSOnlyEchoesLoopbackOrigins(t *testing.T) {
 			if got == "*" {
 				t.Error("wildcard CORS is never correct on an unauthenticated API")
 			}
-			// Vary must always be set, or a cached response for one origin can be
-			// served to another and the check above becomes decorative.
+			// Vary must always be set, or a cached response for one origin can be served to another and the check above becomes decorative.
 			if v := rec.Header().Get("Vary"); v != "Origin" {
 				t.Errorf("Vary = %q, want Origin", v)
 			}
@@ -54,8 +49,7 @@ func TestCORSOnlyEchoesLoopbackOrigins(t *testing.T) {
 	}
 }
 
-// The WebSocket upgrade check and the CORS layer share isLoopbackOrigin, so they
-// cannot disagree about what "local" means.
+// The WebSocket upgrade check and the CORS layer share isLoopbackOrigin, so they cannot disagree about what "local" means.
 func TestWebSocketOriginCheckMatchesCORS(t *testing.T) {
 	allowed := []string{"http://127.0.0.1:9000", "http://localhost:9000", "https://[::1]:9000"}
 	denied := []string{"https://evil.example", "https://localhost.evil.example", "http://10.0.0.5:9000"}
@@ -75,9 +69,7 @@ func TestWebSocketOriginCheckMatchesCORS(t *testing.T) {
 		}
 	}
 
-	// An absent Origin is a non-browser client (a CLI, curl) with no CSRF surface,
-	// so the upgrade is allowed — this differs from the CORS path on purpose,
-	// where an absent Origin simply needs no headers.
+	// An absent Origin is a non-browser client (a CLI, curl) with no CSRF surface, so the upgrade is allowed.
 	if !wsUpgrader.CheckOrigin(httptest.NewRequest(http.MethodGet, "/terminal/ws", nil)) {
 		t.Error("CheckOrigin with no Origin = false, want true")
 	}

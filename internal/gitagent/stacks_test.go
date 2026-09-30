@@ -27,8 +27,7 @@ func TestStackListPutsPrimaryFirst(t *testing.T) {
 	}
 }
 
-// The whole point: guidance for the half the agent is editing, not only the half
-// the preview opens.
+// The whole point: guidance for the half the agent is editing, not only the half the preview opens.
 func TestPerStackCoversEveryStack(t *testing.T) {
 	out := perStack(Rules)([]string{"react", "django"})
 	for _, want := range []string{"### react", "### django", "urls.py", "src/components"} {

@@ -55,12 +55,7 @@ export function buildGuardrailPrompt(rules, message, blocks) {
   );
 }
 
-// Only an explicit allow:false denies: a dropped verdict row must not take an
-// unrelated file down with it.
-//
-// A blocked entry carries `pack` and `why` separately from the display `reason`.
-// The UI needs them apart to answer a denial: which pack to name, which rule file
-// to open, and what constraint to hand back to the Developer on a retry.
+// Only an explicit allow:false denies: a dropped verdict row must not take an unrelated file down with it.
 export function applyGuardrailVerdicts(blocks, verdicts, names, pack) {
   const denied = new Map();
   for (const v of verdicts) {
@@ -77,8 +72,7 @@ export function applyGuardrailVerdicts(blocks, verdicts, names, pack) {
   return { allowed, blocked };
 }
 
-// `reviewed` says whether a verdict was actually obtained, so an audit trail can
-// tell "a pack cleared this" from "nothing looked at it".
+// `reviewed` says whether a verdict was actually obtained, so an audit trail can tell "a pack cleared this" from "nothing looked at it".
 export async function reviewEditBlocks(dir, agents, message, blocks, model, step) {
   const rules = ((agents && agents.guardrails) || [])
     .map((g) => ({ name: g.name, text: (g.rules || g.soul || "").trim() }))

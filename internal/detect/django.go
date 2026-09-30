@@ -29,40 +29,6 @@ func skipDir(name string) bool {
 	return strings.HasPrefix(name, ".")
 }
 
-// Breadth-first to 3 levels, so the shallowest manage.py wins.
-func findDjangoProject(root string) (djangoProject, bool) {
-	type candidate struct{ dir, rel string }
-	queue := []candidate{{root, ""}}
-
-	for depth := 0; depth <= 3 && len(queue) > 0; depth++ {
-		var next []candidate
-		for _, c := range queue {
-			if core.FileExists(filepath.Join(c.dir, "manage.py")) {
-				return newDjangoProject(c.dir, c.rel), true
-			}
-			if depth == 3 {
-				continue
-			}
-			entries, err := os.ReadDir(c.dir)
-			if err != nil {
-				continue
-			}
-			for _, e := range entries {
-				if !e.IsDir() || skipDir(e.Name()) {
-					continue
-				}
-				rel := e.Name()
-				if c.rel != "" {
-					rel = c.rel + "/" + e.Name()
-				}
-				next = append(next, candidate{filepath.Join(c.dir, e.Name()), rel})
-			}
-		}
-		queue = next
-	}
-	return djangoProject{}, false
-}
-
 func newDjangoProject(dir, rel string) djangoProject {
 	p := djangoProject{Dir: dir, Rel: rel}
 	src, _ := os.ReadFile(filepath.Join(dir, "manage.py"))
@@ -140,8 +106,7 @@ func writeSandboxSettings(p djangoProject) string {
 	return SandboxSettingsModule
 }
 
-// Prefers a manifest beside manage.py. Paths come back relative to the service
-// directory, because that is where the install step runs.
+// Prefers a manifest beside manage.py. Paths come back relative to the service directory, because that is where the install step runs.
 func djangoInstallCommand(root string, p djangoProject) string {
 	names := []string{
 		"requirements.txt",

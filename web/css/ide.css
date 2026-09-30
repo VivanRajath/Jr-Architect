@@ -1,11 +1,6 @@
-/* ─────────────────────────────────────────────
-   Jr Architect IDE — VS Code-style shell
-   Colour, type, space and radius come from tokens.css.
-   This file styles the shell; it defines no tokens.
-   ───────────────────────────────────────────── */
+/* IDE shell (VS Code style); colour, type, space and radius come from tokens.css. */
 
-/* Only the IDE view locks scrolling (it manages its own internal panes).
-   The landing page must stay free to scroll vertically. */
+/* Only the IDE view locks scrolling (it manages its own internal panes). */
 body.ide-mode {
   overflow: hidden;
   font-family: var(--sans);
@@ -828,9 +823,7 @@ body.dark-mode .ide-topbar .mode-badge {
 .preview-iframe {
   flex: 1;
   border: none;
-  /* Deliberately literal: this is the paint behind the USER'S app before it
-     loads, and most pages are light. It is not IDE chrome, so it does not
-     follow the IDE's theme. */
+  /* Deliberately literal: this is the paint behind the USER'S app before it loads, and most pages are light. */
   background: #fff;
   width: 100%;
 }

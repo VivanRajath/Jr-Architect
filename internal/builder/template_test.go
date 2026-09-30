@@ -66,24 +66,26 @@ func read(t *testing.T, dir, rel string) string {
 func TestGoldenDjangoTemplateDetects(t *testing.T) {
 	dir := golden(t)
 
-	cfg, err := detect.Runtime(dir)
+	plan, err := detect.Scan(dir)
 	if err != nil {
-		t.Fatalf("detectRuntimeConfig on the golden template: %v", err)
+		t.Fatalf("Scan on the golden template: %v", err)
 	}
-	if cfg.Image != "sandbox-django" {
-		t.Errorf("Image = %q, want sandbox-django", cfg.Image)
+	svc, _ := plan.Primary()
+	if svc.Stack != "django" {
+		t.Errorf("Stack = %q, want django", svc.Stack)
 	}
-	if cfg.Framework != "Django" {
-		t.Errorf("Framework = %q, want Django", cfg.Framework)
+	if svc.Framework != "Django" {
+		t.Errorf("Framework = %q, want Django", svc.Framework)
 	}
+	startup := svc.FullCommand()
 	for _, want := range []string{
 		"pip install -r requirements.txt",
 		"export DJANGO_SETTINGS_MODULE=" + detect.SandboxSettingsModule,
 		"migrate",
 		"runserver 0.0.0.0:8000",
 	} {
-		if !strings.Contains(cfg.StartupCommand, want) {
-			t.Errorf("startup command missing %q\ngot: %s", want, cfg.StartupCommand)
+		if !strings.Contains(startup, want) {
+			t.Errorf("startup command missing %q\ngot: %s", want, startup)
 		}
 	}
 

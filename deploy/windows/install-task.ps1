@@ -1,5 +1,4 @@
-# Registers "JrArch Runtime": at logon, keeps the jrarch WSL distro running so systemd can start Podman and Jr-Arch.
-# Run in a normal (non-admin) PowerShell: powershell -ExecutionPolicy Bypass -File install-task.ps1
+# Registers "JrArch Runtime", which keeps the jrarch WSL distro running from logon; run in a normal PowerShell: powershell -ExecutionPolicy Bypass -File install-task.ps1
 param([string]$Distro = "jrarch", [string]$TaskName = "JrArch Runtime")
 $ErrorActionPreference = "Stop"
 

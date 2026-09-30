@@ -9,8 +9,7 @@ import (
 	"sandbox/internal/core"
 )
 
-// The regression that matters most: making detection multi-service must not turn an
-// ordinary single-stack repo into several.
+// The regression that matters most: making detection multi-service must not turn an ordinary single-stack repo into several.
 func TestScanSingleStackStaysOneService(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "package.json", `{"dependencies":{"next":"14"},"scripts":{"dev":"next dev"}}`)
@@ -122,8 +121,7 @@ func TestScanResolvesPortCollisions(t *testing.T) {
 	}
 }
 
-// The shape most real Django+JS repos use: the JS app is the repo root and the
-// Python half sits in a subdirectory. The root must not swallow it.
+// The shape most real Django+JS repos use: the JS app is the repo root and the Python half sits in a subdirectory.
 func TestScanFindsBackendUnderAJavaScriptRoot(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "package.json", `{"dependencies":{"vite":"5"},"scripts":{"dev":"vite"}}`)
@@ -193,8 +191,7 @@ func TestScanWorkerHasNoPort(t *testing.T) {
 	}
 }
 
-// A bare manifest is not an app: a Django repo keeps requirements.txt at the root
-// while the project lives a level down.
+// A bare manifest is not an app: a Django repo keeps requirements.txt at the root while the project lives a level down.
 func TestScanIgnoresManifestOnlyRoot(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "requirements.txt", "django\n")

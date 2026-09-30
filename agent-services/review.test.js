@@ -10,8 +10,7 @@ import {
 } from "./review.js";
 import { guardEditBlocks, applyGuardrailVerdicts } from "./guardrails.js";
 
-// A real git repository, because the whole point of this module is that it reads a
-// diff. Faking git here would test nothing that matters.
+// A real git repository, because the whole point of this module is that it reads a diff.
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), "jr-review-"));
   const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });

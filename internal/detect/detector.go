@@ -11,24 +11,7 @@ import (
 	"sandbox/internal/core"
 )
 
-// ---------------------------------------------------------------------------
-// detectFromInstructions – accept ANY bash commands from INSTRUCTIONS.md
-// ---------------------------------------------------------------------------
-// Reads INSTRUCTIONS.md (or the text pasted in the UI).  Every non-blank,
-// non-comment line is treated as a shell command.  Commands are joined with
-// "&&" to form the Docker startup command.
-//
-// The image and port are inferred from the commands themselves:
-//
-//	npm / node / yarn / pnpm / npx / bun  → sandbox-react  (port varies)
-//	python / pip / uvicorn / gunicorn      → sandbox-python
-//	go                                     → sandbox-go
-//	cargo                                  → sandbox-rust
-//	everything else                        → sandbox-node
-//
-// If a Vite dev server is detected the port defaults to 5173 and --host
-// 0.0.0.0 is appended when missing. Next.js dev gets -H 0.0.0.0.
-// ---------------------------------------------------------------------------
+// detectFromInstructions – accept ANY bash commands from INSTRUCTIONS.md --------------------------------------------------------------------------- Reads INSTRUCTIONS.md (or the text pasted in the UI).
 func detectFromInstructions(path string) (RuntimeConfig, bool) {
 
 	candidates := []string{"INSTRUCTIONS.md", "instructions.md"}
@@ -74,8 +57,7 @@ func detectFromInstructions(path string) (RuntimeConfig, bool) {
 			continue
 		}
 
-		// skip lines that look like prose (contain multiple spaces between words
-		// and no obvious command keyword)
+		// skip lines that look like prose (contain multiple spaces between words and no obvious command keyword)
 		if looksLikeProse(trimmed) {
 			continue
 		}
@@ -177,9 +159,7 @@ func detectFromInstructions(path string) (RuntimeConfig, bool) {
 	}, true
 }
 
-// looksLikeProse returns true if the line looks like descriptive text rather
-// than a shell command. Heuristic: if the line has 5+ words and none of them
-// look like a command keyword, it's probably prose.
+// looksLikeProse returns true if the line looks like descriptive text rather than a shell command.
 func looksLikeProse(line string) bool {
 	words := strings.Fields(line)
 	if len(words) < 5 {
@@ -236,9 +216,7 @@ func isReactStartCmd(lower string) bool {
 		strings.Contains(lower, "react-scripts start")
 }
 
-// ---------------------------------------------------------------------------
 // readDocHint – scan README/INSTRUCTIONS for runtime keywords (unchanged)
-// ---------------------------------------------------------------------------
 func readDocHint(path string) (RuntimeConfig, bool) {
 
 	candidates := []string{"README.md", "readme.md", "INSTRUCTIONS.md", "instructions.md"}
@@ -339,9 +317,7 @@ func readDocHint(path string) (RuntimeConfig, bool) {
 	return RuntimeConfig{}, false
 }
 
-// ---------------------------------------------------------------------------
 // Core types
-// ---------------------------------------------------------------------------
 
 type RuntimeConfig struct {
 	Image          string
@@ -356,9 +332,7 @@ type PackageJSON struct {
 	Scripts         map[string]string `json:"scripts"`
 }
 
-// ---------------------------------------------------------------------------
 // Utility helpers
-// ---------------------------------------------------------------------------
 
 func readPackageJSON(path string) (PackageJSON, error) {
 
@@ -375,11 +349,7 @@ func readPackageJSON(path string) (PackageJSON, error) {
 	return pkg, err
 }
 
-// ---------------------------------------------------------------------------
-// findProjectRoot – walk up to 3 levels deep looking for project marker files
-// ---------------------------------------------------------------------------
-// Returns (absoluteDir, relativeSubdir).  When the project is at the repo
-// root, relativeSubdir is "".
+// findProjectRoot – walk up to 3 levels deep looking for project marker files --------------------------------------------------------------------------- Returns (absoluteDir, relativeSubdir).
 func findProjectRoot(root string) (string, string) {
 
 	// Marker files, ordered by priority
@@ -463,12 +433,7 @@ func findProjectRoot(root string) (string, string) {
 	return root, ""
 }
 
-// NormalizeInstall speeds up dependency installs in the startup command. A cold
-// `npm install` spends a lot of its time on the audit + funding network lookups
-// (see the ~5-minute install in the sandbox logs); `--no-audit --no-fund` drops
-// them and `--prefer-offline` reuses the mounted npm cache, so warm re-runs are
-// fast. Idempotent: only rewrites a bare `npm install` / `pip install` that
-// doesn't already carry the flags, and only the first occurrence per command.
+// NormalizeInstall speeds up dependency installs in the startup command.
 func NormalizeInstall(cmd string) string {
 	if strings.Contains(cmd, "npm install") && !strings.Contains(cmd, "--no-audit") {
 		cmd = strings.Replace(cmd, "npm install",
@@ -481,9 +446,7 @@ func NormalizeInstall(cmd string) string {
 	return cmd
 }
 
-// ---------------------------------------------------------------------------
 // Lyzr Repo detection
-// ---------------------------------------------------------------------------
 
 func detectLyzrRepo(path string) (RuntimeConfig, bool) {
 	isLyzr := false
@@ -500,9 +463,7 @@ func detectLyzrRepo(path string) (RuntimeConfig, bool) {
 
 	pkg, err := readPackageJSON(filepath.Join(path, "package.json"))
 
-	// Lyzr apps are Next.js projects. Install deps and run the Next.js dev server
-	// (bound to 0.0.0.0 so the host can reach it), preferring the repo's own dev
-	// script when present.
+	// Lyzr apps are Next.js projects.
 	startupCommand := "npm install --no-audit --no-fund && npx next dev -H 0.0.0.0"
 	if err == nil {
 		if _, ok := pkg.Scripts["dev"]; ok {
@@ -518,8 +479,7 @@ func detectLyzrRepo(path string) (RuntimeConfig, bool) {
 	}, true
 }
 
-// FrameworkFromImage gives a friendly framework label for the IDE when a more
-// specific one wasn't set during detection. Derived from the sandbox image.
+// FrameworkFromImage gives a friendly framework label for the IDE when a more specific one wasn't set during detection.
 func FrameworkFromImage(image string) string {
 	switch image {
 	case "sandbox-react":
@@ -554,22 +514,3 @@ func FrameworkFromImage(image string) string {
 }
 
 var errNoRuntime = errors.New("unable to detect runtime")
-
-// Runtime is the single-service view of Scan, kept for callers that only care
-// about the service the preview opens.
-func Runtime(path string) (RuntimeConfig, error) {
-	plan, err := Scan(path)
-	if err != nil {
-		return RuntimeConfig{}, err
-	}
-	svc, ok := plan.Primary()
-	if !ok {
-		return RuntimeConfig{}, errNoRuntime
-	}
-	return RuntimeConfig{
-		Image:          "sandbox-" + svc.Stack,
-		Port:           svc.ContainerPort,
-		StartupCommand: svc.FullCommand(),
-		Framework:      svc.Framework,
-	}, nil
-}

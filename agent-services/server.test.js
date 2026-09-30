@@ -1,5 +1,4 @@
-// Tests for the toolless Ask/Edit machinery. Run: `node --test` in agent-services.
-// AGENT_NO_LISTEN keeps importing server.js from binding a port.
+// Tests for the toolless Ask/Edit machinery.
 import { test } from "node:test";
 import assert from "node:assert";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -7,17 +6,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.AGENT_NO_LISTEN = "1";
-// Point the registry index at a dead port so no test touches the network: the
-// fetch fails, findAgent synthesizes the entry, and a pre-seeded clone is reused.
+// Point the registry index at a dead port so no test touches the network.
 process.env.GITAGENT_REGISTRY_INDEX = "http://127.0.0.1:1/index.json";
 const {
   resolveTurnMode, heuristicMode, extractSearchTerms, parseEditBlocks, applyEditBlocks, gatherEditFiles,
-  classifyEditComplexity, guardEditBlocks, buildGuardrailPrompt, reviewEditBlocks,
-  applyGuardrailVerdicts, makeShellTool, writtenPathFrom, server,
+  classifyEditComplexity, makeShellTool, writtenPathFrom, server,
 } = await import("./server.js");
+const { guardEditBlocks, buildGuardrailPrompt, reviewEditBlocks, applyGuardrailVerdicts } = await import("./guardrails.js");
 
-// Drive the real routes over HTTP. Calling a route's helpers proves the helpers
-// work; only a request proves the route does.
+// Drive the real routes over HTTP. Calling a route's helpers proves the helpers work; only a request proves the route does.
 async function withServer(fn) {
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const { port } = server.address();
@@ -79,9 +76,7 @@ test("reviewEditBlocks is a no-op when no guardrail agent is installed", async (
     blocks, "groq:openai/gpt-oss-120b", (n, d) => steps.push(`${n}:${d}`));
   assert.deepEqual(out.allowed, blocks);
   assert.deepEqual(out.blocked, []);
-  // `reviewed:false` is the contract that keeps the audit trail honest: these files
-  // went through because nothing looked at them, which is NOT the same as a pack
-  // having cleared them. review.js logs this case as "unreviewed", not "allow".
+  // `reviewed:false` is the contract that keeps the audit trail honest.
   assert.equal(out.reviewed, false);
   assert.equal(steps.length, 0);
   // An agent that ships no rules and no soul is likewise nothing to enforce.
@@ -257,8 +252,7 @@ test("writtenPathFrom finds the target of a write tool call", () => {
   assert.equal(writtenPathFrom(null), null);
 });
 
-// The agent's shell must never fall back to the host: an unbound session gets a
-// refusal, not a command run outside the container.
+// The agent's shell must never fall back to the host: an unbound session gets a refusal, not a command run outside the container.
 test("makeShellTool refuses to run without a bound container", async () => {
   const tool = makeShellTool(null);
   assert.equal(tool.name, "shell");

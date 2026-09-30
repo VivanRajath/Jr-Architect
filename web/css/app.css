@@ -1,9 +1,4 @@
-/* ─────────────────────────────────────────────
-   Jr Architect — landing page and app shell
-   Colour, type, space and radius come from tokens.css.
-   This file styles the page; it defines no tokens.
-   Extracted from the 1,418-line inline <style> that used to live in index.html.
-   ───────────────────────────────────────────── */
+/* Landing page and app shell; colour, type, space and radius come from tokens.css. */
 body.dark-mode::before {
   background-image:
     linear-gradient(rgba(166, 124, 82, 0.04) 1px, transparent 1px),

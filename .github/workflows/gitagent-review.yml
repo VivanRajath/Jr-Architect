@@ -1,5 +1,4 @@
-# Runs this repo's own GitAgent pipeline on every pull request.
-# The rules live in .gitagent/, not here — this workflow never needs editing.
+# Runs this repo's own GitAgent pipeline on every pull request; the rules live in .gitagent/.
 
 name: GitAgent review
 

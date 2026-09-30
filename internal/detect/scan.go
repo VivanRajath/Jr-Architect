@@ -13,9 +13,7 @@ import (
 
 const maxScanDepth = 3
 
-// Scan walks the clone and returns every service it can run, keeping the priority
-// order Runtime has always used: explicit instructions, then Lyzr, then the file
-// walk, then README keywords.
+// Scan walks the clone and returns every service it can run, keeping the priority order Runtime has always used.
 func Scan(root string) (core.Plan, error) {
 	if cfg, ok := detectFromInstructions(root); ok {
 		return singlePlan(serviceFromConfig(cfg, "")), nil
@@ -37,11 +35,9 @@ func Scan(root string) (core.Plan, error) {
 	return core.Plan{}, errNoRuntime
 }
 
-// Breadth-first so a service directory is found before anything nested inside it,
-// which is what lets a match swallow its own subtree.
+// Breadth-first so a service directory is found before anything nested inside it, which is what lets a match swallow its own subtree.
 func walk(root string) []core.Service {
-	// owner is the toolchain of the nearest enclosing service, so a match can tell
-	// a subproject of that service from a separate app.
+	// owner is the toolchain of the nearest enclosing service, so a match can tell a subproject of that service from a separate app.
 	type candidate struct{ dir, rel, owner string }
 	queue := []candidate{{root, "", ""}}
 	var found []core.Service
@@ -51,9 +47,7 @@ func walk(root string) []core.Service {
 		for _, c := range queue {
 			owner := c.owner
 			if svc, ok := classify(root, c.dir, c.rel); ok {
-				// A directory inside a service that runs the same toolchain is part of
-				// that project (components, cloud functions), not a second app. A
-				// different toolchain is: repos put a Django backend under a JS root.
+				// A directory inside a service that runs the same toolchain is part of that project (components, cloud functions), not a second app.
 				if c.owner == "" || core.Toolchain(svc.Stack) != c.owner {
 					found = append(found, svc)
 				}
@@ -78,8 +72,7 @@ func walk(root string) []core.Service {
 	return found
 }
 
-// classify turns one directory into a service. Django outranks the generic Python
-// branch, and a workspace root is deliberately not a service so its members are.
+// classify turns one directory into a service.
 func classify(root, dir, rel string) (core.Service, bool) {
 	if core.FileExists(filepath.Join(dir, "manage.py")) {
 		return djangoService(root, dir, rel), true
@@ -150,9 +143,7 @@ var simpleStacks = []struct {
 	{Marker: "*.csproj", Stack: "dotnet", Framework: ".NET", Install: "dotnet restore", Start: "dotnet run --urls http://0.0.0.0:5000", Port: 5000},
 }
 
-// A manifest on its own is not a service — a Django repo keeps requirements.txt at
-// the root while the app lives a level down, and claiming the root there would
-// swallow the real project.
+// A manifest on its own is not a service.
 func runnableNode(dir string, pkg PackageJSON) bool {
 	return has(pkg.Scripts, "dev") || has(pkg.Scripts, "start") ||
 		core.FileExists(filepath.Join(dir, "server.js")) ||
@@ -317,8 +308,7 @@ func has[V any](m map[string]V, key string) bool {
 	return ok
 }
 
-// The directory name is the service name; nested paths keep their parent so two
-// dirs called "api" stay distinguishable.
+// The directory name is the service name; nested paths keep their parent so two dirs called "api" stay distinguishable.
 func serviceName(rel string) string {
 	if rel == "" {
 		return "app"
@@ -377,8 +367,7 @@ func assignPorts(svcs []core.Service) {
 	}
 }
 
-// Rewrite the port the start command binds to. Each family names it differently,
-// and PORT alone is not enough — Vite and runserver both ignore it.
+// Rewrite the port the start command binds to.
 func bindPort(svc core.Service, port int) string {
 	p := strconv.Itoa(port)
 	start := svc.Start
@@ -446,8 +435,7 @@ func singlePlan(svc core.Service) core.Plan {
 	return core.Plan{Services: []core.Service{svc}, Stacks: stacks, Image: core.ImageForStacks(stacks)}
 }
 
-// The legacy detectors hand back one composed command; split it so the multi-service
-// runner can still install everything before starting anything.
+// The legacy detectors hand back one composed command; split it so the multi-service runner can still install everything before starting anything.
 func serviceFromConfig(cfg RuntimeConfig, subdir string) core.Service {
 	install, start := splitInstall(cfg.StartupCommand)
 	framework := cfg.Framework
@@ -465,8 +453,7 @@ func serviceFromConfig(cfg RuntimeConfig, subdir string) core.Service {
 	}
 }
 
-// Only the leading install steps move; everything from the first non-install step
-// onward is the command that has to keep running.
+// Only the leading install steps move; everything from the first non-install step onward is the command that has to keep running.
 func splitInstall(cmd string) (string, string) {
 	parts := strings.Split(cmd, " && ")
 	cut := 0

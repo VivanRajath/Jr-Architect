@@ -1,8 +1,6 @@
 package core
 
 // One runnable thing in the repo. A monorepo has several; most repos have one.
-// It lives here rather than in detect because the registry, the server and the
-// detector all speak it.
 type Service struct {
 	Name          string `json:"name"`
 	Dir           string `json:"dir"` // repo-relative, forward slashes; "" is the root

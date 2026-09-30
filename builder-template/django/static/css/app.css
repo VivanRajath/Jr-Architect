@@ -1,5 +1,4 @@
-/* Design tokens. Change a value here and it applies everywhere — prefer editing
-   these over hard-coding a color in a rule below. */
+/* Design tokens. Change a value here and it applies everywhere — prefer editing these over hard-coding a color in a rule below. */
 :root {
   --bg: #ffffff;
   --surface: #f6f7f9;

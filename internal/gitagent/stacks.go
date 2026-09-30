@@ -7,8 +7,7 @@ import (
 	"sandbox/internal/core"
 )
 
-// stackList puts the primary stack first, then every other stack the repo runs,
-// deduped — the order the agent should read its guidance in.
+// stackList puts the primary stack first, then every other stack the repo runs, deduped — the order the agent should read its guidance in.
 func stackList(primary string, services []core.Service) []string {
 	out := []string{}
 	seen := map[string]bool{}
@@ -33,8 +32,7 @@ func StackList(stacks []string) string {
 	return strings.Join(stacks, " + ")
 }
 
-// perStack turns a single-stack guidance function into one that covers a whole
-// monorepo, headed per stack so the agent can tell which half a rule belongs to.
+// perStack turns a single-stack guidance function into one that covers a whole monorepo, headed per stack so the agent can tell which half a rule belongs to.
 func perStack(fn func(string) string) func([]string) string {
 	return func(stacks []string) string {
 		if len(stacks) == 0 {
@@ -54,8 +52,7 @@ func perStack(fn func(string) string) func([]string) string {
 	}
 }
 
-// ServicesTable tells the agent which directory belongs to which service, so it
-// does not edit the frontend when asked to change the API.
+// ServicesTable tells the agent which directory belongs to which service, so it does not edit the frontend when asked to change the API.
 func ServicesTable(services []core.Service) string {
 	if len(services) < 2 {
 		return ""

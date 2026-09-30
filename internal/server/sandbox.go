@@ -25,8 +25,7 @@ type Request struct {
 // Per-service logs land here so a crashed service can still be read.
 const logDir = "/tmp/jr"
 
-// Clone and scan only. Nothing is built or started until approveSandbox runs, so a
-// three-service monorepo doesn't spend minutes on an image the user didn't want.
+// Clone and scan only. Nothing is built or started until approveSandbox runs.
 func startSandbox(owner, repo, instructions, mode string, autoApprove bool) (core.Sandbox, error) {
 	if err := core.ValidateRepoURL(repo); err != nil {
 		return core.Sandbox{}, err
@@ -257,9 +256,7 @@ func launch(container, workdir string, plan core.Plan, services []core.Service, 
 	return nil
 }
 
-// Installs run one at a time — concurrent npm/pip would race over the shared cache
-// volumes — then every server starts in parallel and the container lives as long as
-// any of them does.
+// Installs run one at a time — concurrent npm/pip would race over the shared cache volumes — then every server starts in parallel and the container lives as long as any of them does.
 func supervisorScript(services []core.Service) string {
 	var b strings.Builder
 	b.WriteString("mkdir -p " + logDir + "\n")
@@ -709,9 +706,7 @@ func portAnswers(port int) bool {
 	return resp.StatusCode < 500
 }
 
-// sandboxEntryHandler returns the best-guess "main UI" file for a sandbox as a
-// workspace-relative path (forward slashes, matching the file-tree paths) plus
-// its directory, so the preview's "locate UI code" control can open/reveal it.
+// sandboxEntryHandler returns the best-guess "main UI" file for a sandbox as a workspace-relative path (forward slashes, matching the file-tree paths) plus its directory, so the preview's "locate UI code" control can open/reveal it.
 func sandboxEntryHandler(w http.ResponseWriter, r *http.Request) {
 	core.CORS(w, r)
 	if r.Method == http.MethodOptions {

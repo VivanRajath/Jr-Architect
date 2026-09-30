@@ -1,18 +1,4 @@
 // GitAgent registry integration (https://registry.gitagent.sh, open-gitagent/registry).
-//
-// The registry is a static, backend-free index: one index.json lists community
-// agents, each entry pointing at the agent's OWN github repo. "Installing" an
-// agent is literally `git clone <repository>`. Each agent declares `adapters`
-// (e.g. ["claude-code","openai","lyzr","system-prompt"]); Jr Architect acts as a
-// `system-prompt` adapter, so any agent that supports it can drive a pipeline slot.
-//
-// This module turns a repo's `.gitagent/pipeline.yaml` (or JSON, or env override)
-// into loaded agent personas that thread into the layered edit pipeline:
-//   category security/compliance  → Guardrails slot
-//   category developer-tools/...  → Developer slot
-//
-// Everything here is best-effort and non-fatal: any failure (no network, bad
-// manifest, clone error) degrades to the built-in personas so edits never break.
 
 import { mkdtempSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,9 +37,7 @@ export async function fetchRegistryIndex() {
   }
 }
 
-// Look up an agent entry by "author/name" (or "author__name"). Falls back to a
-// synthetic entry pointing at github.com/<author>/<name> so a not-yet-indexed
-// agent can still be installed by reference.
+// Look up an agent entry by "author/name" (or "author__name").
 export function findAgent(index, ref) {
   const { author, name } = parseRef(ref);
   if (!author || !name) return null;
@@ -76,10 +60,7 @@ function parseRef(ref) {
   return { author: author || "", name: rest.join(sep) || "" };
 }
 
-// Preview a registry agent WITHOUT installing it: fetch its spec files straight
-// from GitHub raw so the panel can show what the agent actually says before the
-// user hands it a pipeline slot. Best-effort — an agent that ships none of these
-// (or a private/renamed repo) simply previews empty.
+// Preview a registry agent WITHOUT installing it.
 export async function fetchAgentDetail(entry) {
   const repo = String((entry && entry.repository) || "");
   const m = repo.match(/github\.com\/([^/]+)\/([^/.]+)/);
@@ -104,18 +85,7 @@ export async function fetchAgentDetail(entry) {
   return { files };
 }
 
-// ── Slot classification (what a pulled agent becomes) ────────────────────────
-//
-// Pulling an agent should just work: the registry already declares what kind of
-// agent it is, so we read that instead of making the user pick a slot. Two
-// signals, in order of trust:
-//   1. `category` — curated in the index, so it wins outright. A developer
-//      category can never be talked into the guardrail slot by its own prose.
-//   2. tags/name/description — only consulted for a generic category ("other",
-//      "productivity"), where a policy/review agent would otherwise land in the
-//      Developer slot and start rewriting code.
-// The order matters: `gstack-agent` is developer-tools but tagged "code-review",
-// and `agent-designer`'s description says "audit" — both are code writers.
+// Slot classification (what a pulled agent becomes)
 
 const DEVELOPER_CATEGORIES = new Set([
   "developer-tools", "developer", "development", "coding", "engineering",
@@ -134,14 +104,11 @@ const KNOWLEDGE_CATEGORIES = new Set([
 const GUARDRAIL_HINT =
   /\b(guard ?rails?|compliance|compliant|polic(?:y|ies)|auditor|governance|security|legal|licen[cs]e|regulatory|privacy|gdpr|hipaa|soc ?2|owasp|safety)\b/i;
 
-// Words that mean "this agent explains the codebase". Checked BEFORE the
-// guardrail hint: a "documentation auditor" documents, it does not block edits.
+// Words that mean "this agent explains the codebase".
 const KNOWLEDGE_HINT =
   /\b(knowledge|documentation|docs?|summari[sz]e|summary|onboarding|explain|architecture|codebase map|index(?:er|ing)?|readme)\b/i;
 
-// Decide which pipeline slot a registry entry fills. Returns the slot plus a
-// short human reason, which the panel shows so an auto-assignment is never a
-// mystery ("→ Guardrails · category \"compliance\"").
+// Decide which pipeline slot a registry entry fills.
 export function classifySlot(entry) {
   const category = String((entry && entry.category) || "other").toLowerCase().trim();
   if (KNOWLEDGE_CATEGORIES.has(category)) return { slot: "knowledge", reason: `category "${category}"` };
@@ -157,15 +124,9 @@ export function classifySlot(entry) {
   return { slot: "developer", reason: category === "other" ? "no guardrail signal" : `category "${category}"` };
 }
 
-// The three slots a registry agent can hold, and the built-in that fills each
-// when no community agent is assigned. Knowledge is the only one whose built-in
-// is itself a named agent shown in the panel — the other two are personas the
-// Complexity Classifier picks between.
-export const SLOTS = ["developer", "guardrails", "knowledge"];
 export const KNOWLEDGE_SKILL = "knowledge-builder";
 
-// Human labels for the three slots, in one place so the overlay docs, the index
-// block and the panel can never disagree about what a slot is called.
+// Human labels for the three slots, in one place so the overlay docs, the index block and the panel can never disagree about what a slot is called.
 export const SLOT_LABEL = {
   developer: "Developer",
   guardrails: "Guardrails",
@@ -180,12 +141,7 @@ const SLOT_BLURB = {
 
 // ── Pipeline manifest (.gitagent/pipeline.yaml | .json, or env override) ──────
 
-// Resolve which agents fill which slots for this workspace. Priority:
-//   1. `.gitagent/pipeline.(yaml|yml|json)` committed in the opened repo
-//   2. env overrides (so a demo works on ANY repo without editing it):
-//        GITAGENT_DEVELOPER_AGENT=shreyas-lyzr/architect
-//        GITAGENT_GUARDRAIL_AGENTS=author/guard-a,author/guard-b
-// Returns { developer: ref|null, guardrails: [ref,…] } or null if nothing is set.
+// Resolve which agents fill which slots for this workspace.
 export function readPipelineManifest(dir) {
   const fromFile = readManifestFile(dir);
   if (fromFile) return fromFile;
@@ -221,8 +177,6 @@ function readManifestFile(dir) {
 }
 
 // Accept a few shapes for the developer slot: a bare ref, or {senior|architect}.
-// A manifest written before the knowledge slot existed simply has no `knowledge`
-// key and reads as null, so every committed pipeline.json keeps working.
 function normalizePipeline(p) {
   if (!p || typeof p !== "object") return null;
   let developer = null;
@@ -246,13 +200,10 @@ function normalizePipeline(p) {
   return { developer: devRef, guardrails, knowledge, pins };
 }
 
-// Minimal YAML reader for the tiny pipeline subset: nested maps, scalars, and
-// `- ` lists (a list under a key turns that key into an array). Not a general
-// YAML parser — just enough for pipeline.yaml.
+// Minimal YAML reader for the tiny pipeline subset: nested maps, scalars, and `- ` lists (a list under a key turns that key into an array).
 export function parseMiniYaml(text) {
   const root = {};
-  // Each frame tracks the node plus the (parent,key) that created it, so a list
-  // item can convert an empty-value key's placeholder map into an array.
+  // Each frame tracks the node plus the (parent,key) that created it, so a list item can convert an empty-value key's placeholder map into an array.
   const stack = [{ indent: -1, node: root, parent: null, key: null }];
   for (const raw of String(text).split(/\r?\n/)) {
     const line = raw.replace(/\s+#.*$/, "");
@@ -291,9 +242,7 @@ function stripScalar(s) {
   return s.replace(/^["']|["']$/g, "").trim();
 }
 
-// Write the workspace's pipeline manifest (as .gitagent/pipeline.json — the reader
-// prefers it). Clearing both slots removes the file, so a "reset" in the panel
-// truly reverts to the built-in personas. Used by the GitAgent IDE panel.
+// Write the workspace's pipeline manifest (as .gitagent/pipeline.json — the reader prefers it).
 export function writePipelineManifest(dir, pipeline) {
   const base = join(dir, ".gitagent");
   const file = join(base, "pipeline.json");
@@ -306,12 +255,10 @@ export function writePipelineManifest(dir, pipeline) {
     return;
   }
   mkdirSync(base, { recursive: true });
-  // knowledge is written only when a community agent holds the slot; absent means
-  // the built-in knowledge-builder, which is the default.
+  // knowledge is written only when a community agent holds the slot; absent means the built-in knowledge-builder, which is the default.
   const p = { developer, guardrails };
   if (knowledge) p.knowledge = knowledge;
-  // Drop pins for refs that left the pipeline — a commit nobody can trace back to
-  // a rule is noise.
+  // Drop pins for refs that left the pipeline — a commit nobody can trace back to a rule is noise.
   const live = new Set([developer, knowledge, ...guardrails].filter(Boolean));
   const pins = {};
   for (const [ref, sha] of Object.entries((pipeline && pipeline.pins) || {})) {
@@ -321,11 +268,7 @@ export function writePipelineManifest(dir, pipeline) {
   writeFileSync(file, JSON.stringify({ spec_version: "0.1.0", pipeline: p }, null, 2) + "\n");
 }
 
-// Put one agent into a slot, keeping the rest of the pipeline as it is. Used by
-// the install path, where pulling an agent should assign it without the user
-// having to restate the whole pipeline. An agent holds ONE slot at a time —
-// moving it to Guardrails takes it out of Developer and vice versa, otherwise a
-// re-classified agent would silently both write and review its own code.
+// Put one agent into a slot, keeping the rest of the pipeline as it is.
 export function assignSlot(dir, ref, slot, pin) {
   const cur = readPipelineManifest(dir) || { developer: null, guardrails: [], knowledge: null, pins: {} };
   const guardrails = (cur.guardrails || []).filter(Boolean).filter((r) => r !== ref);
@@ -364,11 +307,6 @@ function installPath(dir, entry) {
 }
 
 // Clone the agent's repo into <workspace>/.gitagent/agents/<author>__<name>.
-// A complete clone is cached on disk and reused. A directory WITHOUT .git is a
-// leftover from a clone that died partway (timeout, network, a path git refused)
-// — treat it as stale and re-clone, and clear the target if this attempt fails
-// too. Otherwise one bad clone would poison every later install of that agent:
-// the empty directory reads as "installed" and the persona silently loads blank.
 function gitIn(cwd, args) {
   return new Promise((res, rej) => {
     execFile("git", [...SAFE_GIT, ...args], { cwd, timeout: CLONE_TIMEOUT_MS }, (err, stdout) =>
@@ -389,17 +327,7 @@ export async function remoteSha(repository) {
   } catch { return ""; }
 }
 
-// Clone the agent into <workspace>/.gitagent/agents/<author>__<name>, at `pin` if
-// one is given. Returns { path, sha }.
-//
-// A cached clone is reused, but only when it is already at the pinned commit —
-// otherwise a pack that changed after the pin was written would keep serving the
-// old rules from disk under the new pin, or vice versa.
-//
-// A directory WITHOUT .git is a clone that died partway; treat it as stale and
-// re-clone, and clear the target if this attempt fails too, so one bad clone can't
-// poison every later install (the empty dir reads as "installed" and the persona
-// silently loads blank).
+// Clone the agent into <workspace>/.gitagent/agents/<author>__<name>, at `pin` if one is given.
 export async function installAgent(dir, entry, pin) {
   const target = installPath(dir, entry);
   if (existsSync(join(target, ".git"))) {
@@ -416,8 +344,7 @@ export async function installAgent(dir, entry, pin) {
   try {
     await gitIn(staging, ["clone", "--depth", "1", entry.repository, cloned]);
     if (pin) {
-      // A --depth 1 clone has only the tip, so an older commit has to be fetched
-      // explicitly before it can be checked out.
+      // A --depth 1 clone has only the tip, so an older commit has to be fetched explicitly before it can be checked out.
       await gitIn(cloned, ["fetch", "--depth", "1", "origin", pin]);
       await gitIn(cloned, ["checkout", "--detach", "FETCH_HEAD"]);
     }
@@ -439,9 +366,7 @@ function readCapped(abs) {
   } catch { return ""; }
 }
 
-// Load an installed agent's persona from the gitagent-standard files, honoring an
-// optional subdir (`path` in metadata). Falls back to README.md if the agent
-// doesn't ship SOUL/RULES. Returns { name, soul, rules, skill } (strings, "" if absent).
+// Load an installed agent's persona from the gitagent-standard files, honoring an optional subdir (`path` in metadata).
 export function loadAgentPersona(installDir, entry) {
   const root = entry && entry.path ? join(installDir, entry.path) : installDir;
   const soul = readCapped(join(root, "SOUL.md"));
@@ -467,48 +392,26 @@ export function loadAgentPersona(installDir, entry) {
   };
 }
 
-// ── Repo-root spec (the repository's OWN agent) ──────────────────────────────
-//
-// Jr Architect scaffolds a gitagent spec for every cloned repo (SOUL.md, RULES.md,
-// skills/*/SKILL.md, memory/MEMORY.md — see gitagentgenerator.go). That spec IS the
-// repository's own agent: it travels with the code, versioned in git. The edit
-// pipeline reads it before changing anything, so edits obey the repo's memory,
-// rules, and skills. Applies even when no registry agents are installed.
-//
-// The spec is grouped under `.gitagent/` (one clear folder in the explorer,
-// alongside pipeline.json and installed agents). We read from there first, then
-// fall back to the repo root so a standard-pure repo that commits SOUL.md/RULES.md
-// at its top level is still honored. Returns null if there is no spec at all.
+// Repo-root spec (the repository's OWN agent)
 export function loadRepoRootSpec(dir) {
   const grouped = readSpecFrom(join(dir, ".gitagent"));
   if (grouped) return grouped;
   return readSpecFrom(dir);
 }
 
-// Drop a leading `--- … ---` YAML frontmatter block so only the human body of a
-// SKILL.md (or RULES.md) goes into the prompt.
+// Drop a leading `--- … ---` YAML frontmatter block so only the human body of a SKILL.md (or RULES.md) goes into the prompt.
 function stripFrontmatter(t) {
   if (!t) return "";
   const m = t.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
   return (m ? t.slice(m[0].length) : t).trim();
 }
 
-// Load a built-in persona skill's body from the repo's own .gitagent/skills/. This
-// is the SOURCE OF TRUTH for how a squad behaves (jnr-developer, snr-developer,
-// architect, ask, build-doctor). Returns "" if the file is absent so the caller
-// can fall back to its hardcoded default.
+// Load a built-in persona skill's body from the repo's own .gitagent/skills/.
 export function loadSkill(dir, name) {
   return stripFrontmatter(readCapped(join(dir, ".gitagent", "skills", name, "SKILL.md")));
 }
 
-// Load the repo's OWN compliance rules from .gitagent/compliance/ — RULES.md first,
-// then any other rule file dropped in that folder, so the directory means something
-// rather than one hardcoded filename. These document and may ADD to the
-// code-enforced guardrails (deny always wins in code). "" if none.
-//
-// A pulled guardrail's overlay file lives here too, and is deliberately skipped:
-// personaPreamble already injects it, and sending the same rules twice would spend
-// the token budget twice for no extra enforcement.
+// Load the repo's OWN compliance rules from .gitagent/compliance/.
 export function loadComplianceRules(dir) {
   const base = join(dir, ".gitagent", "compliance");
   const files = [];
@@ -534,46 +437,32 @@ export function listSkills(dir) {
   } catch { return []; }
 }
 
-// ── Spec authoring (the GitAgent panel's read/write surface) ─────────────────
-//
-// The panel edits the repo's own agent in place: identity (SOUL.md), rules
-// (RULES.md), memory (MEMORY.md), the manifest (agent.yaml), compliance rules,
-// and each skill. These are plain files in the workspace, so every edit is a
-// git diff the user can review and commit — the whole point of the standard.
+// Spec authoring (the GitAgent panel's read/write surface)
 
-// The skills scaffolded by gitagentgenerator.go. Marked in the UI so a user can
-// tell "the platform's own persona" from one they authored (both are editable).
+// The skills scaffolded by gitagentgenerator.go.
 export const BUILTIN_SKILLS = [
   "ui-editor", "jnr-developer", "snr-developer", "architect", "ask", "build-doctor",
-  // The default Knowledge-slot agent. A real skill file, not a hidden prompt:
-  // it is what the knowledge builder reads before it writes knowledge/overview.md.
+  // The default Knowledge-slot agent. A real skill file, not a hidden prompt.
   "knowledge-builder",
 ];
 
-// Files the panel may read and write. Anything under .gitagent/ with a text
-// extension, plus the root agent.yaml the git-native runtime reads its manifest
-// from. Everything else — source code, .env, .git — is out of reach here; the
-// regular file API (with its own guardrails) handles those.
+// Files the panel may read and write. Anything under .gitagent/ with a text extension, plus the root agent.yaml the git-native runtime reads its manifest from.
 const EDITABLE_EXT = /\.(md|ya?ml|json|txt)$/i;
 
-// Resolve a caller-supplied relative path to an absolute path inside the
-// workspace, or null if it escapes the allowed subtree. Rejects traversal
-// ("../"), absolute paths, and anything outside .gitagent/ (bar agent.yaml).
+// Resolve a caller-supplied relative path to an absolute path inside the workspace, or null if it escapes the allowed subtree.
 export function resolveSpecPath(dir, rel) {
   const clean = String(rel || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
   if (!clean || clean.includes("\0") || !EDITABLE_EXT.test(clean)) return null;
   const abs = resolve(dir, clean);
   const root = resolve(dir);
-  // resolve() collapses "..", so a path that escaped no longer has the root as
-  // its prefix. Compare with a separator so /work-other doesn't match /work.
+  // resolve() collapses "..", so a path that escaped no longer has the root as its prefix.
   if (abs !== root && !abs.startsWith(root + sep)) return null;
   const inSpec = abs.startsWith(resolve(dir, ".gitagent") + sep);
   const isRootManifest = abs === resolve(dir, "agent.yaml");
   return inSpec || isRootManifest ? abs : null;
 }
 
-// Read a spec file. Returns { path, exists, content } — a missing file is not an
-// error, it just means the panel offers to create it.
+// Read a spec file. Returns { path, exists, content } — a missing file is not an error, it just means the panel offers to create it.
 export function readSpecFile(dir, rel) {
   const abs = resolveSpecPath(dir, rel);
   if (!abs) return null;
@@ -581,9 +470,7 @@ export function readSpecFile(dir, rel) {
   return { path: rel, exists: true, content: readFileSync(abs, "utf8") };
 }
 
-// Write a spec file, creating parent directories. agent.yaml is mirrored to the
-// repo root, because the git-native runtime reads its manifest from <root>/agent.yaml
-// while the developer edits the copy under .gitagent/ — they must not drift.
+// Write a spec file, creating parent directories.
 export function writeSpecFile(dir, rel, content) {
   const abs = resolveSpecPath(dir, rel);
   if (!abs) throw new Error("path is not an editable part of the agent spec");
@@ -599,8 +486,7 @@ export function writeSpecFile(dir, rel, content) {
   return { path: rel, exists: true, content: body };
 }
 
-// Pull `name:`/`description:` out of a SKILL.md frontmatter block so the panel
-// can list skills with a human summary instead of bare slugs.
+// Pull `name:`/`description:` out of a SKILL.md frontmatter block so the panel can list skills with a human summary instead of bare slugs.
 export function parseFrontmatter(text) {
   const m = String(text || "").match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) return {};
@@ -612,8 +498,7 @@ export function parseFrontmatter(text) {
   return out;
 }
 
-// Skills with enough detail to render a list: slug, description, whether it is
-// one of the scaffolded personas, and the path to open in the editor.
+// Skills with enough detail to render a list: slug, description, whether it is one of the scaffolded personas, and the path to open in the editor.
 export function listSkillsDetailed(dir) {
   const base = join(dir, ".gitagent", "skills");
   return listSkills(dir).map((slug) => {
@@ -624,37 +509,31 @@ export function listSkillsDetailed(dir) {
       slug,
       description: fm.description || "",
       builtin: BUILTIN_SKILLS.includes(slug),
-      // Materialized by a pulled registry agent — editable like any other skill,
-      // but owned by the pipeline slot that put it there.
+      // Materialized by a pulled registry agent — editable like any other skill, but owned by the pipeline slot that put it there.
       agent: fm.source === OVERLAY_SOURCE ? fm.agent || slug : "",
       path: `.gitagent/skills/${slug}/SKILL.md`,
     };
   });
 }
 
-// Remove a user-authored skill. Built-in personas are refused: deleting one
-// would silently change how the pipeline codes, and the fix (re-clone) is not
-// obvious. Clear the body instead if you want a persona to do nothing.
+// Remove a user-authored skill. Built-in personas are refused.
 export function deleteSkill(dir, slug) {
   const clean = String(slug || "").trim();
-  // One path segment, no traversal. Underscores and dots are allowed because a
-  // pulled agent's skill dir is "<author>__<name>" and repo names carry both.
+  // One path segment, no traversal. Underscores and dots are allowed because a pulled agent's skill dir is "<author>__<name>" and repo names carry both.
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(clean) || clean.includes("..")) {
     throw new Error("invalid skill name");
   }
   if (BUILTIN_SKILLS.includes(clean)) throw new Error(`"${clean}" is a built-in persona — edit it instead of deleting it`);
   const target = join(dir, ".gitagent", "skills", clean);
   if (!existsSync(target)) throw new Error(`skill "${clean}" not found`);
-  // A pulled agent's skill belongs to its pipeline slot: deleting the file alone
-  // would just have it rewritten on the next turn. Drop the agent instead.
+  // A pulled agent's skill belongs to its pipeline slot: deleting the file alone would just have it rewritten on the next turn.
   if (isOverlayFile(join(target, "SKILL.md"))) {
     throw new Error(`"${clean}" belongs to a pulled registry agent — remove the agent from the Registry tab to drop it`);
   }
   rmSync(target, { recursive: true, force: true });
 }
 
-// Installed registry agents with the spec files each one actually ships, so the
-// panel can open a community agent's SOUL/RULES and show what it will inject.
+// Installed registry agents with the spec files each one actually ships.
 export function installedAgentsDetailed(dir) {
   return installedAgents(dir).map((ref) => {
     const { author, name } = parseRef(ref);
@@ -667,10 +546,7 @@ export function installedAgentsDetailed(dir) {
   });
 }
 
-// The standard's full layout puts durable memory in memory/MEMORY.md. Older
-// specs (and hand-written repos that keep it flat) have it at the spec root, so
-// read the standard location first and fall back — a repo scaffolded before the
-// move must not silently lose its memory.
+// The standard's full layout puts durable memory in memory/MEMORY.md.
 export const MEMORY_PATHS = ["memory/MEMORY.md", "MEMORY.md"];
 
 function readMemory(base) {
@@ -690,9 +566,7 @@ function readSpecFrom(base) {
   const skillsDir = join(base, "skills");
   if (existsSync(skillsDir)) {
     try {
-      // Skip a pulled agent's overlay skill: this is the REPO's own spec, and an
-      // overlay slug sorts ahead of "ui-editor" — it would quietly stand in for
-      // the repo's identity while also being injected as the Developer agent.
+      // Skip a pulled agent's overlay skill.
       const first = readdirSync(skillsDir).find((d) =>
         existsSync(join(skillsDir, d, "SKILL.md")) && !isOverlayFile(join(skillsDir, d, "SKILL.md")));
       if (first) skill = readCapped(join(skillsDir, first, "SKILL.md"));
@@ -702,25 +576,7 @@ function readSpecFrom(base) {
   return { soul, rules, memory, skill };
 }
 
-// ── Spec overlay: a pulled agent shows up INSIDE .gitagent/ ──────────────────
-//
-// Cloning an agent into .gitagent/agents/ is not enough: the spec folder the user
-// actually reads (RULES.md, skills/, compliance/, workflows/) would sit there
-// unchanged while the pipeline quietly ran something else. So pulling an agent
-// also materializes its contribution into the standard layout, in files that name
-// the agent they came from:
-//
-//   Developer  → .gitagent/skills/<author>__<name>/SKILL.md   (identity + rules + skill)
-//   Guardrail  → .gitagent/compliance/<author>__<name>.md     (the rules it enforces)
-//   Either     → .gitagent/workflows/<author>__<name>.md      (where it runs in the pipeline)
-//   Index      → a managed block in .gitagent/RULES.md and workflows/README.md
-//
-// These are not copies for show. Once the overlay exists it IS the persona: the
-// pipeline reads it instead of the clone, so editing the visible file changes what
-// the next edit does — the whole point of a git-native agent. Which means:
-//   • an overlay is created only when missing, never overwritten (your edits stand)
-//   • it is deleted when the agent leaves the pipeline, so the folder never lies
-//   • the clone under agents/ stays pristine as the upstream copy to diff against
+// Spec overlay: a pulled agent shows up INSIDE .gitagent/
 
 export const OVERLAY_SOURCE = "gitagent-registry-agent";
 const OVERLAY_CAP = 3200; // an overlay carries several sections; cap above PERSONA_CAP
@@ -732,15 +588,11 @@ function refSlug(ref) {
   return `${author}__${name}`;
 }
 
-// Where a pulled agent's spec lands, by slot. Relative POSIX paths so they can go
-// straight to the panel and the file explorer.
+// Where a pulled agent's spec lands, by slot.
 export function overlayPaths(ref, slot) {
   const slug = refSlug(ref);
   return {
-    // Guardrails are rules, so they land in compliance/. Developer AND knowledge
-    // agents are both "a prompt that does a job", so both land in skills/ — which
-    // is also why the built-in knowledge-builder is a skill file and not a
-    // hardcoded system prompt.
+    // Guardrails are rules, so they land in compliance/.
     spec: slot === "guardrails"
       ? `.gitagent/compliance/${slug}.md`
       : `.gitagent/skills/${slug}/SKILL.md`,
@@ -752,9 +604,7 @@ function absOf(dir, rel) {
   return join(dir, ...rel.split("/"));
 }
 
-// True if this file was written by the overlay (frontmatter carries our source
-// marker). Used to tell a pulled agent's file from one the developer wrote, so we
-// only ever prune our own.
+// True if this file was written by the overlay (frontmatter carries our source marker).
 function isOverlayFile(abs) {
   try {
     return parseFrontmatter(readFileSync(abs, "utf8")).source === OVERLAY_SOURCE;
@@ -774,18 +624,14 @@ function overlayFrontmatter(ref, slot, description) {
   ].join("\n");
 }
 
-// The Developer overlay carries the agent's WHOLE contribution — identity, rules
-// and skill in one file — because once it exists the clone is no longer read.
-// Splitting it across files would mean editing one and being silently overruled
-// by another.
+// The Developer overlay carries the agent's WHOLE contribution.
 function developerOverlayDoc(persona) {
   const ref = persona.name;
   const parts = [
     overlayFrontmatter(ref, "developer", persona.description || `Developer persona pulled from ${ref}`, persona.sha),
     `# ${ref} — Developer`,
     "",
-    // A comment, not prose: readOverlayBody strips it, so this guidance never
-    // reaches the model as if it were part of the agent's persona.
+    // A comment, not prose: readOverlayBody strips it, so this guidance never reaches the model as if it were part of the agent's persona.
     "<!--",
     "Pulled from the GitAgent registry. This file is what the Developer stage reads",
     "before it rewrites any code, so editing it changes the next edit. The upstream",
@@ -802,9 +648,7 @@ function developerOverlayDoc(persona) {
   return parts.join("\n") + "\n";
 }
 
-// The Knowledge overlay is the prompt the knowledge builder runs. Same shape as
-// the Developer overlay — identity, rules, skill — because it IS a skill file:
-// the builder reads it with loadSkill() exactly like every other persona.
+// The Knowledge overlay is the prompt the knowledge builder runs.
 function knowledgeOverlayDoc(persona) {
   const ref = persona.name;
   const parts = [
@@ -847,8 +691,7 @@ function guardrailOverlayDoc(persona) {
   ].join("\n");
 }
 
-// A short doc placed in workflows/ saying where this agent runs. Documentation,
-// not configuration — the slot itself lives in pipeline.json.
+// A short doc placed in workflows/ saying where this agent runs.
 function workflowOverlayDoc(persona, slot) {
   const ref = persona.name;
   const slug = refSlug(ref);
@@ -891,9 +734,7 @@ function workflowOverlayDoc(persona, slot) {
   ].join("\n");
 }
 
-// Create an overlay file only if it is absent. An existing one is the developer's
-// now — we never overwrite it, and we return false so the caller doesn't claim to
-// have written anything.
+// Create an overlay file only if it is absent.
 function writeIfAbsent(dir, rel, content) {
   const abs = absOf(dir, rel);
   if (existsSync(abs)) return false;
@@ -928,9 +769,7 @@ function listOverlayFiles(dir) {
   return out;
 }
 
-// Replace (or remove) the managed block in a spec file, leaving every hand-written
-// line alone. Returns true if the file changed. An empty body drops the block, so
-// clearing the pipeline leaves RULES.md exactly as its author wrote it.
+// Replace (or remove) the managed block in a spec file, leaving every hand-written line alone.
 export function upsertManagedBlock(dir, rel, body) {
   const abs = absOf(dir, rel);
   const had = existsSync(abs);
@@ -952,8 +791,7 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// The managed index lists what the pipeline ASSIGNS, so an agent whose clone
-// failed this turn is still named — the block and the files it points at agree.
+// The managed index lists what the pipeline ASSIGNS, so an agent whose clone failed this turn is still named.
 function indexBlock(assigned) {
   if (!assigned.length) return "";
   const lines = [
@@ -975,23 +813,14 @@ function indexBlock(assigned) {
   return lines.join("\n");
 }
 
-// Reconcile .gitagent/ with the resolved pipeline: materialize each active agent's
-// spec, prune the files of agents that left, and refresh the managed index blocks.
-// Idempotent — a second call with the same pipeline writes nothing.
-//
-// `declared` is what the manifest ASSIGNS ([{ref, slot}, …]), which is not always
-// what resolved: a clone that failed because the network was down still holds its
-// slot. Its files are kept, so working offline never deletes rules that are still
-// assigned — only removing the agent does.
+// Reconcile .gitagent/ with the resolved pipeline.
 export function syncSpecOverlay(dir, agents, declared) {
   const active = [];
   if (agents && agents.developer) active.push({ persona: agents.developer, slot: "developer" });
   for (const g of (agents && agents.guardrails) || []) active.push({ persona: g, slot: "guardrails" });
   if (agents && agents.knowledge) active.push({ persona: agents.knowledge, slot: "knowledge" });
 
-  // What holds a slot: the manifest when we were given it, otherwise whatever
-  // resolved. Both the keep-set and the index block come from this, so the block
-  // can never name an agent whose files were just pruned, or vice versa.
+  // What holds a slot: the manifest when we were given it, otherwise whatever resolved.
   const assigned = declared || active.map((a) => ({ ref: a.persona.name, slot: a.slot }));
 
   const written = [];
@@ -1010,8 +839,7 @@ export function syncSpecOverlay(dir, agents, declared) {
       : developerOverlayDoc(persona);
     if (writeIfAbsent(dir, p.spec, doc)) written.push(p.spec);
     if (writeIfAbsent(dir, p.workflow, workflowOverlayDoc(persona, slot))) written.push(p.workflow);
-    // The file now exists either way, so the persona can point at it — this is
-    // the path the panel links to and the developer edits.
+    // The file now exists either way, so the persona can point at it — this is the path the panel links to and the developer edits.
     persona.specPath = p.spec;
     persona.workflowPath = p.workflow;
   }
@@ -1034,23 +862,19 @@ export function syncSpecOverlay(dir, agents, declared) {
   return { written, removed };
 }
 
-// Read an overlay's body (frontmatter stripped). "" when the developer has not
-// materialized this agent yet — the caller then falls back to the clone.
+// Read an overlay's body (frontmatter stripped).
 export function readOverlayBody(dir, ref, slot) {
   const abs = absOf(dir, overlayPaths(ref, slot).spec);
   if (!existsSync(abs)) return "";
   try {
     const raw = readFileSync(abs, "utf8");
-    // HTML comments are the file's notes to the developer ("edit this and the next
-    // review changes"). They are not the agent's rules, so they never go to the model.
+    // HTML comments are the file's notes to the developer ("edit this and the next review changes").
     const body = stripFrontmatter(raw).replace(/<!--[\s\S]*?-->/g, "").replace(/\n{3,}/g, "\n\n").trim();
     return body.length > OVERLAY_CAP ? body.slice(0, OVERLAY_CAP) + "\n…(truncated)" : body;
   } catch { return ""; }
 }
 
-// Once an overlay exists it is the single authority for that agent: the persona
-// collapses to the visible file, so the clone can never contradict what the
-// developer reads (and edits) in .gitagent/.
+// Once an overlay exists it is the single authority for that agent.
 function applyOverlay(dir, persona, slot) {
   const body = readOverlayBody(dir, persona.name, slot);
   if (!body) return persona;
@@ -1061,10 +885,7 @@ function applyOverlay(dir, persona, slot) {
 
 // ── Orchestration: manifest → installed, loaded personas for the pipeline ─────
 
-// Resolve the workspace's pipeline: read the manifest, install each referenced
-// agent (live git clone), and load its persona. `onStep(name, detail)` streams
-// progress into the chat. Best-effort: a failed agent is skipped, not fatal.
-// Returns { developer: persona|null, guardrails: [persona,…], enabled: bool }.
+// Resolve the workspace's pipeline: read the manifest, install each referenced agent (live git clone), and load its persona.
 export async function resolvePipelineAgents(dir, onStep) {
   const step = (d) => { if (onStep) onStep("GitAgent", d); };
 
@@ -1074,8 +895,7 @@ export async function resolvePipelineAgents(dir, onStep) {
 
   const manifest = readPipelineManifest(dir);
   if (!manifest) {
-    // No pipeline — still reconcile, so clearing the last slot takes that agent's
-    // files out of .gitagent/ instead of leaving rules behind that nothing runs.
+    // No pipeline — still reconcile, so clearing the last slot takes that agent's files out of .gitagent/ instead of leaving rules behind that nothing runs.
     const none = { root, developer: null, guardrails: [], knowledge: null, enabled: !!root };
     try {
       const sync = syncSpecOverlay(dir, none, []);
@@ -1093,9 +913,7 @@ export async function resolvePipelineAgents(dir, onStep) {
     const pin = pins[ref] || "";
     try {
       const { path: at, sha } = await installAgent(dir, entry, pin);
-      // Unpinned means "whatever upstream is today", which for a compliance pack is
-      // a rule that can change with no diff and no review. Say so once, and hand
-      // back the sha so the caller can pin it.
+      // Unpinned means "whatever upstream is today", which for a compliance pack is a rule that can change with no diff and no review.
       if (!pin) step(`${ref} is UNPINNED · running ${sha.slice(0, 7) || "unknown"}`);
       else {
         const upstream = await remoteSha(entry.repository);
@@ -1104,8 +922,7 @@ export async function resolvePipelineAgents(dir, onStep) {
         }
       }
       const persona = applyOverlay(dir, loadAgentPersona(at, entry), slot);
-      // The overlay in .gitagent/ wins over the clone when it exists, so a rule the
-      // developer edited there is the rule that actually runs.
+      // The overlay in .gitagent/ wins over the clone when it exists, so a rule the developer edited there is the rule that actually runs.
       return { ...persona, sha, pin };
     } catch (e) {
       step(`skip ${ref} (${e.message})`);
@@ -1128,8 +945,6 @@ export async function resolvePipelineAgents(dir, onStep) {
   }
 
   // The knowledge agent does not take part in an edit turn — it runs once at open.
-  // It is resolved here anyway so its overlay is materialized and pruned by the
-  // same reconciler as every other slot, and so the panel can show what holds it.
   let knowledge = null;
   if (manifest.knowledge) {
     step(`installing knowledge · ${manifest.knowledge}`);
@@ -1142,12 +957,7 @@ export async function resolvePipelineAgents(dir, onStep) {
     enabled: !!(root || developer || guardrails.length || knowledge),
   };
 
-  // Reflect the pipeline into the spec folder: write what is missing, prune what
-  // left. Self-healing, so a repo that only commits pipeline.json rebuilds its
-  // .gitagent/ on the first turn. Never fatal — a failed sync just leaves the
-  // clone driving the pipeline as before.
-  // Prune against what the MANIFEST assigns, not what resolved — an agent whose
-  // clone failed this turn still holds its slot and must keep its files.
+  // Reflect the pipeline into the spec folder: write what is missing, prune what left.
   const declared = [
     ...(manifest.developer ? [{ ref: manifest.developer, slot: "developer" }] : []),
     ...manifest.guardrails.map((ref) => ({ ref, slot: "guardrails" })),
@@ -1164,10 +974,7 @@ export async function resolvePipelineAgents(dir, onStep) {
   return agents;
 }
 
-// Compose the persona preamble injected ahead of the Developer prompt. Layers, in
-// order: (1) the repository's OWN root spec — its memory, identity, skill, rules —
-// which always applies; (2) an installed registry developer agent, if any; (3)
-// guardrail rules (root RULES + registry guardrails). Empty when nothing is active.
+// Compose the persona preamble injected ahead of the Developer prompt.
 export function personaPreamble(agents) {
   if (!agents || !agents.enabled) return "";
   const parts = [];

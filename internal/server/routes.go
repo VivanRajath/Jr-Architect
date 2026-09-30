@@ -11,8 +11,7 @@ import (
 	"sandbox/internal/core"
 )
 
-// The whole HTTP surface in one place. webFS is the embedded front end, injected
-// by main because the //go:embed of web/ has to live beside that directory.
+// The whole HTTP surface in one place. webFS is the embedded front end, injected by main.
 func Routes(mux *http.ServeMux, webFS fs.FS) {
 	RegisterAssetMIMETypes()
 

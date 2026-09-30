@@ -58,10 +58,7 @@ var wsUpgrader = websocket.Upgrader{
 	},
 }
 
-// waitForContainerRunning blocks until the named Docker container exists and is
-// running, or the timeout elapses. It streams a friendly notice to the terminal
-// while waiting so the panel doesn't look dead. Returns false on timeout or if
-// the container has already exited/died.
+// waitForContainerRunning blocks until the named Docker container exists and is running, or the timeout elapses.
 func waitForContainerRunning(ctx context.Context, cli *client.Client, name string, conn *websocket.Conn, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	notified := false
@@ -103,12 +100,7 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Talk to the Docker Engine API directly instead of shelling out to
-	// `docker exec` through a local PTY. On Windows the CLI-over-ConPTY path was
-	// unreliable (docker.exe does its own raw-mode/IsTerminal handling that
-	// fights the ConPTY wrapper, so keystrokes never reached the shell). The
-	// Engine API's exec-attach hijack gives us a raw bidirectional TTY stream
-	// that behaves identically on Windows, macOS and Linux.
+	// Talk to the Docker Engine API directly instead of shelling out to `docker exec` through a local PTY.
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		core.AddLog(containerName, "terminal docker client failed: "+err.Error())
@@ -120,21 +112,13 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// The sandbox is registered in our map the instant /run begins, but the Docker
-	// container is created asynchronously (after clone + runtime detection). A
-	// terminal opened during that window would hit "No such container", so wait for
-	// the container to be running before exec'ing a shell.
-	// A first build of a new runtime can take minutes, and the IDE now opens before it finishes.
+	// The sandbox is registered in our map the instant /run begins, but the Docker container is created asynchronously (after clone + runtime detection).
 	if !waitForContainerRunning(ctx, cli, containerName, conn, 15*time.Minute) {
 		conn.WriteMessage(websocket.TextMessage, []byte("\r\n\x1b[31m[sandbox did not start in time — reload the page to retry]\x1b[0m\r\n"))
 		return
 	}
 
-	// Interactive login shell. Tty:true gives a real TTY inside the container so
-	// prompts and character echo work. Prefer bash with a working-directory
-	// prompt (\w) so `cd` visibly changes the path like VS Code; fall back to sh
-	// with a $PWD prompt on slim images that lack bash (plain dash shows only a
-	// bare "$" with no path, which made cd look like it did nothing).
+	// Interactive login shell. Tty:true gives a real TTY inside the container so prompts and character echo work.
 	execResp, err := cli.ContainerExecCreate(ctx, containerName, container.ExecOptions{
 		Tty:          true,
 		AttachStdin:  true,
@@ -142,10 +126,7 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 		AttachStderr: true,
 		WorkingDir:   "/workspace",
 		Env:          []string{"TERM=xterm-256color"},
-		// Probe for bash with the redirect scoped to the probe only — do NOT
-		// redirect bash's own stderr, or its prompt (written to stderr) vanishes
-		// and the terminal looks dead. bash gives a \w (working-dir) prompt so
-		// `cd` visibly changes the path; sh is the fallback with a $PWD prompt.
+		// Probe for bash with the redirect scoped to the probe only.
 		Cmd: []string{"sh", "-c",
 			"if command -v bash >/dev/null 2>&1; then export PS1='\\w \\$ '; exec bash --norc -i; else export PS1='$PWD $ '; exec sh -i; fi"},
 	})
@@ -163,8 +144,7 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer att.Close()
 
-	// exec output → websocket. With Tty:true the hijacked stream is a single raw
-	// byte stream (no stdout/stderr multiplexing header), so we forward it as-is.
+	// exec output → websocket. With Tty:true the hijacked stream is a single raw byte stream (no stdout/stderr multiplexing header), so we forward it as-is.
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -181,9 +161,7 @@ func terminalWSHandler(w http.ResponseWriter, r *http.Request) {
 		conn.Close() // unblock the read loop below
 	}()
 
-	// websocket → exec stdin. Binary frames carry keystrokes; text frames carry
-	// resize events ({"type":"resize","cols":N,"rows":N}) so column-aware output
-	// (ls, line wrapping) matches the visible terminal size.
+	// websocket → exec stdin.
 readLoop:
 	for {
 		mt, msg, rerr := conn.ReadMessage()
@@ -210,4 +188,3 @@ readLoop:
 }
 
 // startAgentService launches the Node.js agent service as a subprocess.
-// It reads ANTHROPIC_API_KEY from the environment and passes it through.

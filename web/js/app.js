@@ -232,8 +232,7 @@ function collectEdits(plan) {
       enabled: document.getElementById(`svc-on-${i}`).checked,
       port: parseInt(document.getElementById(`svc-port-${i}`).value, 10) || 0,
     };
-    // Only sent when actually edited, so the install/start split the scanner
-    // worked out survives untouched rows.
+    // Only sent when actually edited, so the install/start split the scanner worked out survives untouched rows.
     if (cmd !== original) {
       edit.install = '';
       edit.start = cmd;
@@ -402,9 +401,7 @@ document.getElementById('repoInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') runSandbox();
 });
 
-// ════════════════════════════════════════════
-//  BUILD MODE — Multi-step state machine
-// ════════════════════════════════════════════
+// BUILD MODE — Multi-step state machine
 
 let builderState = {
   step: 1,            // 1=Q&A, 2=PRD, 3=Building, 4=Launch

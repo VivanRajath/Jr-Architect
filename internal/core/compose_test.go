@@ -8,8 +8,7 @@ import (
 	"testing"
 )
 
-// The name is the cache key: the same combination must always resolve to the same
-// image, whatever order detection happened to find the stacks in.
+// The name is the cache key: the same combination must always resolve to the same image, whatever order detection happened to find the stacks in.
 func TestCompositeImageIsOrderIndependent(t *testing.T) {
 	a := CompositeImage([]string{"react", "django"})
 	b := CompositeImage([]string{"django", "react"})
@@ -42,8 +41,7 @@ func TestImageForStacks(t *testing.T) {
 	}
 }
 
-// A composite name has to survive the round trip, because EnsureImage rebuilds the
-// stack list from it.
+// A composite name has to survive the round trip, because EnsureImage rebuilds the stack list from it.
 func TestStacksFromImageRoundTrip(t *testing.T) {
 	stacks := []string{"django", "go", "react"}
 	got := StacksFromImage(CompositeImage(stacks))
@@ -96,8 +94,7 @@ func TestCompositeDockerfileInstallsEveryToolchain(t *testing.T) {
 	}
 }
 
-// Every stack the detector can emit must be buildable — either it is a base, or a
-// layer fragment exists to install it.
+// Every stack the detector can emit must be buildable — either it is a base, or a layer fragment exists to install it.
 func TestEveryStackCanBeComposed(t *testing.T) {
 	for _, e := range Images {
 		stack := ImageToStack(e.Image)

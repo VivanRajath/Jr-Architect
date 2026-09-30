@@ -7,10 +7,7 @@ import (
 	"testing"
 )
 
-// TestGenerateAgentSpecMovesLargeInjectedDocs verifies the fix for the Groq 413
-// "request too large" failure: a repo's oversized AGENTS.md (which gitclaw would
-// splice verbatim into the agent's system prompt) is moved aside so the agent
-// request stays within the model's token budget, while small docs are kept.
+// TestGenerateAgentSpecMovesLargeInjectedDocs verifies the fix for the Groq 413 "request too large" failure.
 func TestGenerateAgentSpecMovesLargeInjectedDocs(t *testing.T) {
 	dir := t.TempDir()
 
@@ -44,9 +41,7 @@ func TestGenerateAgentSpecMovesLargeInjectedDocs(t *testing.T) {
 		t.Errorf("small DUTIES.md should have been left in place: %v", err)
 	}
 
-	// The generated spec files must exist, grouped under .gitagent/ following the
-	// GitAgent standard layout (manifest, identity, rules, memory, skills, and the
-	// tools/hooks/workflows/compliance dirs).
+	// The generated spec files must exist, grouped under .gitagent/ following the GitAgent standard layout (manifest, identity, rules, memory, skills, and the tools/hooks/workflows/compliance dirs).
 	for _, f := range []string{
 		"agent.yaml", "SOUL.md", "RULES.md",
 		filepath.Join("memory", "MEMORY.md"),
@@ -66,17 +61,13 @@ func TestGenerateAgentSpecMovesLargeInjectedDocs(t *testing.T) {
 		}
 	}
 
-	// agent.yaml must ALSO exist at the repo root: the engine (gitclaw) hard-reads
-	// its manifest from <root>/agent.yaml, so without this every chat turn ENOENTs.
+	// agent.yaml must ALSO exist at the repo root.
 	if _, err := os.Stat(filepath.Join(dir, "agent.yaml")); err != nil {
 		t.Errorf("expected root agent.yaml for the engine manifest: %v", err)
 	}
 }
 
 // The gitagent standard's full layout keeps durable memory in memory/MEMORY.md.
-// A repo scaffolded before that move has one at the spec root, and its contents
-// are the repo's accumulated knowledge — it must be carried over, not discarded
-// and not left behind as a second copy the agent might read instead.
 func TestGenerateAgentSpecMigratesLegacyMemory(t *testing.T) {
 	dir := t.TempDir()
 	specDir := filepath.Join(dir, ".gitagent")
@@ -104,8 +95,7 @@ func TestGenerateAgentSpecMigratesLegacyMemory(t *testing.T) {
 	}
 }
 
-// A repo that already has memory/MEMORY.md keeps it: re-cloning must never
-// clobber knowledge the agent (or the developer) accumulated across turns.
+// A repo that already has memory/MEMORY.md keeps it: re-cloning must never clobber knowledge the agent (or the developer) accumulated across turns.
 func TestGenerateAgentSpecPreservesExistingMemory(t *testing.T) {
 	dir := t.TempDir()
 	memDir := filepath.Join(dir, ".gitagent", "memory")
@@ -130,10 +120,7 @@ func TestGenerateAgentSpecPreservesExistingMemory(t *testing.T) {
 	}
 }
 
-// The knowledge builder is an AGENT, not a hidden system prompt: its instructions
-// must land in the repo as a skill file the developer can open, edit and commit.
-// If this file stops being scaffolded, knowledge.js silently falls back to a
-// built-in string and editing the panel stops changing anything.
+// The knowledge builder is an AGENT, not a hidden system prompt.
 func TestGenerateAgentSpecScaffoldsKnowledgeBuilder(t *testing.T) {
 	dir := t.TempDir()
 	if err := GenerateAgentSpec(dir, "node"); err != nil {
@@ -151,8 +138,7 @@ func TestGenerateAgentSpecScaffoldsKnowledgeBuilder(t *testing.T) {
 	if !strings.HasPrefix(got, "---\nname: knowledge-builder\n") {
 		t.Errorf("SKILL.md must open with name: knowledge-builder frontmatter, got:\n%.80s", got)
 	}
-	// The document's shape is the contract knowledge.js validates against
-	// (looksLikeDocument requires >= 3 "## " headings).
+	// The document's shape is the contract knowledge.js validates against (looksLikeDocument requires >= 3 "## " headings).
 	for _, section := range []string{
 		"## What this is", "## How it works", "## Where things live",
 		"## Conventions", "## Gotchas", "## Key files",
@@ -167,8 +153,7 @@ func TestGenerateAgentSpecScaffoldsKnowledgeBuilder(t *testing.T) {
 	}
 }
 
-// A repo that commits its own customised knowledge-builder must keep it across a
-// re-clone, like every other file in the standard layout.
+// A repo that commits its own customised knowledge-builder must keep it across a re-clone, like every other file in the standard layout.
 func TestGenerateAgentSpecKeepsCustomKnowledgeBuilder(t *testing.T) {
 	dir := t.TempDir()
 	custom := "---\nname: knowledge-builder\n---\n\nOnly ever write one sentence.\n"

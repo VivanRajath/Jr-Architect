@@ -1,13 +1,5 @@
-/* ─────────────────────────────────────────────
-   Jr Architect — GitAgent dock and agent chat panel
-   Colour, type, space and radius come from tokens.css.
-   This file styles the panel; it defines no tokens.
-   Dark mode is inherited: every colour here resolves through a token that
-   body.dark-mode redefines, so there is nothing theme-specific left to declare.
-   ───────────────────────────────────────────── */
-/* ─────────────────────────────────────────────
-   AI Agent chat panel (brown/cream palette)
-   ───────────────────────────────────────────── */
+/* GitAgent dock and agent chat panel; colour, type, space and radius come from tokens.css. */
+/* AI Agent chat panel (brown/cream palette) */
 
 .agent-chat {
   display: flex;
@@ -289,8 +281,7 @@
   padding: 6px 4px 2px;
 }
 
-/* Input row — Cursor/ChatGPT-style: multiline textarea on top, controls below,
-   the whole thing framed as one composer box. */
+/* Input row — Cursor/ChatGPT-style: multiline textarea on top, controls below, the whole thing framed as one composer box. */
 .agent-input-row {
   display: flex;
   flex-direction: column;
@@ -415,10 +406,7 @@
   background: var(--accent-soft) !important;
 }
 
-/* ── GitAgent panel (docked, VS Code-style) ───────────────────────────────────
-   The IDE's front door to the GitAgent standard: the repo's own agent spec, its
-   skills, and the community registry. Sits beside the AI Agent dock and follows
-   the same shell so the two read as one product. */
+/* GitAgent panel (docked, VS Code-style) */
 .ide-gitagent-panel {
   width: 420px;
   min-width: 320px;
@@ -671,8 +659,7 @@
 
 .ga-slot-agent-head { display: flex; align-items: center; gap: 7px; }
 
-/* The spec files this agent wrote into .gitagent/ — open one to see what it
-   contributes, edit it to change the next turn. */
+/* The spec files this agent wrote into .gitagent/ — open one to see what it contributes, edit it to change the next turn. */
 .ga-slot-files { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 14px; }
 
 .ga-slot-agent.empty {
@@ -720,8 +707,7 @@
   flex-shrink: 0;
 }
 
-/* A build runs in its own process for 30-60s, so the panel needs to look alive
-   rather than empty while it does. */
+/* A build runs in its own process for 30-60s, so the panel needs to look alive rather than empty while it does. */
 .ga-spin {
   width: 11px;
   height: 11px;
@@ -1301,30 +1287,3 @@
 }
 button.ga-badge.warn { cursor: pointer; }
 
-/* ── What a pack would have blocked in recent history ────────────────────── */
-.ga-preview {
-  margin: var(--sp-3) 0;
-  padding: var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface2);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-
-.ga-preview-head { display: flex; align-items: baseline; gap: var(--sp-2); font-size: var(--fs-sm); }
-.ga-preview-head .bad { color: var(--red); }
-.ga-preview-head .ok { color: var(--green); }
-
-.ga-preview-row { display: flex; align-items: baseline; gap: var(--sp-2); font-size: var(--fs-2xs); min-width: 0; }
-.ga-preview-x { color: var(--red); flex-shrink: 0; }
-.ga-preview-path {
-  font-family: var(--mono);
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex-shrink: 0;
-  max-width: 45%;
-}

@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// Detection maps a Django repo to the "django" stack, so the guidance keyed to
-// that name has to exist or the agent falls back to generic Python advice.
+// Detection maps a Django repo to the "django" stack, so the guidance keyed to that name has to exist or the agent falls back to generic Python advice.
 func TestDjangoStackGuidance(t *testing.T) {
 	cases := map[string]struct {
 		got  string

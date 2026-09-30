@@ -12,11 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// TestAgentProxyTunnelsWebSocket proves the claim that the Go reverse proxy in
-// front of the Node agent service tunnels a WebSocket upgrade end-to-end — the
-// transport the streaming agent panel depends on. A stub backend stands in for
-// agent-services/server.js and emits the same frame sequence the real service
-// does; we dial through newAgentProxy and assert the whole stream round-trips.
+// TestAgentProxyTunnelsWebSocket proves the claim that the Go reverse proxy in front of the Node agent service tunnels a WebSocket upgrade end-to-end.
 func TestAgentProxyTunnelsWebSocket(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 

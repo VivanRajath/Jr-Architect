@@ -18,11 +18,7 @@ func agentProxyHandler() http.Handler {
 	return newAgentProxy(fmt.Sprintf("http://127.0.0.1:%d", core.Cfg.AgentPort))
 }
 
-// newAgentProxy reverse-proxies /agent/* (REST and the /agent/ws WebSocket) to
-// the Node agent service. httputil.ReverseProxy transparently tunnels the
-// WebSocket upgrade, so the streaming agent stream reaches the browser through
-// the same origin as the IDE. Split out from agentProxyHandler so tests can
-// point it at a stub backend.
+// newAgentProxy reverse-proxies /agent/* (REST and the /agent/ws WebSocket) to the Node agent service.
 func newAgentProxy(targetURL string) http.Handler {
 	target, _ := url.Parse(targetURL)
 	proxy := httputil.NewSingleHostReverseProxy(target)

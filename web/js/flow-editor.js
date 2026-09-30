@@ -85,17 +85,6 @@ function newId(type) {
   return id;
 }
 
-function sampleFor(schema) {
-  if (!schema) return {};
-  if (schema.enum && schema.enum.length) return schema.enum[0];
-  switch (schema.type) {
-    case 'object': return Object.fromEntries(Object.entries(schema.properties || {}).map(([k, v]) => [k, sampleFor(v)]));
-    case 'array': return [sampleFor(schema.items || { type: 'string' })];
-    case 'number': case 'integer': return 1;
-    case 'boolean': return true;
-    default: return '';
-  }
-}
 
 function inputFromSchema(schema) {
   if (!schema || schema.type !== 'object') return '{{ $json }}';

@@ -11,9 +11,7 @@ import (
 	"testing"
 )
 
-// The front end used to be five separate //go:embed variables and five
-// near-identical handlers, and nothing tested any of it. These tests cover the
-// contract the new single embedded web/ directory has to keep.
+// The front end used to be five separate //go:embed variables and five near-identical handlers, and nothing tested any of it.
 
 // The real front end on disk — these tests assert its token and no-CDN rules.
 var webFS = os.DirFS(filepath.Join("..", "..", "web"))
@@ -39,8 +37,7 @@ func TestStaticServesTheShell(t *testing.T) {
 		t.Errorf("GET / Content-Type = %q, want text/html", ct)
 	}
 	body := readAll(t, res)
-	// tokens.css must load first: the cascade contract depends on it, and every
-	// other stylesheet only consumes what it defines.
+	// tokens.css must load first: the cascade contract depends on it, and every other stylesheet only consumes what it defines.
 	iTokens := strings.Index(body, "/css/tokens.css")
 	if iTokens < 0 {
 		t.Fatal("index.html does not link /css/tokens.css")
@@ -57,15 +54,10 @@ func TestStaticServesTheShell(t *testing.T) {
 	}
 }
 
-// The product claims to be self-hosted and to run offline. It previously pulled
-// xterm, its fit addon, the Monaco loader and two webfonts from public CDNs at
-// runtime, which made that claim false and put a third-party host on the critical
-// path for the editor. This is the regression guard.
+// The product claims to be self-hosted and to run offline.
 func TestNoExternalOriginsInMarkup(t *testing.T) {
 	body := readAll(t, get(t, "/", ""))
-	// Subresources only. An <a href> to gitagent.sh is a hyperlink the user chooses
-	// to follow; a <script src> or <link rel=stylesheet> is a runtime dependency
-	// that has to be there for the IDE to work at all.
+	// Subresources only.
 	external := regexp.MustCompile(`(?is)<(?:script|link|img|iframe)\b[^>]*\b(?:src|href)\s*=\s*"(?:https?:)?//[^"]+"`)
 	if hits := external.FindAllString(body, -1); len(hits) > 0 {
 		t.Errorf("index.html loads subresources from external origins: %v", hits)
@@ -96,8 +88,7 @@ func TestStaticServesAssets(t *testing.T) {
 		if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, c.wantType) {
 			t.Errorf("GET %s Content-Type = %q, want %s", c.path, ct, c.wantType)
 		}
-		// Our own assets are rebuilt into the binary, so they must not be cached;
-		// vendored assets are pinned by path and never change under the same URL.
+		// Our own assets are rebuilt into the binary, so they must not be cached; vendored assets are pinned by path and never change under the same URL.
 		cc := res.Header.Get("Cache-Control")
 		if c.cacheHard && !strings.Contains(cc, "immutable") {
 			t.Errorf("GET %s Cache-Control = %q, want immutable", c.path, cc)
@@ -117,10 +108,7 @@ func TestStaticMissingPathIs404(t *testing.T) {
 	}
 }
 
-// tokens.css is the only file allowed to DEFINE a custom property. When another
-// stylesheet declares one, the palette silently forks and the two copies drift —
-// which is exactly how --accent-soft came to be used in ide.css and defined only
-// in the landing page's inline block.
+// tokens.css is the only file allowed to DEFINE a custom property.
 func TestOnlyTokensFileDefinesTokens(t *testing.T) {
 	decl := regexp.MustCompile(`(?m)^\s*(--[a-zA-Z0-9-]+)\s*:`)
 	entries, err := fs.ReadDir(webFS, "css")
@@ -141,9 +129,7 @@ func TestOnlyTokensFileDefinesTokens(t *testing.T) {
 	}
 }
 
-// Every var(--x) must resolve to something tokens.css declares. A token that is
-// referenced but never defined falls back silently and renders "nearly right",
-// which is why --bg1 survived in two rules for as long as it did.
+// Every var(--x) must resolve to something tokens.css declares.
 func TestNoUndefinedTokens(t *testing.T) {
 	// --depth is set per file-tree row at runtime by ide.js, not in CSS.
 	runtimeSet := map[string]bool{"--depth": true}
@@ -178,8 +164,7 @@ func TestNoUndefinedTokens(t *testing.T) {
 	}
 }
 
-// The type and radius scales exist to stop values drifting back in. A raw pixel
-// font-size or radius in a stylesheet means someone bypassed them.
+// The type and radius scales exist to stop values drifting back in.
 func TestNoRawTypeOrRadiusValues(t *testing.T) {
 	raw := regexp.MustCompile(`(?:font-size|border-radius):\s*[0-9.]+px\s*[;}!]`)
 	entries, _ := fs.ReadDir(webFS, "css")

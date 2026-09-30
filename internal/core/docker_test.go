@@ -29,8 +29,7 @@ func TestEverySandboxImageHasABuildContext(t *testing.T) {
 	}
 }
 
-// Every service that serves HTTP needs its own published port, and none of them may
-// escape the loopback interface.
+// Every service that serves HTTP needs its own published port, and none of them may escape the loopback interface.
 func TestRunArgsPublishesEveryPortOnLoopback(t *testing.T) {
 	ports := []PortMap{{Host: 54001, Container: 3000}, {Host: 54002, Container: 8000}}
 	args := RunArgs("c1", "1536m", "2", 200, ports, "/tmp/wd", []string{"CI=1"}, nil, "sandbox-multi-django-react", "sleep 1")

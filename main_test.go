@@ -8,8 +8,6 @@ import (
 )
 
 // The embeds live here because //go:embed only reaches below its own directory.
-// Everything else was moved into internal/, so this is the seam that would break
-// silently: the code still compiles, and the binary serves nothing.
 func TestEmbeddedAssetsAreWiredUp(t *testing.T) {
 	for _, p := range []string{"index.html", "css/tokens.css", "js/ide.js"} {
 		if _, err := fs.Stat(webFS, p); err != nil {

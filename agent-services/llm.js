@@ -1,5 +1,4 @@
-// Providers, keys, and a single buffered turn. Knows nothing about editing,
-// guardrails or the IDE, so a turn can run with no HTTP anywhere.
+// Providers, keys, and a single buffered turn.
 
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,7 +15,6 @@ export const PROVIDER_MODELS = {
 };
 
 // pi-ai crashes the process if handed a provider with no key, so never offer one.
-// Names mirror pi-ai's getEnvApiKey().
 export function providerHasKey(p) {
   switch (p) {
     case "anthropic": return !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN);
@@ -32,7 +30,6 @@ export const NO_KEY_MESSAGE =
   "No AI provider API key configured. Set GROQ_API_KEY (or ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) in .env and restart the server.";
 
 // Groq's TPM cap is per ORG, so keys from separate orgs each get their own bucket.
-// pi-ai reads process.env.GROQ_API_KEY at request time, hence the rotation below.
 const ALL_GROQ_KEYS = (() => {
   const keys = [];
   const add = (v) => { const t = (v || "").trim(); if (t && !keys.includes(t)) keys.push(t); };
@@ -67,8 +64,7 @@ if (!GROQ_KEYS.includes(process.env.GROQ_API_KEY) && GROQ_KEYS.length) {
 }
 if (GROQ_KEYS.length > 1) console.error(`[agent] Groq key pool: ${GROQ_KEYS.length} keys (round-robin per turn)`);
 
-// A model can intermittently emit a tool call Groq rejects; retrying on a fresh key
-// usually works. Only retried before any output escaped, so nothing is duplicated.
+// A model can intermittently emit a tool call Groq rejects; retrying on a fresh key usually works.
 export const AGENT_TOOLCALL_RETRIES = Number(process.env.AGENT_TOOLCALL_RETRIES) || 2;
 export const RETRIABLE_TURN_ERROR = /tool call validation|tool choice is none|not in request\.tools|malformed|failed to call a function|failed_generation|adjust your prompt|could not parse|invalid (?:tool|function)|Connection error|rate limit|\b429\b|temporarily|ECONNRESET|fetch failed/i;
 
@@ -114,9 +110,7 @@ export function rotateGroqKey(model) {
   groqCursor++;
 }
 
-// Groq's 12k TPM counts input PLUS reserved output, so pi-ai's 32000 default bills
-// a small prompt as ~34k and 413s. Per-request constraints are ignored by this
-// build; lowering the model registry once at startup is what actually sticks.
+// Groq's 12k TPM counts input PLUS reserved output, so pi-ai's 32000 default bills a small prompt as ~34k and 413s.
 export const AGENT_MAX_OUTPUT_TOKENS = Number(process.env.AGENT_MAX_OUTPUT_TOKENS) || 3000;
 try {
   let capped = 0;
@@ -149,10 +143,7 @@ export function modelFor(uiProvider) {
   return avail ? PROVIDER_MODELS[avail] : PROVIDER_MODELS.groq;
 }
 
-// gitclaw hard-reads <dir>/agent.yaml, so a turn against an unscaffolded repo dies
-// with ENOENT. A toolless turn needs no workspace, so hand it a throwaway home
-// instead of writing into someone's repo — and a verdict then depends only on the
-// rules and the diff, not on whatever sits in that repo's knowledge/.
+// gitclaw hard-reads <dir>/agent.yaml, so a turn against an unscaffolded repo dies with ENOENT.
 let _toollessHome = null;
 export function toollessAgentHome() {
   if (_toollessHome) return _toollessHome;

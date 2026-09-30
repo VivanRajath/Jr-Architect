@@ -101,8 +101,7 @@ func FileExists(path string) bool {
 	return err == nil
 }
 
-// Common "main UI" files, most-specific first. The first that exists is treated as
-// where the app's UI lives.
+// Common "main UI" files, most-specific first.
 var UIEntryCandidates = []string{
 	"app/page.tsx", "app/page.jsx", "app/page.js", "app/page.mdx", // Next.js app router
 	"src/app/page.tsx", "src/app/page.jsx", "src/app/page.js",

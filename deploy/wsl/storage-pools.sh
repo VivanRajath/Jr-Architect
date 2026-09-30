@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Puts sandbox workdirs and Podman storage on fixed-size disk images, so sandboxes can never fill the Windows drive.
-# Run as root with Jr-Arch stopped: bash storage-pools.sh [user] [work GB] [storage GB]
+# Puts workdirs and Podman storage on fixed-size disk images; run as root with Jr-Arch stopped: bash storage-pools.sh [user] [work GB] [storage GB]
 set -euo pipefail
 
 JR_USER="${1:-jrarch}"

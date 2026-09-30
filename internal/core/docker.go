@@ -2,7 +2,6 @@ package core
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -102,8 +101,7 @@ func RunArgs(container, memory, cpus string, pids int, ports []PortMap, workdir 
 	return args
 }
 
-// Each image and its build context under sandbox-images/, shared by PreheatImages
-// and EnsureImage so the two can't disagree.
+// Each image and its build context under sandbox-images/, shared by PreheatImages and EnsureImage so the two can't disagree.
 var Images = []struct{ Image, Dir string }{
 	{"sandbox-static", "static-sites"},
 	{"sandbox-node", "node"},
@@ -164,8 +162,7 @@ func PreheatImages() {
 	fmt.Println("Images ready")
 }
 
-// These images are local-only, so a missing one makes `docker run` fail pulling a
-// name no registry has. Build it here instead.
+// These images are local-only, so a missing one makes `docker run` fail pulling a name no registry has.
 func EnsureImage(container, image string) error {
 	if ImageExists(image) {
 		return nil
@@ -188,14 +185,6 @@ func EnsureImage(container, image string) error {
 
 func ImageToStack(image string) string {
 	return strings.TrimPrefix(image, "sandbox-")
-}
-
-// A host-side write does not reliably reach the container's view of a bind mount
-// on Docker Desktop, so write the bytes back through the container instead.
-func SyncFile(container, hostAbsPath, relPath string) {
-	if data, err := os.ReadFile(hostAbsPath); err == nil {
-		SyncBytes(container, relPath, data)
-	}
 }
 
 // Writes data to /workspace/<relPath> inside the container; callers read it through os.Root first.

@@ -56,9 +56,9 @@ func TestPodmanAcceptsEveryRunFlag(t *testing.T) {
 		t.Errorf("label filter found %q", out)
 	}
 
-	SyncFile(name, filepath.Join(dir, "hello.txt"), "synced.txt")
+	SyncBytes(name, "synced.txt", []byte("hi"))
 	if res := ExecInContainer(name, "cat /workspace/synced.txt", 0); res.Output != "hi" {
-		t.Errorf("SyncFile through podman exec wrote %q", res.Output)
+		t.Errorf("SyncBytes through podman exec wrote %q", res.Output)
 	}
 
 	PutSandbox(Sandbox{Container: name, Workdir: dir, Image: "docker.io/library/alpine:3"})

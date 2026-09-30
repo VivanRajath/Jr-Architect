@@ -95,6 +95,19 @@ function goBack(fallback = '/hub.html') {
   location.href = target;
 }
 
+// A placeholder value for each field of a schema, used to prefill test inputs.
+function sampleFor(schema) {
+  if (!schema) return {};
+  if (schema.enum && schema.enum.length) return schema.enum[0];
+  switch (schema.type) {
+    case 'object': return Object.fromEntries(Object.entries(schema.properties || {}).map(([k, v]) => [k, sampleFor(v)]));
+    case 'array': return [sampleFor(schema.items || { type: 'string' })];
+    case 'number': case 'integer': return 1;
+    case 'boolean': return true;
+    default: return '';
+  }
+}
+
 const STATUS_LABEL = {
   completed: 'Completed', awaiting_approval: 'Needs approval', failed: 'Failed', rejected: 'Rejected', blocked: 'Blocked', running: 'Running',
 };

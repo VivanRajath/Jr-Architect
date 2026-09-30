@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Attacks the host from inside a sandbox and reports what got through. Run as the service user.
-# Usage: LAN_IP=<windows LAN ip> ROUTER_IP=<router ip> bash adversarial.sh [existing sandbox container]
+# Attacks the host from inside a sandbox as the service user; usage: LAN_IP=<windows LAN ip> ROUTER_IP=<router ip> bash adversarial.sh [container]
 set -uo pipefail
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 

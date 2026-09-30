@@ -8,8 +8,7 @@ import (
 	"time"
 )
 
-// Bounds on a one-shot command. Without them a model-authored command can hang a
-// request forever or flood the response with a gigabyte of build output.
+// Bounds on a one-shot command. Without them a model-authored command can hang a request forever or flood the response with a gigabyte of build output.
 const (
 	ExecDefaultTimeout = 120 * time.Second
 	ExecMaxTimeout     = 10 * time.Minute
@@ -24,8 +23,7 @@ type ExecResult struct {
 	Truncated bool   `json:"truncated"`
 }
 
-// ExecInContainer runs a shell command inside the container's workspace: the one
-// shell primitive, bounded in time and output, always with a real exit code.
+// ExecInContainer runs a shell command inside the container's workspace.
 func ExecInContainer(container, command string, timeout time.Duration) ExecResult {
 	if timeout <= 0 {
 		timeout = ExecDefaultTimeout

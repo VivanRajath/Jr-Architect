@@ -19,8 +19,7 @@ type FileNode struct {
 	Children []FileNode `json:"children,omitempty"`
 }
 
-// ResolveInWorkspace is only the up-front check; the I/O goes through os.Root, which resolves every path component
-// itself, so a directory swapped for a symlink between the check and the use still cannot lead out of the workspace.
+// ResolveInWorkspace is only the up-front check.
 func inRoot(w http.ResponseWriter, workdir, abs string) (*os.Root, string, bool) {
 	root, err := os.OpenRoot(workdir)
 	if err != nil {
@@ -90,10 +89,7 @@ func filesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	tree, err := buildFileTree(sb.Workdir)
 	if err != nil {
-		// The workspace dir is created asynchronously by the clone/scaffold step,
-		// so a request that arrives before setup finishes finds no directory yet.
-		// Return an empty tree (200) rather than a 500 so the frontend can poll
-		// and populate once files appear, instead of throwing on an error object.
+		// The workspace dir is created asynchronously by the clone/scaffold step, so a request that arrives before setup finishes finds no directory yet.
 		if os.IsNotExist(err) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode([]FileNode{})
@@ -199,9 +195,7 @@ type SyncRequest struct {
 	Paths     []string `json:"paths"`
 }
 
-// sandboxSyncHandler re-syncs files the agent edited directly on disk (the
-// auto-apply path writes host-side and never hits /file/save) into the container,
-// so the live preview reflects the change.
+// sandboxSyncHandler re-syncs files the agent edited directly on disk (the auto-apply path writes host-side and never hits /file/save) into the container, so the live preview reflects the change.
 func sandboxSyncHandler(w http.ResponseWriter, r *http.Request) {
 	core.CORS(w, r)
 	if r.Method == http.MethodOptions {
@@ -339,8 +333,7 @@ type FileRenameRequest struct {
 	To        string `json:"to"`
 }
 
-// fileRenameHandler moves/renames a file or folder within the workspace. Both
-// paths are resolved inside the workspace, so neither side can escape it.
+// fileRenameHandler moves/renames a file or folder within the workspace.
 func fileRenameHandler(w http.ResponseWriter, r *http.Request) {
 	core.CORS(w, r)
 	if r.Method == http.MethodOptions {

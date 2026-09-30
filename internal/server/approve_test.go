@@ -70,8 +70,7 @@ func TestPlanHandlerReportsAwaitingApproval(t *testing.T) {
 	}
 }
 
-// Turning a service off must drop its toolchain too, or the merged image is built
-// for a stack nothing is going to run.
+// Turning a service off must drop its toolchain too, or the merged image is built for a stack nothing is going to run.
 func TestDisablingAServiceShrinksTheImage(t *testing.T) {
 	plan := twoServicePlan()
 	services := applyEdits(plan.Services, []serviceEdit{{Name: "backend", Enabled: boolPtr(false)}})
@@ -104,8 +103,7 @@ func TestApplyEditsOverridesPortAndCommand(t *testing.T) {
 	}
 }
 
-// Installs must finish before any server starts, or two npm/pip runs race over the
-// shared cache volumes.
+// Installs must finish before any server starts, or two npm/pip runs race over the shared cache volumes.
 func TestSupervisorInstallsBeforeItStarts(t *testing.T) {
 	script := supervisorScript(twoServicePlan().Services)
 

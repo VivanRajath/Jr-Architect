@@ -1,9 +1,4 @@
-// Runs once when a workspace opens, on its own key, to write knowledge/overview.md
-// (always_load). repo-map.md says WHERE things are; this says what they do, which
-// needs far more context than a chat turn can afford.
-//
-// The prompt is .gitagent/skills/knowledge-builder/SKILL.md — a file in the repo,
-// so nothing here hardcodes what the document says.
+// Runs once when a workspace opens, on its own key, to write knowledge/overview.md (always_load).
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync } from "./workspace-fs.js";
 import { join, extname, basename } from "node:path";
@@ -93,7 +88,6 @@ function summarizeManifest(rel, raw) {
 }
 
 // Score every source file without a model: entry-ish name, export count, depth.
-// Tests, generated output and vendored code score nothing.
 export function rankSourceFiles(dir, limit = MAX_SOURCE_FILES) {
   const found = [];
   const walk = (abs, rel, depth) => {
@@ -216,8 +210,7 @@ export function missingSections(text) {
   return WANTED_SECTIONS.filter((s) => !new RegExp(`^#{1,3}\\s+${s}\\b`, "im").test(t));
 }
 
-// A cited path that does not exist. The document rides in every later turn, so an
-// invented file becomes a fact the coding agent then acts on.
+// A cited path that does not exist. The document rides in every later turn, so an invented file becomes a fact the coding agent then acts on.
 const PATH_LIKE = /`([A-Za-z0-9_@.\-/]+)`/g;
 // A real extension, not "anything after a dot": process.stdout is not a file.
 const HAS_EXT =
@@ -227,8 +220,7 @@ export function invalidPaths(dir, text) {
   const bad = new Set();
   for (const m of String(text || "").matchAll(PATH_LIKE)) {
     const p = m[1];
-    // Only judge things that actually look like a path in this repo. A token like
-    // `combined`, `:method` or `npm install` is prose, not a claim about a file.
+    // Only judge things that actually look like a path in this repo.
     if (!p.includes("/") && !HAS_EXT.test(p)) continue;
     if (p.startsWith("-") || p.startsWith("http")) continue;
     // A bare package name (`express`, `debug`) is a dependency, not a repo path.
@@ -264,9 +256,7 @@ export function knowledgeStatus(dir) {
       agent: fm.agent || "",
       model: fm.model || "",
       sources: Number(fm.sources) || 0,
-      // Paths the document cites that do not exist. Surfaced rather than hidden:
-      // this file is loaded into every turn, so a reader deserves to know which
-      // parts of it were not verifiable.
+      // Paths the document cites that do not exist.
       unverified: (fm.unverified_paths || "").split(",").map((s) => s.trim()).filter(Boolean),
     };
   } catch {
@@ -324,8 +314,7 @@ export async function buildKnowledge({ dir, model, agent, maxTokens, onStep } = 
 
   const basePrompt = buildKnowledgePrompt(persona, inputs, basename(dir));
 
-  // Small models drop sections non-deterministically. Retries are cheap here (own
-  // key), and naming the specific fault moves it where repeating the ask does not.
+  // Small models drop sections non-deterministically.
   const attempts = Math.max(1, (Number(process.env.KNOWLEDGE_RETRIES) || 2) + 1);
   const faults = (d) => missingSections(d).length + invalidPaths(dir, d).length;
   let best = "";

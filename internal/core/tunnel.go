@@ -51,7 +51,6 @@ func scanTunnelOutput(r io.Reader, found chan<- string) {
 }
 
 // Swapped in tests. The tunnel points at our own listener, which routes by the Host cloudflared forwards.
-// The returned channel closes when the cloudflared process exits.
 var launchTunnel = func() (string, *exec.Cmd, <-chan struct{}, error) {
 	cmd := exec.Command(Cfg.Cloudflared, "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:"+Cfg.ListenPort())
 	stderr, err := cmd.StderrPipe()

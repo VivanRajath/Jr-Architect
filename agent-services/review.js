@@ -1,5 +1,4 @@
-// Run the repo's own guardrails over a git range instead of an agent's proposed
-// edit — same manifest, same packs, same deny-wins semantics, no IDE.
+// Run the repo's own guardrails over a git range instead of an agent's proposed edit — same manifest, same packs, same deny-wins semantics, no IDE.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, appendFileSync, SAFE_GIT, assertOwnGitDir } from "./workspace-fs.js";
@@ -9,8 +8,7 @@ import { resolvePipelineAgents, loadComplianceRules } from "./registry.js";
 import { guardEditBlocks, reviewEditBlocks } from "./guardrails.js";
 import { modelFor, firstAvailableProvider, toollessAgentHome } from "./llm.js";
 
-// The repo's own compliance file, as an enforcing pack. It used to be injected into
-// the writer's prompt only, so a team's own rules had less force than a pulled one.
+// The repo's own compliance file, as an enforcing pack.
 export const LOCAL_PACK = ".gitagent/compliance";
 
 export function localPack(dir) {
@@ -66,8 +64,7 @@ function contentAt(dir, head, path) {
   }
 }
 
-// The same { path, content } blocks the edit pipeline produces, so the guardrails
-// cannot tell a human's commit from an agent's rewrite.
+// The same { path, content } blocks the edit pipeline produces, so the guardrails cannot tell a human's commit from an agent's rewrite.
 export function blocksForRange(dir, base, head = "HEAD") {
   const files = changedFiles(dir, base, head);
   const skipped = [];
@@ -82,8 +79,7 @@ export function blocksForRange(dir, base, head = "HEAD") {
   return { blocks, skipped, total: files.length };
 }
 
-// One append-only line per decision, so "which pack, which version, which file,
-// when" stays answerable after the run.
+// One append-only line per decision, so "which pack, which version, which file, when" stays answerable after the run.
 export function writeAudit(dir, records) {
   if (!records.length) return null;
   const day = new Date().toISOString().slice(0, 10);
@@ -99,9 +95,6 @@ function headSha(dir, head) {
 }
 
 // Printing and exit codes are the CLI's job, so this stays usable from a server.
-// `packs` overrides the manifest entirely and `audit:false` skips the log — both
-// exist for the registry preview, which asks "what WOULD this pack have done"
-// about an agent that holds no slot. A hypothetical must not leave evidence.
 export async function reviewRange({
   dir, base, head = "HEAD", message, onStep, packs: packsOverride, audit = true,
 } = {}) {
@@ -162,8 +155,7 @@ export async function reviewRange({
   const unpinned = packs.filter((p) => p.sha && !p.pin).map((p) => p.name);
   if (unpinned.length) step("Guardrails", `unpinned pack(s): ${unpinned.join(", ")}`);
 
-  // A file that only went through because the review could not run is "unreviewed",
-  // never "allow" — the gate still passes, but the evidence says what happened.
+  // A file that only went through because the review could not run is "unreviewed", never "allow".
   const passDecision = reviewed.reviewed ? "allow" : "unreviewed";
   const verdicts = [
     ...reviewed.allowed.map((b) => ({

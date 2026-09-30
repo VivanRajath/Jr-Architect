@@ -31,7 +31,6 @@ def toggle_task(request, pk):
         return redirect("core:index")
     task = get_object_or_404(Task, pk=pk)
     task.done = not task.done
-    # Write only the column that changed — cheaper, and it can't clobber a
-    # concurrent edit to another field.
+    # Write only the column that changed — cheaper, and it can't clobber a concurrent edit to another field.
     task.save(update_fields=["done"])
     return redirect("core:index")

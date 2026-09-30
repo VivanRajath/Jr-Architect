@@ -40,9 +40,7 @@ function initIDE(containerId, repoUrl, port) {
   }
 }
 
-// ── File Tree ──
-// The workspace is populated asynchronously (clone/scaffold), so early calls can
-// come back empty. Poll until files appear so the tree fills in on its own.
+// File Tree The workspace is populated asynchronously (clone/scaffold), so early calls can come back empty.
 async function loadFileTree(attempt = 0) {
   try {
     const res = await fetch(`/files?container=${IDE.container}`);
@@ -85,8 +83,7 @@ function renderTree(nodes, parent, depth) {
         <span class="tree-actions">
           <button type="button" class="tree-delete" title="Delete">${TRASH_ICON}</button>
         </span>`;
-      // Bound as a property, not an onclick attribute. Paths come from a cloned
-      // repo, so a filename containing a quote must never be able to become code.
+      // Bound as a property, not an onclick attribute.
       bindTreeDelete(item, node.path, true);
       item.onclick = (e) => {
         if (e.target.closest('.tree-actions')) return;
@@ -146,11 +143,7 @@ function bindTreeDelete(item, path, isDir) {
   btn.onclick = (e) => { e.stopPropagation(); deleteFileOrFolder(path, isDir); };
 }
 
-// Escape a value for HTML — including both quote characters, so it is safe in an
-// attribute as well as in element text. The previous textContent/innerHTML trick
-// escaped only `& < >`, because a text node never needs a quote escaped; that left
-// every `data-ext="${esc(x)}"` open to a filename crafted to close the attribute.
-// Repos are cloned from arbitrary URLs, so filenames are untrusted input.
+// Escape a value for HTML — including both quote characters, so it is safe in an attribute as well as in element text.
 function esc(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -425,9 +418,7 @@ function getTerminalTheme() {
 }
 
 function initMonaco() {
-  // Monaco is served from the binary, not a CDN — the loader fetches the rest of
-  // the editor (workers, language services) relative to this path, so pointing it
-  // at /vendor/monaco/vs is what actually makes the IDE work offline.
+  // Monaco is served from the binary, not a CDN.
   require.config({ paths: { vs: '/vendor/monaco/vs' } });
   require(['vs/editor/editor.main'], () => {
     monaco.editor.defineTheme('jr-architect-light', {
@@ -576,9 +567,7 @@ function renderTabs() {
     d.className = 'editor-tab' + (tab === IDE.activeTab ? ' active' : '');
     const ext = tab.name.split('.').pop().toLowerCase();
     d.innerHTML = `<span class="tab-icon icon" data-ext="${esc(ext)}">${fileIcon(tab.name)}</span><span class="tab-label">${esc(tab.name)}</span>${tab.modified ? '<span class="tab-modified">\u25CF</span>' : ''}<span class="tab-close" role="button" tabindex="0" title="Close">\u00D7</span>`;
-    // The close handler is bound as a property. It used to interpolate tab.path
-    // into an onclick attribute completely unescaped, so a file named with a
-    // quote could inject script into the tab strip.
+    // The close handler is bound as a property.
     const close = d.querySelector('.tab-close');
     if (close) close.onclick = (e) => closeTab(tab.path, e);
     d.onclick = () => activateTab(tab);
@@ -613,12 +602,7 @@ async function saveCurrentFile() {
   } catch (e) { showToast('Save error', 'error'); }
 }
 
-// hmrStack reports whether the running app has working hot-reload via the polling
-// env vars (Next.js fast-refresh, CRA/webpack). For those, edits reflect on their
-// own and we must NOT force a reload (it would throw away app state). Vite, static
-// sites, and everything else don't hot-reload through a Docker bind mount, so we
-// reload the iframe on save — a full reload re-reads files from disk and shows the
-// change.
+// hmrStack reports whether the running app has working hot-reload via the polling env vars (Next.js fast-refresh, CRA/webpack).
 function hmrStack() {
   return /next\.js|CRA/i.test(activeFramework());
 }
@@ -681,9 +665,7 @@ function createTerminal() {
   socket.binaryType = 'arraybuffer';
 
   socket.onmessage = (event) => {
-    // Shell output arrives as binary frames; the backend also sends the
-    // occasional plain-text status/error frame (e.g. "Failed to start shell").
-    // Handle both so an error is never silently swallowed into a blank terminal.
+    // Shell output arrives as binary frames; plain-text frames are status or error messages from the backend.
     if (typeof event.data === 'string') {
       term.write(event.data);
     } else {
@@ -698,8 +680,7 @@ function createTerminal() {
     term.write('\r\n\x1b[31m[terminal connection error]\x1b[0m\r\n');
   };
 
-  // Tell the backend our terminal size so column-aware output (ls, wrapping)
-  // lines up. Sent as a JSON text frame; keystrokes go as binary frames.
+  // Tell the backend our terminal size so column-aware output (ls, wrapping) lines up.
   const sendResize = () => {
     if (socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
@@ -841,18 +822,13 @@ async function fetchStatus() {
     IDE.previewUrl = data.url;
     if (Array.isArray(data.services)) syncServiceSwitcher(data.services);
 
-    // The backend reports "running" only once the app's port actually answers
-    // (see sandboxStatusHandler), so it's a real readiness signal. Drive the
-    // preview off the running -> not-running edges.
+    // The backend reports "running" only once the app's port actually answers (see sandboxStatusHandler), so it's a real readiness signal.
     const running = data.status === 'running';
     if (running && !IDE.appReady) { IDE.appReady = true; onAppReady(); }
     else if (!running) { IDE.appReady = false; }
     showStageInPreview(data.stage, data.detail);
 
-    // Intelligent IDE: if the app is still not answering well after a grace
-    // window (a slow install is normal, a broken build is not), let the agent
-    // read the container logs and decide — reassure if it's just installing,
-    // propose a fix if something is actually wrong. Once, per stuck episode.
+    // Intelligent IDE: if the app is still not answering well after a grace window (a slow install is normal, a broken build is not), let the agent read the container logs and decide — reassure if it's just installing, propose a fix if something is actually wrong.
     if (running) {
       IDE.doctorRan = false; // healthy again → re-arm for a future breakage
     } else if (!IDE.doctorRan && !IDE.doctorRunning && IDE.launchedAt &&
@@ -899,12 +875,7 @@ async function fetchStatus() {
   } catch (e) { }
 }
 
-// ── Live Preview ──
-// The dev server inside a freshly-cloned sandbox isn't up for a while (npm
-// install + build). Loading the iframe before then just shows a connection
-// error that never recovers, so the preview is readiness-aware: it waits for the
-// app to be "running" (per status polling), shows a loading state until then,
-// and loads/auto-opens once ready.
+// Live Preview The dev server inside a freshly-cloned sandbox isn't up for a while (npm install + build).
 function openLivePreview() {
   const panel = document.getElementById('ide-preview-panel');
   panel.style.display = 'flex';
@@ -921,8 +892,7 @@ function openLivePreview() {
 function onAppReady() {
   const panel = document.getElementById('ide-preview-panel');
   const open = panel && panel.style.display !== 'none';
-  // Auto-open the preview the first time the app is ready (unless the user
-  // deliberately closed it), so they see their app without hunting for a button.
+  // Auto-open the preview the first time the app is ready (unless the user deliberately closed it), so they see their app without hunting for a button.
   if (!IDE.previewAutoOpened && !IDE.previewUserClosed) {
     IDE.previewAutoOpened = true;
     openLivePreview();
@@ -932,8 +902,7 @@ function onAppReady() {
   if (open && IDE.previewPending) loadPreviewIntoIframe();
 }
 
-// A merged-image container runs every service at once, so the preview has to say
-// which one it is showing. Hidden until there is a choice to make.
+// A merged-image container runs every service at once, so the preview has to say which one it is showing.
 function syncServiceSwitcher(services) {
   const sel = document.getElementById('preview-service');
   if (!sel) return;
@@ -1031,10 +1000,7 @@ function refreshPreview() {
   loadPreviewIntoIframe();
 }
 
-// Force the live preview to reveal a just-applied edit: open the panel if it's
-// closed (so the change is actually visible), then hard-reload with a cache-bust
-// param so a CSS/Tailwind change isn't served from the iframe's cache. Returns
-// false if the app isn't reachable yet (shows the waiting state instead).
+// Force the live preview to reveal a just-applied edit.
 function showChangesInPreview() {
   const panel = document.getElementById('ide-preview-panel');
   if (panel && panel.style.display === 'none') {
@@ -1062,9 +1028,7 @@ function showChangesInPreview() {
   return true;
 }
 
-// ── Locate UI source (from the preview) ──
-// A control floating on the preview reveals where the app's UI code lives in the
-// IDE. Hovering highlights the file's folder in the tree; clicking opens the file.
+// Locate UI source: a control on the preview reveals where the app's UI code lives in the IDE.
 async function getUIEntry() {
   if (IDE.uiEntry) return IDE.uiEntry;
   try {
@@ -1091,8 +1055,7 @@ async function locateUISource(open) {
   }
 }
 
-// revealInTree expands the folders leading to `path`, scrolls it into view, and
-// flashes it — so you can see exactly which folder the UI lives in.
+// revealInTree expands the folders leading to `path`, scrolls it into view, and flashes it — so you can see exactly which folder the UI lives in.
 function revealInTree(path) {
   const treeRoot = document.getElementById('file-tree');
   if (!treeRoot) return;

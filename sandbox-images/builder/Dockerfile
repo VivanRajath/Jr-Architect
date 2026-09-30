@@ -7,8 +7,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Pre-install the builder-template node_modules into a cache location
-# so each sandbox run can copy them in instead of downloading fresh
+# Pre-install the builder-template node_modules into a cache location so each sandbox run can copy them in instead of downloading fresh
 WORKDIR /opt/builder-deps
 
 # Copy the builder template's package manifests

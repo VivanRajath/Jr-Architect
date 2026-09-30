@@ -14,11 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// TestTerminalWSLive exercises the REAL terminalWSHandler against a REAL
-// container over a REAL websocket — the exact path the browser uses. Guarded
-// behind -run because it needs Docker; run with:
-//
-//	go test -run TestTerminalWSLive -v .
+// TestTerminalWSLive exercises the REAL terminalWSHandler against a REAL container over a REAL websocket — the exact path the browser uses.
 func TestTerminalWSLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping docker-backed live terminal test in -short mode")
@@ -51,8 +47,7 @@ func TestTerminalWSLive(t *testing.T) {
 	}
 	defer c.Close()
 
-	// Collect everything the handler sends, tagging frame type so we can tell
-	// whether an error came back as an (invisible-to-browser) text frame.
+	// Collect everything the handler sends, tagging frame type so we can tell whether an error came back as an (invisible-to-browser) text frame.
 	var got strings.Builder
 	var sawText bool
 	done := make(chan struct{})
@@ -94,9 +89,7 @@ func TestTerminalWSLive(t *testing.T) {
 	}
 }
 
-// /terminal/exec used to return 200 with an empty body whether the command
-// succeeded, failed, or hung forever. These pin the replacement: a real exit
-// code in the body, bounded output, and a refusal for an empty command.
+// /terminal/exec used to return 200 with an empty body whether the command succeeded, failed, or hung forever.
 func TestTerminalExecReportsExitCode(t *testing.T) {
 	if err := exec.Command("docker", "version").Run(); err != nil {
 		t.Skip("docker not available; skipping exec test")

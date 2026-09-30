@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end check of Jr-Arch on Docker Desktop (the default JR_CONTAINER_CLI), run from Git Bash in the repo root.
-# Usage: CLOUDFLARED=/path/to/cloudflared.exe WORK=/path/to/workdir bash deploy/windows/validate-docker.sh
+# End-to-end check on Docker Desktop from Git Bash; usage: CLOUDFLARED=/path/to/cloudflared.exe WORK=/path/to/workdir bash deploy/windows/validate-docker.sh
 set -uo pipefail
 
 REPO=$(pwd)
@@ -36,8 +35,7 @@ start_jr() {
   for _ in $(seq 1 90); do [ "$(curl -s -o /dev/null -w '%{http_code}' $B/ready)" = 200 ] && return 0; sleep 2; done
   return 1
 }
-# Kills jr and its agent child together, the way a crash takes the whole process tree down.
-# $! is the MSYS env wrapper, not jr.exe, so the listener on the port is what gets killed.
+# Kills jr and its agent child the way a crash would, by the listener on the port ($! is only the MSYS wrapper).
 kill_jr() {
   local p
   for p in $(netstat -ano | awk -v a="127.0.0.1:$PORT" '$2 == a && $4 == "LISTENING" {print $5}' | sort -u); do

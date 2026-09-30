@@ -1,9 +1,4 @@
-// A separate process is the only way the reserved key stays reserved: pi-ai reads
-// process.env.GROQ_API_KEY at request time, so one variable and two concurrent
-// callers means whoever writes last wins. A mutex would be correct but would make a
-// 60-second build block the first thing the user types.
-//
-// Config as JSON in argv[2]; one JSON result line on stdout; progress on stderr.
+// A separate process is the only way the reserved key stays reserved.
 
 import { getModels } from "@mariozechner/pi-ai";
 import { buildKnowledge } from "./knowledge.js";

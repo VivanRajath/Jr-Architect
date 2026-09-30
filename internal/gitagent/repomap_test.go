@@ -7,9 +7,7 @@ import (
 	"testing"
 )
 
-// TestGenerateRepoMap verifies the clone-time repo map: it indexes source files,
-// extracts symbols, writes the always-loaded + on-demand docs, and registers them
-// in knowledge/index.yaml — while skipping dependency dirs.
+// TestGenerateRepoMap verifies the clone-time repo map.
 func TestGenerateRepoMap(t *testing.T) {
 	dir := t.TempDir()
 	write := func(rel, content string) {
@@ -73,8 +71,7 @@ func TestGenerateRepoMap(t *testing.T) {
 	}
 }
 
-// TestEnsureKnowledgeIndexPreservesExisting verifies we append to a repo's own
-// knowledge/index.yaml rather than clobbering it, and that re-running is a no-op.
+// TestEnsureKnowledgeIndexPreservesExisting verifies we append to a repo's own knowledge/index.yaml rather than clobbering it, and that re-running is a no-op.
 func TestEnsureKnowledgeIndexPreservesExisting(t *testing.T) {
 	dir := t.TempDir()
 	kd := filepath.Join(dir, "knowledge")

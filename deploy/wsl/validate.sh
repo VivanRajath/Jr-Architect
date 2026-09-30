@@ -57,7 +57,6 @@ workdir() { echo "$WORK/${1#sandbox-}"; }
 tunnels() { pgrep -c -x cloudflared || true; }
 
 # Waits until the app answers and its preview tunnel is published.
-# A 4th/5th arg keeps another sandbox active meanwhile, so the idle TTL does not reap it mid-test.
 wait_running() {
   local jar=$1 c=$2 limit=$3 keepjar=${4:-} keep=${5:-} start=$SECONDS s url
   while [ $((SECONDS - start)) -lt "$limit" ]; do

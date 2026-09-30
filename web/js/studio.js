@@ -704,16 +704,6 @@ async function runImprove() {
   }
 }
 
-function sampleFor(schema) {
-  if (schema.enum && schema.enum.length) return schema.enum[0];
-  switch (schema.type) {
-    case 'object': return Object.fromEntries(Object.entries(schema.properties || {}).map(([k, v]) => [k, sampleFor(v)]));
-    case 'array': return [sampleFor(schema.items || { type: 'string' })];
-    case 'number': case 'integer': return 1;
-    case 'boolean': return true;
-    default: return '';
-  }
-}
 
 function sideTest(body) {
   const saved = ST.agentId && !isDirty();

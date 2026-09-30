@@ -11,18 +11,7 @@ import (
 	"sandbox/internal/core"
 )
 
-// Layer 1 of the code-agent's retrieval: a "where things are" map generated at
-// clone time so the agent starts a turn already knowing the repo's shape instead
-// of blindly grepping. Two docs are written under knowledge/ and registered with
-// gitclaw's knowledge loader (see knowledge/index.yaml handling in gitclaw):
-//
-//   knowledge/repo-map.md      always-loaded, SMALL — stack, tree, entry points.
-//                              Kept compact on purpose: it rides in every prompt,
-//                              and Groq's free tier is token-tight.
-//   knowledge/repo-map-full.md on-demand — full file list with exported symbols.
-//                              The agent `read`s it only when it needs detail.
-//
-// Layer 2 (the search_code tool) lives in the agent service; this file is Layer 1.
+// Layer 1 of the code-agent's retrieval.
 
 var repoMapSkipDirs = map[string]bool{
 	".git": true, "node_modules": true, "__pycache__": true, ".next": true,
@@ -38,8 +27,7 @@ var repoMapSourceExt = map[string]bool{
 	".vue": true, ".svelte": true,
 }
 
-// Per-language symbol patterns. Deliberately shallow — this is a locator, not a
-// parser; the goal is "which file defines X", which search_code then pinpoints.
+// Per-language symbol patterns. Deliberately shallow.
 var repoMapSymbolPatterns = []*regexp.Regexp{
 	// JS/TS top-level exports (function/class/const/interface/type/enum).
 	regexp.MustCompile(`(?m)^\s*export\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)`),
@@ -61,10 +49,7 @@ type repoMapFile struct {
 	symbols []string
 }
 
-// GenerateRepoMap writes the knowledge docs described above. Best-effort: the
-// caller treats any error as non-fatal (the sandbox still runs without a map).
-// services is optional: pass the detected plan's services and the map gains a
-// table saying which directory is which app.
+// GenerateRepoMap writes the knowledge docs described above.
 func GenerateRepoMap(workdir, stack, framework string, services ...core.Service) error {
 	files, err := collectRepoFiles(workdir)
 	if err != nil {
@@ -91,8 +76,7 @@ func GenerateRepoMap(workdir, stack, framework string, services ...core.Service)
 	return nil
 }
 
-// collectRepoFiles walks the workspace (skipping build/dependency dirs) and
-// extracts exported symbols from source files, capped for size.
+// collectRepoFiles walks the workspace (skipping build/dependency dirs) and extracts exported symbols from source files, capped for size.
 func collectRepoFiles(root string) ([]repoMapFile, error) {
 	var out []repoMapFile
 	var walk func(dir, rel string) error
@@ -137,8 +121,7 @@ func collectRepoFiles(root string) ([]repoMapFile, error) {
 	return out, nil
 }
 
-// extractSymbols returns up to repoMapMaxSymbolsFile symbol names from a source
-// file. Returns nil for non-source, oversized, or unreadable files.
+// extractSymbols returns up to repoMapMaxSymbolsFile symbol names from a source file.
 func extractSymbols(path string) []string {
 	if !repoMapSourceExt[strings.ToLower(filepath.Ext(path))] {
 		return nil
@@ -197,8 +180,7 @@ func buildCompactMap(workdir, stack, framework string, files []repoMapFile, serv
 	return b.String()
 }
 
-// topLevelLayout summarizes each top-level directory as "dir/ — N files" plus a
-// few notable entries, and lists notable root files. Compact by design.
+// topLevelLayout summarizes each top-level directory as "dir/ — N files" plus a few notable entries, and lists notable root files.
 func topLevelLayout(files []repoMapFile) string {
 	dirCounts := map[string]int{}
 	var rootFiles []string
@@ -245,8 +227,7 @@ func buildFullMap(stack, framework string, files []repoMapFile) string {
 	return b.String()
 }
 
-// firstExistingEntry returns the first core.UIEntryCandidates path that exists, as a
-// forward-slash workspace-relative path (empty if none).
+// firstExistingEntry returns the first core.UIEntryCandidates path that exists, as a forward-slash workspace-relative path (empty if none).
 func firstExistingEntry(workdir string) string {
 	for _, c := range core.UIEntryCandidates {
 		if _, err := os.Stat(filepath.Join(workdir, filepath.FromSlash(c))); err == nil {
@@ -256,11 +237,7 @@ func firstExistingEntry(workdir string) string {
 	return ""
 }
 
-// ensureKnowledgeIndex registers the two repo-map docs with gitclaw's knowledge
-// loader. gitclaw reads knowledge/index.yaml: entries with always_load:true are
-// injected into the prompt, others are listed for on-demand `read`. If the repo
-// already ships an index.yaml we append our entries (unless already present)
-// rather than clobber the repo's own knowledge.
+// ensureKnowledgeIndex registers the two repo-map docs with gitclaw's knowledge loader.
 func ensureKnowledgeIndex(knowledgeDir string) error {
 	path := filepath.Join(knowledgeDir, "index.yaml")
 	ourEntries := "" +

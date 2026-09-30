@@ -20,8 +20,7 @@ import (
 	"sandbox/internal/server"
 )
 
-// The whole front end in one embedded directory. `all:` is required — plain embed
-// skips files starting with "." or "_", and Monaco's build has some.
+// The whole front end in one embedded directory.
 //
 //go:embed all:web
 var webAssets embed.FS
@@ -49,8 +48,7 @@ func startAgentService() {
 	cmd.Env = append(os.Environ(),
 		"ANTHROPIC_API_KEY="+os.Getenv("ANTHROPIC_API_KEY"),
 		fmt.Sprintf("AGENT_PORT=%d", core.Cfg.AgentPort),
-		// Side effects (docker exec, container write-through) belong to Go; the
-		// agent service calls back here for them.
+		// Side effects (docker exec, container write-through) belong to Go; the agent service calls back here for them.
 		"HOST_PORT="+core.Cfg.ListenPort(),
 		"JR_WORK_DIR="+core.Cfg.WorkDir,
 		"JR_INTERNAL_TOKEN="+core.Cfg.InternalToken,

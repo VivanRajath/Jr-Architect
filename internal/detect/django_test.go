@@ -68,48 +68,6 @@ func TestFindSettingsPackage(t *testing.T) {
 	}
 }
 
-func TestFindDjangoProjectPrefersShallowest(t *testing.T) {
-	dir := t.TempDir()
-	// A vendored sample project that must never be picked.
-	write(t, dir, ".venv/lib/site-packages/demo/manage.py", managePy("demo.settings"))
-	write(t, dir, "backend/manage.py", managePy("config.settings"))
-	write(t, dir, "backend/examples/tiny/manage.py", managePy("tiny.settings"))
-
-	p, ok := findDjangoProject(dir)
-	if !ok {
-		t.Fatal("findDjangoProject found nothing")
-	}
-	if p.Rel != "backend" {
-		t.Errorf("Rel = %q, want backend", p.Rel)
-	}
-	if p.Settings != "config.settings" {
-		t.Errorf("Settings = %q, want config.settings", p.Settings)
-	}
-}
-
-func TestFindDjangoProjectAtRoot(t *testing.T) {
-	dir := t.TempDir()
-	write(t, dir, "manage.py", managePy("site.settings"))
-
-	p, ok := findDjangoProject(dir)
-	if !ok {
-		t.Fatal("findDjangoProject found nothing")
-	}
-	if p.Rel != "" {
-		t.Errorf("Rel = %q, want empty for a root project", p.Rel)
-	}
-}
-
-func TestFindDjangoProjectDeclinesNonDjango(t *testing.T) {
-	dir := t.TempDir()
-	write(t, dir, "requirements.txt", "flask\n")
-	write(t, dir, "app.py", "")
-
-	if _, ok := findDjangoProject(dir); ok {
-		t.Error("findDjangoProject accepted a repo with no manage.py")
-	}
-}
-
 // Import then override — the other order shadows the overrides and still 400s.
 func TestSandboxSettingsSource(t *testing.T) {
 	src := sandboxSettingsSource("config.settings")
@@ -137,7 +95,7 @@ func TestSandboxSettingsSource(t *testing.T) {
 func TestWriteSandboxSettings(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "manage.py", managePy("config.settings"))
-	p, _ := findDjangoProject(dir)
+	p := newDjangoProject(dir, "")
 
 	if got := writeSandboxSettings(p); got != SandboxSettingsModule {
 		t.Fatalf("writeSandboxSettings = %q, want %q", got, SandboxSettingsModule)
@@ -162,7 +120,7 @@ func TestDjangoInstallCommand(t *testing.T) {
 		write(t, dir, "requirements.txt", "black\n")
 		write(t, dir, "api/manage.py", managePy("config.settings"))
 		write(t, dir, "api/requirements.txt", "django\n")
-		p, _ := findDjangoProject(dir)
+		p := newDjangoProject(filepath.Join(dir, "api"), "api")
 
 		if got := djangoInstallCommand(dir, p); got != "pip install -r requirements.txt" {
 			t.Errorf("got %q", got)
@@ -174,7 +132,7 @@ func TestDjangoInstallCommand(t *testing.T) {
 		dir := t.TempDir()
 		write(t, dir, "requirements.txt", "django\n")
 		write(t, dir, "api/manage.py", managePy("config.settings"))
-		p, _ := findDjangoProject(dir)
+		p := newDjangoProject(filepath.Join(dir, "api"), "api")
 
 		if got := djangoInstallCommand(dir, p); got != "pip install -r ../requirements.txt" {
 			t.Errorf("got %q", got)
@@ -186,7 +144,7 @@ func TestDjangoInstallCommand(t *testing.T) {
 		write(t, dir, "manage.py", managePy("config.settings"))
 		write(t, dir, "requirements/base.txt", "django\n")
 		write(t, dir, "requirements/dev.txt", "-r base.txt\n")
-		p, _ := findDjangoProject(dir)
+		p := newDjangoProject(dir, "")
 
 		if got := djangoInstallCommand(dir, p); got != "pip install -r requirements/dev.txt" {
 			t.Errorf("got %q", got)
@@ -197,7 +155,7 @@ func TestDjangoInstallCommand(t *testing.T) {
 		dir := t.TempDir()
 		write(t, dir, "manage.py", managePy("config.settings"))
 		write(t, dir, "pyproject.toml", "[project]\nname='x'\n")
-		p, _ := findDjangoProject(dir)
+		p := newDjangoProject(dir, "")
 
 		if got := djangoInstallCommand(dir, p); got != "pip install ." {
 			t.Errorf("got %q", got)
@@ -207,7 +165,7 @@ func TestDjangoInstallCommand(t *testing.T) {
 	t.Run("no manifest installs nothing", func(t *testing.T) {
 		dir := t.TempDir()
 		write(t, dir, "manage.py", managePy("config.settings"))
-		p, _ := findDjangoProject(dir)
+		p := newDjangoProject(dir, "")
 
 		if got := djangoInstallCommand(dir, p); got != "" {
 			t.Errorf("got %q, want empty — the image already ships Django", got)
@@ -293,18 +251,16 @@ func TestDetectRuntimeConfigPicksDjango(t *testing.T) {
 	write(t, dir, "mysite/settings.py", "")
 	write(t, dir, "mysite/wsgi.py", "")
 
-	cfg, err := Runtime(dir)
+	plan, err := Scan(dir)
 	if err != nil {
-		t.Fatalf("Runtime: %v", err)
+		t.Fatalf("Scan: %v", err)
 	}
-	if cfg.Image != "sandbox-django" {
-		t.Fatalf("Image = %q, want sandbox-django", cfg.Image)
+	svc, _ := plan.Primary()
+	if svc.Stack != "django" {
+		t.Fatalf("Stack = %q, want django", svc.Stack)
 	}
-	if !strings.Contains(cfg.StartupCommand, "migrate") {
-		t.Errorf("no migrate step: %s", cfg.StartupCommand)
-	}
-	if core.ImageToStack(cfg.Image) != "django" {
-		t.Errorf("stack = %q, want django", core.ImageToStack(cfg.Image))
+	if !strings.Contains(svc.FullCommand(), "migrate") {
+		t.Errorf("no migrate step: %s", svc.FullCommand())
 	}
 	// The agent guidance keyed to this stack name lives in internal/gitagent.
 }

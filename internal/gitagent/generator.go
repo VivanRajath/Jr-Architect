@@ -17,8 +17,7 @@ type AgentSpec struct {
 	Stack       string
 	ProjectName string
 	WorkDir     string
-	// Every stack in the repo, primary first, so a monorepo agent gets guidance
-	// for the half it is editing rather than only the half the preview opens.
+	// Every stack in the repo, primary first, so a monorepo agent gets guidance for the half it is editing rather than only the half the preview opens.
 	Stacks   []string
 	Services []core.Service
 }
@@ -133,12 +132,7 @@ func UIFilePaths(stack string) string {
 	return "any .css, .html, or component files in the project root"
 }
 
-// ── Built-in persona skills ──────────────────────────────────────────────────
-// These SKILL.md files ARE the platform's agents, made visible and editable in
-// the repo's own .gitagent/ folder. The chat agent reads them as the source of
-// truth for how to code (Node server: loadSkill), falling back to a built-in
-// string only if a file is missing. Edit one and the next turn behaves
-// differently — the folder drives the platform.
+// Built-in persona skills
 
 var jnrDeveloperSkill = `---
 name: jnr-developer
@@ -203,8 +197,7 @@ Answer questions about this codebase concretely, grounded in the actual files.
 - Never change files in Ask mode.
 `
 
-// This file IS the prompt the knowledge builder runs — edit it and the next build
-// produces a different document.
+// This file IS the prompt the knowledge builder runs — edit it and the next build produces a different document.
 var knowledgeBuilderSkill = `---
 name: knowledge-builder
 description: Reads the repo once at open and writes knowledge/overview.md — the architectural summary every later turn is grounded in
@@ -334,9 +327,7 @@ code, not just what to answer.
   into every later turn. Replaceable by any registry agent in the Knowledge slot.
 `
 
-// MEMORY.md — the durable facts the agent reads before changing anything. Jr
-// Architect seeds the basics at clone time from the detected stack + a real entry
-// file; the agent (and the developer) append what they learn under Notes.
+// MEMORY.md — the durable facts the agent reads before changing anything.
 var memoryMDTemplate = `# Memory — {{.ProjectName}} ({{.Stack}})
 
 Durable facts about this repository. The coding agent reads this file before it
@@ -390,8 +381,7 @@ func Conventions(stack string) string {
 	return "- Preserve the existing code style and formatting"
 }
 
-// detectEntry returns the first common UI/entry file that actually exists in the
-// cloned repo, so MEMORY.md points the agent at a real file instead of a guess.
+// detectEntry returns the first common UI/entry file that actually exists in the cloned repo.
 func detectEntry(workdir string) string {
 	candidates := []string{
 		"app/page.tsx", "app/page.jsx", "app/page.js", "src/app/page.tsx",
@@ -409,22 +399,15 @@ func detectEntry(workdir string) string {
 	return "(not detected — set this to the file the app renders from)"
 }
 
-// maxInjectedDocBytes caps repo-root docs that gitclaw would splice verbatim into
-// the agent's system prompt. AI-generated app repos (e.g. Lyzr) ship a very large
-// AGENTS.md — 30k+ tokens — which alone busts a free-tier budget (Groq free tier
-// is 12k tokens/min), so the very first agent request 413s before it can answer.
+// maxInjectedDocBytes caps repo-root docs that gitclaw would splice verbatim into the agent's system prompt.
 const maxInjectedDocBytes = 8000
 
-// services is optional: pass the detected plan's services and the spec covers
-// every stack in the repo instead of just the primary one.
+// services is optional: pass the detected plan's services and the spec covers every stack in the repo instead of just the primary one.
 func GenerateAgentSpec(workdir string, stack string, services ...core.Service) error {
 	projectName := filepath.Base(workdir)
 	projectName = strings.ReplaceAll(projectName, " ", "-")
 
-	// gitclaw injects repo-root AGENTS.md / DUTIES.md straight into the system
-	// prompt. Move oversized ones aside (kept as *.sandbox-bak — nothing is
-	// deleted) so the agent prompt stays small; our generated SOUL.md/RULES.md
-	// already give the agent its guidance.
+	// gitclaw injects repo-root AGENTS.md / DUTIES.md straight into the system prompt.
 	for _, name := range []string{"AGENTS.md", "DUTIES.md"} {
 		p := filepath.Join(workdir, name)
 		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Size() > maxInjectedDocBytes {
@@ -457,11 +440,7 @@ func GenerateAgentSpec(workdir string, stack string, services ...core.Service) e
 		"ServicesTable":    ServicesTable,
 	}
 
-	// The repo's own agent spec lives under .gitagent/ so it shows up as one clear
-	// folder in the IDE explorer (next to pipeline.json and any installed registry
-	// agents) instead of scattering SOUL.md/RULES.md/etc. loose among the repo's
-	// own files. The Node edit pipeline reads it from here (registry.js
-	// loadRepoRootSpec looks in .gitagent/ first, then the repo root).
+	// The repo's own agent spec lives under .gitagent/ so it shows as one folder in the IDE explorer.
 	specDir := filepath.Join(workdir, ".gitagent")
 	if err := os.MkdirAll(specDir, 0755); err != nil {
 		return fmt.Errorf("failed to create .gitagent dir: %w", err)
@@ -473,16 +452,7 @@ func GenerateAgentSpec(workdir string, stack string, services ...core.Service) e
 		"RULES.md":   rulesMDTemplate,
 	}
 
-	// MEMORY.md is the repo's living knowledge — seed it only if it doesn't
-	// already exist, so a repo's own memory (or notes learned across turns)
-	// is never clobbered on a re-clone.
-	//
-	// It lives in memory/, not at the spec root: the gitagent standard's full
-	// layout groups it there alongside skills/, tools/, hooks/, workflows/, and
-	// compliance/ (`gitagent init --template full`). Earlier versions of this
-	// generator wrote it to the root, so a repo scaffolded before this change
-	// still has one there — it is moved rather than duplicated, otherwise the
-	// agent would read a stale copy and the two would drift apart.
+	// MEMORY.md is the repo's living knowledge.
 	memoryDir := filepath.Join(specDir, "memory")
 	if err := os.MkdirAll(memoryDir, 0755); err != nil {
 		return fmt.Errorf("mkdir error for memory/: %w", err)
@@ -526,12 +496,7 @@ func GenerateAgentSpec(workdir string, stack string, services ...core.Service) e
 			return fmt.Errorf("write error for %s: %w", filename, err)
 		}
 
-		// The engine (gitclaw) treats the REPO ROOT as the agent home and hard-reads
-		// its manifest from <root>/agent.yaml — it uses .gitagent/ for its own session
-		// runtime, not for the manifest. So the grouped spec lives in .gitagent/ (what
-		// the developer sees), but agent.yaml must ALSO exist at the root or every chat
-		// turn throws ENOENT on load. SOUL/RULES/skills stay grouped: gitclaw reads
-		// those optionally, and our edit pipeline injects them from .gitagent/ anyway.
+		// The engine (gitclaw) treats the REPO ROOT as the agent home and hard-reads its manifest from <root>/agent.yaml.
 		if filename == "agent.yaml" {
 			if err := os.WriteFile(filepath.Join(workdir, "agent.yaml"), buf.Bytes(), 0644); err != nil {
 				return fmt.Errorf("write error for root agent.yaml: %w", err)
@@ -560,10 +525,7 @@ func GenerateAgentSpec(workdir string, stack string, services ...core.Service) e
 		return fmt.Errorf("write error for SKILL.md: %w", err)
 	}
 
-	// The rest of the GitAgent standard layout: the built-in persona skills (the
-	// platform's own agents), plus compliance / tools / hooks / workflows. Each is
-	// seeded only if absent, so a repo that commits its own customized .gitagent
-	// spec (source of truth, versioned in git) is never clobbered on a re-clone.
+	// The rest of the GitAgent standard layout: the built-in persona skills (the platform's own agents), plus compliance / tools / hooks / workflows.
 	standardFiles := map[string]string{
 		"skills/jnr-developer/SKILL.md":     jnrDeveloperSkill,
 		"skills/snr-developer/SKILL.md":     snrDeveloperSkill,
@@ -601,8 +563,7 @@ func GenerateAgentSpec(workdir string, stack string, services ...core.Service) e
 	return nil
 }
 
-// RegisterWithAgentService tells the Node agent service about the new sandbox
-// Call this after GenerateAgentSpec succeeds
+// RegisterWithAgentService tells the Node agent service about a new sandbox; call it after GenerateAgentSpec succeeds.
 func RegisterWithAgentService(container, workdir, stack, owner string) error {
 	payload := map[string]string{
 		"container": container,

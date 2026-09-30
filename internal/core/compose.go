@@ -14,8 +14,7 @@ var layerFS embed.FS
 
 const CompositePrefix = "sandbox-multi-"
 
-// A repo needing more than one toolchain gets one image carrying all of them, so
-// its services share a container and can still reach each other on localhost.
+// A repo needing more than one toolchain gets one image carrying all of them.
 func ImageForStacks(stacks []string) string {
 	switch len(stacks) {
 	case 0:
@@ -26,8 +25,7 @@ func ImageForStacks(stacks []string) string {
 	return CompositeImage(stacks)
 }
 
-// Sorted, so the same combination always resolves to the same image and the second
-// repo that needs it builds nothing.
+// Sorted, so the same combination always resolves to the same image and the second repo that needs it builds nothing.
 func CompositeImage(stacks []string) string {
 	return CompositePrefix + strings.Join(normalizeStacks(stacks), "-")
 }
@@ -58,8 +56,7 @@ func normalizeStacks(stacks []string) []string {
 	return out
 }
 
-// Toolchain is the language runtime a stack needs, so callers can tell a nested
-// subproject of the same project from a genuinely separate service.
+// Toolchain is the language runtime a stack needs, so callers can tell a nested subproject of the same project from a genuinely separate service.
 func Toolchain(stack string) string { return toolchain(stack) }
 
 // react and node are the same toolchain; so are django and python.
@@ -75,8 +72,7 @@ func toolchain(stack string) string {
 	return stack
 }
 
-// Most awkward to bolt onto something else comes first, so it becomes the base and
-// only the easier toolchains are layered on with apt.
+// Most awkward to bolt onto something else comes first, so it becomes the base and only the easier toolchains are layered on with apt.
 var basePriority = []struct{ Toolchain, Image string }{
 	{"dotnet", "mcr.microsoft.com/dotnet/sdk:8.0"},
 	{"java", "docker.io/library/eclipse-temurin:21-jdk-jammy"},
@@ -154,8 +150,7 @@ func CompositeDockerfile(stacks []string) string {
 	return b.String()
 }
 
-// Builds the merged image if this combination has never been built. The context is
-// a scratch directory: the Dockerfile only installs toolchains, it copies nothing.
+// Builds the merged image if this combination has never been built.
 func EnsureComposite(container string, stacks []string) (string, error) {
 	image := CompositeImage(stacks)
 	if ImageExists(image) {

@@ -19,9 +19,7 @@ import (
 	"time"
 )
 
-// ─────────────────────────────────────────────
-//  Build history (in-memory)
-// ─────────────────────────────────────────────
+// Build history (in-memory)
 
 type BuildRecord struct {
 	ID        string    `json:"id"`
@@ -60,21 +58,7 @@ func updateBuildRecord(id string, fn func(*BuildRecord)) {
 	}
 }
 
-// ─────────────────────────────────────────────
-//  Groq API client — multi-key pool with TPM headroom throttling
-// ─────────────────────────────────────────────
-//
-// Groq's free tier enforces a per-organization tokens-per-minute (TPM) limit and
-// counts input + output tokens toward the same budget. A single whole-app code
-// generation can need ~18k tokens, which exceeds a 12k TPM org cap — so a lone
-// request 429s no matter how many keys you have (one request uses one key).
-//
-// Two mechanisms make it work:
-//   1. Code generation is chunked (see generateCode) so each call fits under one
-//      org's per-minute budget.
-//   2. This pool round-robins across every configured key, tracks each key's
-//      rolling-window usage against tpm*headroom, and cools a key down on 429 —
-//      spreading load across orgs and self-throttling instead of failing.
+// Groq API client — multi-key pool with TPM headroom throttling Groq's free tier enforces a per-organization tokens-per-minute (TPM) limit and counts input + output tokens toward the same budget.
 
 const groqEndpoint = "https://api.groq.com/openai/v1/chat/completions"
 const groqModel = "openai/gpt-oss-120b"
@@ -182,8 +166,7 @@ func buildGroqPool() *groqPool {
 
 func (p *groqPool) budget() int { return int(float64(p.tpm) * p.headroom) }
 
-// reserve picks a key with room in its current window for estTokens and charges
-// it. If no key has room, it waits until the earliest key frees up, then retries.
+// reserve picks a key with room in its current window for estTokens and charges it.
 func (p *groqPool) reserve(estTokens int) (*groqKey, error) {
 	if len(p.keys) == 0 {
 		return nil, fmt.Errorf("no Groq API key configured (set GROQ_API_KEY)")
@@ -232,8 +215,7 @@ func (p *groqPool) reserve(estTokens int) (*groqKey, error) {
 	}
 }
 
-// reconcile adjusts a key's window usage once actual token counts are known
-// (the reservation used an estimate). Pass actual=0 to refund a failed request.
+// reconcile adjusts a key's window usage once actual token counts are known (the reservation used an estimate).
 func (k *groqKey) reconcile(reserved, actual int) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -352,9 +334,7 @@ func callGroq(systemPrompt, userPrompt string, maxTokens int) (string, error) {
 	return "", lastErr
 }
 
-// ─────────────────────────────────────────────
-//  Data structures
-// ─────────────────────────────────────────────
+// Data structures
 
 type Question struct {
 	ID      string   `json:"id"`
@@ -379,9 +359,7 @@ type GeneratedFile struct {
 	Content string `json:"content"`
 }
 
-// ─────────────────────────────────────────────
-//  /build/questions
-// ─────────────────────────────────────────────
+// /build/questions
 
 func QuestionsHandler(w http.ResponseWriter, r *http.Request) {
 	core.CORS(w, r)
@@ -452,9 +430,7 @@ func defaultQuestions() []Question {
 	}
 }
 
-// ─────────────────────────────────────────────
-//  /build/prd
-// ─────────────────────────────────────────────
+// /build/prd
 
 func PRDHandler(w http.ResponseWriter, r *http.Request) {
 	core.CORS(w, r)
@@ -530,9 +506,7 @@ Keep features as user stories (max 8). Keep data_model to 2-4 entities. Keep it 
 	json.NewEncoder(w).Encode(map[string]interface{}{"prd": prd})
 }
 
-// ─────────────────────────────────────────────
-//  /build/scaffold
-// ─────────────────────────────────────────────
+// /build/scaffold
 
 // The Next.js dev server's port inside every builder container.
 const builderPort = 3000
@@ -665,8 +639,7 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 
 	// Fix 3: Ensure @tailwind directives are present in globals.css
 	ensureTailwindDirectives(workdir)
-	// Guarantee the :root design tokens exist so styled components keep their
-	// colors even if the model dropped them when regenerating globals.css.
+	// Guarantee the :root design tokens exist so styled components keep their colors even if the model dropped them when regenerating globals.css.
 	ensureDesignTokens(workdir)
 	core.AddLog(container, "Tailwind directives and design tokens verified in globals.css.")
 
@@ -674,15 +647,9 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 	updateAppMetadata(workdir, prd)
 
 	// Fix 1: Use the preheated sandbox-builder image instead of sandbox-react.
-	// /opt/builder-deps has node_modules pre-installed — copy them in for instant startup.
 	core.AddLog(container, "Starting Docker sandbox (preheated builder image)...")
 	const builderImage = "sandbox-builder"
 	// The startup command copies pre-installed node_modules then launches Next.js dev server.
-	// Parentheses ensure npm run dev always runs regardless of which install path was taken.
-	// Note the trailing "/." on the source: ./node_modules already exists (it's the
-	// anonymous-volume mount point), so we copy the *contents* into it. Copying the
-	// directory itself would nest it as ./node_modules/node_modules and `next` would
-	// not be found on PATH.
 	const builderStartCmd = "(cp -r /opt/builder-deps/node_modules/. ./node_modules/ 2>/dev/null || npm install --no-audit --no-fund) && npm run dev -- -H 0.0.0.0"
 
 	stack := core.ImageToStack(builderImage)
@@ -703,11 +670,7 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 	}
 	env = append(env, core.WatcherEnv()...)
 	env = append(env, core.HeadlessEnv...)
-	// The anonymous volume at /workspace/node_modules keeps node_modules on a
-	// fast native Docker volume instead of the bind-mounted /workspace. On
-	// Windows/macOS, copying the ~hundreds of preheated packages into the bind
-	// mount takes minutes (and blocks `npm run dev` behind the `&&`); on a native
-	// volume it takes seconds. The volume is removed with `docker rm -v`.
+	// The anonymous volume at /workspace/node_modules keeps node_modules on a fast native Docker volume instead of the bind-mounted /workspace.
 	mounts := []string{
 		"-v", "/root/.npm",
 		"-v", "/workspace/node_modules",
@@ -746,9 +709,7 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 	return nil
 }
 
-// ─────────────────────────────────────────────
-//  Code generation via Groq
-// ─────────────────────────────────────────────
+// Code generation via Groq
 
 const groqCodeGenSystemPrompt = `You are an expert Next.js 14 developer using the App Router, TypeScript, and Tailwind CSS.
 Given a PRD, generate production-quality Next.js application files.
@@ -794,9 +755,7 @@ QUALITY BAR — the app must be the WORKING TOOL, not a marketing page:
 - Use the brand palette richly: bg-[var(--brand-600)] buttons, colored badges, var(--surface) cards on a var(--bg) page, var(--text)/var(--text2) for hierarchy.
 - Populate the UI with plausible mock data from @/lib/data so screens look full and alive.`
 
-// genChunkTokens caps each generation call's output. Input (~system+PRD) runs
-// ~3k tokens, so 6k output keeps a call near ~9k total — comfortably under a 12k
-// TPM org cap with headroom. Override with GROQ_GEN_MAX_TOKENS if your keys allow.
+// genChunkTokens caps each generation call's output.
 func genChunkTokens() int {
 	if v := strings.TrimSpace(os.Getenv("GROQ_GEN_MAX_TOKENS")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -806,10 +765,7 @@ func genChunkTokens() int {
 	return 6000
 }
 
-// generateCode builds the app in several small Groq calls instead of one giant
-// request. A whole-app generation needs ~18k tokens (input+output), which busts
-// a 12k TPM org limit; splitting into a foundation call plus small page batches
-// keeps every call under the cap and lets the key pool spread them across orgs.
+// generateCode builds the app in several small Groq calls instead of one giant request.
 func generateCode(prd *PRD) ([]GeneratedFile, error) {
 	prdJSON, err := json.MarshalIndent(prd, "", "  ")
 	if err != nil {
@@ -849,8 +805,7 @@ Every button must have a working onClick (state change) or be wrapped in a next/
 	}
 	add(parseGeneratedFiles(cleanJSONArray(raw)))
 
-	// Subsequent calls — remaining route pages in small batches so each call stays
-	// under one org's per-minute budget.
+	// Subsequent calls — remaining route pages in small batches so each call stays under one org's per-minute budget.
 	var otherRoutes []prdRoute
 	for _, rt := range parsePRDRoutes(prd) {
 		if rt.file == "app/page.tsx" {
@@ -881,8 +836,7 @@ Reuse types and mock data by importing from @/lib/data. Match the styling alread
 
 		raw, err := callGroq(groqCodeGenSystemPrompt, pageMsg, maxTok)
 		if err != nil {
-			// A failed batch must not kill the whole app — keep what we have and
-			// let the route render 404 rather than aborting the build.
+			// A failed batch must not kill the whole app — keep what we have and let the route render 404 rather than aborting the build.
 			continue
 		}
 		add(parseGeneratedFiles(cleanJSONArray(raw)))
@@ -953,10 +907,7 @@ func cleanJSONArray(raw string) string {
 	return raw
 }
 
-// parseGeneratedFiles decodes the JSON array of files. If the response is
-// truncated (the model hit its token limit mid-array) or has trailing junk, it
-// falls back to decoding element-by-element and keeps every complete object,
-// so a partial response still yields a working app instead of failing the build.
+// parseGeneratedFiles decodes the JSON array of files.
 func parseGeneratedFiles(raw string) []GeneratedFile {
 	// Fast path: a well-formed array.
 	var files []GeneratedFile
@@ -980,9 +931,7 @@ func parseGeneratedFiles(raw string) []GeneratedFile {
 	return salvaged
 }
 
-// ─────────────────────────────────────────────
-//  Template copy from embedded FS
-// ─────────────────────────────────────────────
+// Template copy from embedded FS
 
 // Set by main, which owns the //go:embed of builder-template/.
 var templateFS fs.FS
@@ -1022,14 +971,9 @@ func Materialise(destDir, template string) error {
 	})
 }
 
-// ─────────────────────────────────────────────
-//  Helpers
-// ─────────────────────────────────────────────
+// Helpers
 
-// allowedImportModules are the ONLY external packages installed in the builder
-// template (see builder-template/nextjs/package.json). Anything else is a third-party
-// dependency that both breaks the build (it isn't installed) and violates the
-// "fully local app" guarantee — so we detect and surface it.
+// allowedImportModules are the ONLY external packages installed in the builder template (see builder-template/nextjs/package.json).
 var allowedImportModules = map[string]bool{
 	"react": true, "react-dom": true, "next": true,
 	"lucide-react": true, "clsx": true,
@@ -1041,8 +985,7 @@ var (
 	externalFetchRegex = regexp.MustCompile(`(?i)\bfetch\s*\(\s*['"` + "`" + `]https?://`)
 )
 
-// moduleRoot reduces an import specifier to its package root so that
-// "next/link" -> "next" and "@scope/pkg/sub" -> "@scope/pkg".
+// moduleRoot reduces an import specifier to its package root so that "next/link" -> "next" and "@scope/pkg/sub" -> "@scope/pkg".
 func moduleRoot(spec string) string {
 	if strings.HasPrefix(spec, "@") {
 		if parts := strings.SplitN(spec, "/", 3); len(parts) >= 2 {
@@ -1056,9 +999,7 @@ func moduleRoot(spec string) string {
 	return spec
 }
 
-// thirdPartyRefs returns any evidence that a generated file reaches outside the
-// local, self-contained app: imports of non-allowlisted packages, or fetch calls
-// to an external http(s) URL. Local imports ("@/…", "./…", "../…") are fine.
+// thirdPartyRefs returns any evidence that a generated file reaches outside the local, self-contained app.
 func thirdPartyRefs(content string) []string {
 	var found []string
 	seen := map[string]bool{}
@@ -1115,9 +1056,7 @@ func updateAppMetadata(workdir string, prd *PRD) {
 	os.WriteFile(layoutPath, []byte(updated), 0644)
 }
 
-// ensureTailwindDirectives guarantees that app/globals.css always begins with
-// the three @tailwind directives required for Tailwind CSS to work. If the AI
-// generated a globals.css that omits them, this adds them back as a prefix.
+// ensureTailwindDirectives guarantees that app/globals.css always begins with the three @tailwind directives required for Tailwind CSS to work.
 func ensureTailwindDirectives(workdir string) {
 	path := filepath.Join(workdir, "app", "globals.css")
 	data, err := os.ReadFile(path)
@@ -1132,8 +1071,7 @@ func ensureTailwindDirectives(workdir string) {
 	os.WriteFile(path, []byte(header+content), 0644)
 }
 
-// baseDesignTokens is the fallback palette/typography every styled component in
-// the template depends on (var(--brand-*), var(--surface), var(--text), …).
+// baseDesignTokens is the fallback palette/typography every styled component in the template depends on (var(--brand-*), var(--surface), var(--text), …).
 const baseDesignTokens = `/* jr-architect base tokens — fallbacks; any :root the app adds later overrides these */
 :root {
   --brand-50:#f0f9ff;--brand-100:#e0f2fe;--brand-200:#bae6fd;--brand-300:#7dd3fc;--brand-400:#38bdf8;--brand-500:#0ea5e9;--brand-600:#0284c7;--brand-700:#0369a1;--brand-800:#075985;--brand-900:#0c4a6e;
@@ -1144,11 +1082,7 @@ const baseDesignTokens = `/* jr-architect base tokens — fallbacks; any :root t
 }
 `
 
-// ensureDesignTokens guarantees the CSS design tokens exist in globals.css. The
-// model frequently regenerates globals.css without the :root token block, which
-// makes every component that uses var(--brand-*)/var(--surface)/var(--text)
-// render uncolored ("black and white"). We inject the fallbacks right after the
-// @tailwind directives; any :root the app defines later wins via the cascade.
+// ensureDesignTokens guarantees the CSS design tokens exist in globals.css.
 func ensureDesignTokens(workdir string) {
 	path := filepath.Join(workdir, "app", "globals.css")
 	data, err := os.ReadFile(path)
@@ -1175,8 +1109,7 @@ func ensureDesignTokens(workdir string) {
 	os.WriteFile(path, []byte(content), 0644)
 }
 
-// normalizeUIImports rewrites @/components/ui/* imports to the exact form the
-// template exposes: lowercase (case-sensitive) file paths and named imports.
+// normalizeUIImports rewrites @/components/ui/* imports to the exact form the template exposes: lowercase (case-sensitive) file paths and named imports.
 func normalizeUIImports(content string) string {
 	content = uiImportPathRegex.ReplaceAllStringFunc(content, func(m string) string {
 		sub := uiImportPathRegex.FindStringSubmatch(m)
@@ -1197,24 +1130,15 @@ var (
 	useClientImportRegex = regexp.MustCompile(`(?i)import\s*\{\s*useClient\s*\}\s*from\s*['"]react['"];?`)
 	useClientCallRegex   = regexp.MustCompile(`\buseClient\(\);?`)
 
-	// UI import normalizers. The template's ui components are NAMED exports in
-	// lowercase files (@/components/ui/button, …), but the model often writes
-	// `import Card from '@/components/ui/Card'` (default import + capitalized path),
-	// which fails to resolve on the case-sensitive container and renders nothing.
+	// UI import normalizers.
 	uiImportPathRegex    = regexp.MustCompile(`(@/components/ui/)([A-Za-z][A-Za-z0-9_-]*)`)
 	uiDefaultImportRegex = regexp.MustCompile(`import\s+([A-Za-z][A-Za-z0-9_]*)\s+from\s+(['"]@/components/ui/[a-z][a-z0-9_-]*['"])`)
-	// bareUseClientRegex matches an UNQUOTED `use client;` directive on its own
-	// line (invalid — must be the string literal "use client"). The [ \t] class
-	// (not \s) keeps the match on a single line so we don't swallow neighbours.
-	// It deliberately does not match the correct `"use client";` (starts with a quote).
+	// bareUseClientRegex matches an UNQUOTED `use client;` directive on its own line (invalid — must be the string literal "use client").
 	bareUseClientRegex = regexp.MustCompile(`(?mi)^[ \t]*use[ \t]+client[ \t]*;?[ \t]*\r?$`)
 )
 
 func postProcessCode(content string, filename string) string {
-	// A. Clean up hallucinated useClient calls & imports, and the bare
-	// `use client;` directive (unquoted, often placed after imports). All three
-	// signal the model intended a client component; we strip them and re-add the
-	// correct `"use client";` at line 1 in step 3.
+	// A. Clean up hallucinated useClient calls & imports, and the bare `use client;` directive (unquoted, often placed after imports).
 	hasUseClientHallucination := false
 	if useClientImportRegex.MatchString(content) || useClientCallRegex.MatchString(content) {
 		hasUseClientHallucination = true
@@ -1230,13 +1154,10 @@ func postProcessCode(content string, filename string) string {
 	content = linkRegex.ReplaceAllString(content, "import Link from $1")
 	content = imageRegex.ReplaceAllString(content, "import Image from $1")
 
-	// 1b. Normalize @/components/ui/* imports: lowercase the (case-sensitive) path
-	// and convert default imports to named ones so the styled base components
-	// actually resolve and render.
+	// 1b. Normalize @/components/ui/* imports.
 	content = normalizeUIImports(content)
 
-	// 2. Convert export default function/class to named + default
-	// This makes components importable as both named and default imports
+	// 2. Convert export default function/class to named + default, so components import either way.
 	if defaultExportRegex.MatchString(content) {
 		matches := defaultExportRegex.FindStringSubmatch(content)
 		if len(matches) >= 3 {
@@ -1252,8 +1173,7 @@ func postProcessCode(content string, filename string) string {
 		}
 	}
 
-	// 3. Auto-inject "use client" if React hooks are used, or if useClient was cleaned up
-	// BUT ONLY if the file doesn't define an async component (since async functions aren't allowed in client components)
+	// 3. Add "use client" when React hooks are used, unless the file defines an async component.
 	ext := filepath.Ext(filename)
 	if ext == ".tsx" || ext == ".ts" || ext == ".jsx" || ext == ".js" {
 		isAsyncPage := regexp.MustCompile(`async\s+function`).MatchString(content)
@@ -1266,9 +1186,7 @@ func postProcessCode(content string, filename string) string {
 	return content
 }
 
-// ─────────────────────────────────────────────
-//  /build/history
-// ─────────────────────────────────────────────
+// /build/history
 
 func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 	core.CORS(w, r)
