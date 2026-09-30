@@ -10,12 +10,11 @@ import (
 	"strings"
 )
 
-// Named volumes, not host paths: fast installs without giving repo code write
-// access to the host's caches.
+// Anonymous per-sandbox volumes: a cache shared between testers would let one poison another's installs.
 func CacheMounts() []string {
 	return []string{
-		"-v", "sandbox-npm-cache:/root/.npm",
-		"-v", "sandbox-pip-cache:/root/.cache/pip",
+		"-v", "/root/.npm",
+		"-v", "/root/.cache/pip",
 	}
 }
 
@@ -183,11 +182,14 @@ func ImageToStack(image string) string {
 // A host-side write does not reliably reach the container's view of a bind mount
 // on Docker Desktop, so write the bytes back through the container instead.
 func SyncFile(container, hostAbsPath, relPath string) {
-	if container == "" || relPath == "" {
-		return
+	if data, err := os.ReadFile(hostAbsPath); err == nil {
+		SyncBytes(container, relPath, data)
 	}
-	data, err := os.ReadFile(hostAbsPath)
-	if err != nil {
+}
+
+// Writes data to /workspace/<relPath> inside the container; callers read it through os.Root first.
+func SyncBytes(container, relPath string, data []byte) {
+	if container == "" || relPath == "" {
 		return
 	}
 	cp := "/workspace/" + strings.TrimPrefix(filepath.ToSlash(relPath), "/")

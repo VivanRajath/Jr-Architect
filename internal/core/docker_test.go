@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -99,5 +100,19 @@ func TestWatcherPollingOnlyOffLinux(t *testing.T) {
 	polls := len(WatcherEnv()) > 0
 	if polls == (runtime.GOOS == "linux") {
 		t.Fatalf("GOOS=%s polling=%v", runtime.GOOS, polls)
+	}
+}
+
+// A named volume is shared by every container that mounts it, so caches must be anonymous (and go with rm -v).
+func TestCachesAreNeverSharedBetweenSandboxes(t *testing.T) {
+	m := CacheMounts()
+	for i := 0; i+1 < len(m); i += 2 {
+		if m[i] == "-v" && strings.Contains(m[i+1], ":") {
+			t.Errorf("cache mount %q is a named volume shared across sandboxes", m[i+1])
+		}
+	}
+	b, _ := os.ReadFile(filepath.Join("..", "builder", "builder.go"))
+	if strings.Contains(string(b), "-cache:/") {
+		t.Error("the builder still mounts a shared named cache volume")
 	}
 }

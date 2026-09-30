@@ -124,3 +124,26 @@ test("/agent/register only accepts a sandbox workspace as its workdir", async ()
     await new Promise((r) => server.close(r));
   }
 });
+
+// The state right after a sandbox wins the race: the check already passed and a directory is now an outside link.
+test("reads and writes verify the opened file, not just the path (Linux)", { skip: process.platform !== "linux" ? "fd verification is Linux-only" : false }, () => {
+  const ws = join(base, "sandbox-race");
+  const host = join(base, "race-host");
+  fs.mkdirSync(join(ws, "ok"), { recursive: true });
+  fs.mkdirSync(host, { recursive: true });
+  fs.writeFileSync(join(host, "secret.env"), "GROQ_API_KEY=hunter2");
+  fs.symlinkSync(host, join(ws, "swapped"), "dir");
+
+  assert.throws(() => wsfs.readInsideWorkspace(join(ws, "swapped", "secret.env"), "utf8"), { code: "ENOENT" });
+  assert.throws(() => wsfs.writeInsideWorkspace(join(ws, "swapped", "planted.txt"), "x"), { code: "ENOENT" });
+  assert.equal(fs.existsSync(join(host, "planted.txt")), false, "a file created outside was left behind");
+  assert.throws(() => wsfs.writeInsideWorkspace(join(ws, "swapped", "secret.env"), "overwritten"), { code: "ENOENT" });
+  assert.equal(fs.readFileSync(join(host, "secret.env"), "utf8"), "GROQ_API_KEY=hunter2", "an outside file was truncated or changed");
+  assert.throws(() => wsfs.writeInsideWorkspace(join(ws, "swapped", "secret.env"), "more", true), { code: "ENOENT" });
+  assert.equal(fs.readFileSync(join(host, "secret.env"), "utf8"), "GROQ_API_KEY=hunter2");
+
+  wsfs.writeInsideWorkspace(join(ws, "ok", "a.txt"), "one");
+  wsfs.writeInsideWorkspace(join(ws, "ok", "a.txt"), "two!");
+  wsfs.writeInsideWorkspace(join(ws, "ok", "a.txt"), "+", true);
+  assert.equal(wsfs.readInsideWorkspace(join(ws, "ok", "a.txt"), "utf8"), "two!+");
+});

@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { isSafePath, workspaceRootOf } from "./workspace-fs.js";
+import { isSafePath, workspaceRootOf, readInsideWorkspace } from "./workspace-fs.js";
 
 // Everything gitclaw reads to build its prompt, and nothing it would execute.
 const MIRRORED = [
@@ -33,7 +33,8 @@ function copyTree(src, dst, depth, budget) {
     for (const name of fs.readdirSync(src)) copyTree(join(src, name), join(dst, name), depth + 1, budget);
   } else if (st.isFile() && st.size <= MAX_FILE_BYTES && st.size <= budget.left) {
     budget.left -= st.size;
-    fs.copyFileSync(src, dst);
+    // lstat above can be raced, so the bytes come from a read that verifies what it opened.
+    try { fs.writeFileSync(dst, readInsideWorkspace(src)); } catch { /* refused or vanished: leave it out */ }
   }
 }
 
@@ -42,7 +43,7 @@ function copyManifest(src, dst) {
   let st;
   try { st = fs.lstatSync(src); } catch { return; }
   if (!st.isFile() || st.size > MAX_FILE_BYTES) return;
-  const raw = fs.readFileSync(src, "utf8");
+  const raw = readInsideWorkspace(src, "utf8");
   let out = raw;
   try {
     const m = yaml.load(raw);

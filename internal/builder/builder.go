@@ -708,7 +708,7 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 	// mount takes minutes (and blocks `npm run dev` behind the `&&`); on a native
 	// volume it takes seconds. The volume is removed with `docker rm -v`.
 	mounts := []string{
-		"-v", "sandbox-npm-cache:/root/.npm",
+		"-v", "/root/.npm",
 		"-v", "/workspace/node_modules",
 	}
 	args := core.RunArgs(container, "1536m", "1.5", 200, []core.PortMap{{Host: port, Container: builderPort}}, workdir, env, mounts, builderImage, builderStartCmd)
