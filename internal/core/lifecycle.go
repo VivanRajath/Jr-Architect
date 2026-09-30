@@ -1,6 +1,8 @@
 package core
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -65,10 +67,47 @@ func ReapExpired(now time.Time) int {
 
 func StartJanitor() {
 	go func() {
-		for range time.Tick(janitorEvery) {
+		for tick := 1; ; tick++ {
+			time.Sleep(janitorEvery)
 			ReapExpired(time.Now())
+			// Walking node_modules is the costly part, so sizes are checked every other minute.
+			if tick%4 == 0 {
+				ReapOversized()
+			}
 		}
 	}()
+}
+
+// Swapped in tests. Regular files only, so a link cannot make a sandbox look bigger or smaller than it is.
+var workdirSizeMB = func(dir string) int64 {
+	var total int64
+	filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			if info, e := d.Info(); e == nil {
+				total += info.Size()
+			}
+		}
+		return nil
+	})
+	return total >> 20
+}
+
+// The storage pools cap every sandbox together; this stops one tester from filling the pool for the rest.
+func ReapOversized() int {
+	if Cfg.MaxSandboxDiskMB <= 0 {
+		return 0
+	}
+	n := 0
+	for _, sb := range AllSandboxes() {
+		if sb.Workdir == "" {
+			continue
+		}
+		if mb := workdirSizeMB(sb.Workdir); mb > Cfg.MaxSandboxDiskMB {
+			Reap(sb, fmt.Sprintf("disk: workdir %dMB over the %dMB limit", mb, Cfg.MaxSandboxDiskMB))
+			n++
+		}
+	}
+	return n
 }
 
 // Removes the container, its anonymous volumes, its workdir, its logs and its registry entry.

@@ -50,6 +50,20 @@ wsl -d jrarch -u root -- bash /mnt/c/<repo>/deploy/wsl/harden.sh jrarch
 wsl --terminate jrarch
 ```
 
+### 4b. Storage pools, as root
+
+```powershell
+wsl -d jrarch -u root -- bash /mnt/c/<repo>/deploy/wsl/storage-pools.sh jrarch 10 20
+```
+
+This puts sandbox workdirs (10 GB) and Podman storage (20 GB: images, containers, per-sandbox caches) on fixed-size loop-mounted ext4 images. Sandboxes then can't fill the Windows drive.
+
+- Mount options are `nosuid,nodev,discard`.
+- The preflight refuses to start Jr-Arch unless both paths are these mounts.
+- `JR_SANDBOX_MAX_DISK_MB` (default 3072 in public mode) reaps a single sandbox whose workdir grows past it, checked every 2 minutes. The pool is the hard limit between checks.
+
+To let the WSL disk give freed space back to Windows, stop the distro and run `wsl --manage jrarch --set-sparse true`.
+
 ### 5. Install the app
 
 Build on Windows, then run the installer as root:

@@ -36,6 +36,8 @@ type Config struct {
 	// Under WSL the workdir's filesystem is a sparse ~1TB disk, so the Windows drive has to be checked too.
 	DiskCheckPaths []string
 	Cloudflared    string
+	// A sandbox whose workdir grows past this is reaped; 0 means no per-sandbox limit.
+	MaxSandboxDiskMB int64
 }
 
 var Cfg = DefaultConfig()
@@ -96,6 +98,7 @@ func LoadConfig() (Config, error) {
 		c.PreviewScheme = "https"
 		c.LLMPerHour = 60
 		c.MinFreeDiskMB = 5120
+		c.MaxSandboxDiskMB = 3072
 	}
 	if c.AuthEnabled() {
 		c.MaxPerUser = 1
@@ -131,6 +134,9 @@ func LoadConfig() (Config, error) {
 	disk := int(c.MinFreeDiskMB)
 	set("JR_MIN_FREE_DISK_MB", &disk)
 	c.MinFreeDiskMB = int64(disk)
+	perSandbox := int(c.MaxSandboxDiskMB)
+	set("JR_SANDBOX_MAX_DISK_MB", &perSandbox)
+	c.MaxSandboxDiskMB = int64(perSandbox)
 	setDur("JR_SANDBOX_IDLE_TTL", &c.IdleTTL)
 	setDur("JR_SANDBOX_MAX_TTL", &c.MaxTTL)
 	if v := envStr("JR_SPAWN_AGENT", ""); v != "" {

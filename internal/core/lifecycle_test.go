@@ -136,3 +136,47 @@ func TestRunArgsLabelsTheContainer(t *testing.T) {
 		t.Fatalf("container is not labelled: %s", args)
 	}
 }
+
+func TestOversizedSandboxIsReaped(t *testing.T) {
+	stubDocker(t)
+	work := withWorkDir(t)
+	resetRegistry(t)
+	old := workdirSizeMB
+	defer func() { workdirSizeMB = old }()
+	big, small := filepath.Join(work, "sandbox-900"), filepath.Join(work, "sandbox-901")
+	os.MkdirAll(big, 0o755)
+	os.MkdirAll(small, 0o755)
+	workdirSizeMB = func(dir string) int64 {
+		if dir == big {
+			return 5000
+		}
+		return 400
+	}
+	PutSandbox(Sandbox{Container: "sandbox-900", Workdir: big, Status: StatusRunning})
+	PutSandbox(Sandbox{Container: "sandbox-901", Workdir: small, Status: StatusRunning})
+
+	Cfg.MaxSandboxDiskMB = 0
+	if ReapOversized() != 0 {
+		t.Fatal("no limit configured, nothing should be reaped")
+	}
+	Cfg.MaxSandboxDiskMB = 3072
+	if n := ReapOversized(); n != 1 {
+		t.Fatalf("reaped %d, want the one over the limit", n)
+	}
+	if _, ok := GetSandbox("sandbox-900"); ok {
+		t.Error("the oversized sandbox is still registered")
+	}
+	if _, ok := GetSandbox("sandbox-901"); !ok {
+		t.Error("a sandbox under the limit was reaped")
+	}
+}
+
+func TestWorkdirSizeCountsRegularFilesOnly(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.bin"), make([]byte, 3<<20), 0o644)
+	os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
+	os.WriteFile(filepath.Join(dir, "sub", "b.bin"), make([]byte, 2<<20), 0o644)
+	if got := workdirSizeMB(dir); got != 5 {
+		t.Fatalf("size = %dMB, want 5", got)
+	}
+}

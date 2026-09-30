@@ -86,7 +86,7 @@ trap 'systemctl --user stop jr-validate 2>/dev/null; systemctl --user is-enabled
 systemctl --user stop jr-validate 2>/dev/null
 podman rm -f -v $(podman ps -aq --filter label=jrarch.sandbox) >/dev/null 2>&1
 podman rmi -f sandbox-static >/dev/null 2>&1
-rm -rf "$WORK" && mkdir -p "$WORK"
+mkdir -p "$WORK" && find "$WORK" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 info "podman $(podman --version | awk '{print $3}'), network backend $(podman info --format '{{.Host.NetworkBackend}}'), rootless net $(podman info --format '{{.Host.Slirp4NetNS.Executable}}{{.Host.Pasta.Executable}}' 2>/dev/null)"
 
 phase "1. server on podman"
@@ -205,8 +205,11 @@ H=$(curl -s -w ' %{http_code}' $B/ready | tr -d '
 info "ready under the floor: $H"
 case "$H" in *"free-disk floor"*" 503") pass "/ready reports 503 with the disk-floor reason" ;; *) fail "/ready below the floor: $H" ;; esac
 WIN=$(df -BM --output=avail /mnt/c | tail -1 | tr -dc 0-9)
+POOL=$(df -BM --output=avail "$WORK" | tail -1 | tr -dc 0-9)
+# The server reports the tightest checked path: the workdir pool when there is one, else the Windows drive.
+WANT=$(( POOL < WIN ? POOL : WIN ))
 HD=$(echo "${H% *}" | json "d.get('diskFreeMB')")
-[ -n "$HD" ] && [ $((HD - WIN)) -le 64 ] && [ $((WIN - HD)) -le 64 ] && pass "disk check reads the Windows drive (${HD}MB), not the sparse WSL disk" || fail "disk check reported ${HD}MB, Windows drive has ${WIN}MB"
+[ -n "$HD" ] && [ $((HD - WANT)) -le 64 ] && [ $((WANT - HD)) -le 64 ] && pass "disk check reports the tightest real limit (${HD}MB; pool ${POOL}MB, Windows ${WIN}MB), not the sparse WSL disk" || fail "disk check reported ${HD}MB, expected ~${WANT}MB (pool ${POOL}MB, Windows ${WIN}MB)"
 login "$JA" >/dev/null
 R=$(curl -s -w ' %{http_code}' -b "$JA" -X POST -H 'X-Jr: 1' -H 'Content-Type: application/json' -d "{\"repo\":\"$REPO_B\"}" $B/run | tr -d '
 ')

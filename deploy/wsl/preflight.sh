@@ -38,6 +38,11 @@ else
   no "$conf does not pin slirp4netns with allow_host_loopback=false"
 fi
 
+# Without the fixed-size pools one sandbox could fill the Windows drive the whole machine runs on.
+for pool in "$HOME/jrarch/work" "$HOME/.local/share/containers"; do
+  if findmnt -rn -M "$pool" >/dev/null 2>&1; then ok "$pool is a size-capped pool ($(df -h --output=size "$pool" | tail -1 | tr -d ' '))"; else no "$pool is not a size-capped mount (run storage-pools.sh)"; fi
+done
+
 sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
 [ -S "$sock" ] && ok "podman socket" || no "podman socket missing at $sock"
 
