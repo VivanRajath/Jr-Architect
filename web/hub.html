@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Hub - Jr Architect</title>
+  <link rel="stylesheet" href="/css/tokens.css" />
+  <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="/css/hub.css" />
+</head>
+
+<body class="h-page">
+  <header class="h-top">
+    <div class="h-brand">
+      <a href="/">&larr; Jr Architect</a>
+      <span class="h-title">Agent Hub</span>
+    </div>
+    <span class="h-spacer"></span>
+    <span class="h-motto">Your model. Your agents. Your tools. Your guardrails. Your repository.</span>
+    <button class="h-btn h-btn-ghost h-btn-sm" onclick="toggleTheme()" title="Toggle dark mode">Theme</button>
+  </header>
+
+  <main class="h-main">
+    <section class="h-intro">
+      <div>
+        <h1>Your agents</h1>
+        <p>Build agents in Agent Studio, test them here, and plug them into n8n workflows. Every agent is a
+          versioned git folder in gitagent layout, and every run goes through the Jr Architect runtime, which enforces
+          its tools, permissions and guardrails.</p>
+      </div>
+      <div class="h-row">
+        <button class="h-btn h-btn-ghost" onclick="openImport()">Import</button>
+        <button class="h-btn" onclick="openStudio()">+ New agent</button>
+      </div>
+    </section>
+    <div id="agent-list" class="h-cards" aria-live="polite"></div>
+  </main>
+
+  <aside id="drawer" class="h-drawer" aria-hidden="true">
+    <div class="h-drawer-head">
+      <div style="flex:1; min-width:0">
+        <h2 id="d-name"></h2>
+        <div class="h-row" id="d-badges"></div>
+      </div>
+      <button class="h-btn h-btn-ghost h-btn-sm" onclick="closeDrawer()" aria-label="Close">Close</button>
+    </div>
+    <div class="h-row" style="padding: 0 var(--sp-5) var(--sp-4)" id="d-actions"></div>
+    <nav class="h-tabs" id="d-tabs"></nav>
+    <div class="h-drawer-body" id="d-body"></div>
+  </aside>
+
+  <div id="modal-root"></div>
+
+  <script src="/js/hub-common.js"></script>
+  <script src="/js/hub.js"></script>
+</body>
+
+</html>

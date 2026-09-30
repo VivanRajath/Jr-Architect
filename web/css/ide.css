@@ -118,6 +118,7 @@ body.dark-mode .ide-topbar .mode-badge {
   padding: 5px 10px;
   cursor: pointer;
   font-family: var(--sans);
+  text-decoration: none;
   transition: .12s;
   display: inline-flex;
   align-items: center;

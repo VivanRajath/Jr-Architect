@@ -70,7 +70,7 @@ if (GROQ_KEYS.length > 1) console.error(`[agent] Groq key pool: ${GROQ_KEYS.leng
 // A model can intermittently emit a tool call Groq rejects; retrying on a fresh key
 // usually works. Only retried before any output escaped, so nothing is duplicated.
 export const AGENT_TOOLCALL_RETRIES = Number(process.env.AGENT_TOOLCALL_RETRIES) || 2;
-export const RETRIABLE_TURN_ERROR = /tool call validation|not in request\.tools|malformed|failed to call a function|failed_generation|adjust your prompt|could not parse|invalid (?:tool|function)|Connection error|rate limit|\b429\b|temporarily|ECONNRESET|fetch failed/i;
+export const RETRIABLE_TURN_ERROR = /tool call validation|tool choice is none|not in request\.tools|malformed|failed to call a function|failed_generation|adjust your prompt|could not parse|invalid (?:tool|function)|Connection error|rate limit|\b429\b|temporarily|ECONNRESET|fetch failed/i;
 
 let groqCursor = 0;
 // Land consecutive requests on different orgs' TPM buckets.

@@ -213,6 +213,11 @@ func RequireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, core.WithUser(r, core.InternalUser))
 			return
 		}
+		// Agent tokens authenticate these, and a bearer header is no CSRF risk, so they skip the session and X-Jr checks.
+		if isHookPath(r.URL.Path) {
+			next.ServeHTTP(w, core.WithUser(r, hookUser))
+			return
+		}
 		if !core.Cfg.AuthEnabled() {
 			next.ServeHTTP(w, core.WithUser(r, core.LocalUser))
 			return

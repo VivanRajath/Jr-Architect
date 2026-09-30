@@ -21,6 +21,7 @@ mkdir -p "$APP/agent-services" "$HOME_DIR/jrarch/work"
 install -m 755 "$BIN" "$APP/jr"
 rm -rf "$APP/sandbox-images" && cp -r "$SRC/sandbox-images" "$APP/"
 find "$SRC/agent-services" -maxdepth 1 -type f \( -name '*.js' -o -name '*.mjs' -o -name 'package*.json' \) -exec cp {} "$APP/agent-services/" \;
+rm -rf "$APP/agent-services/hub" && cp -r "$SRC/agent-services/hub" "$APP/agent-services/"
 cp "$SRC/deploy/wsl/wsclient.mjs" "$APP/agent-services/" 2>/dev/null || true
 # After hardening the service user cannot read /mnt/c, so its tooling lives beside the app.
 rm -rf "$APP/deploy" && mkdir -p "$APP/deploy" && cp "$SRC"/deploy/wsl/*.sh "$SRC"/deploy/wsl/*.mjs "$APP/deploy/"

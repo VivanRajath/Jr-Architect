@@ -18,6 +18,7 @@ import {
   KNOWLEDGE_SKILL, SLOT_LABEL,
 } from "./registry.js";
 import { knowledgeStatus, OVERVIEW_REL } from "./knowledge.js";
+import { createHubRouter } from "./hub/routes.js";
 import { reviewRange, writeAudit, AUDIT_DIR } from "./review.js";
 // The engine now lives in its own modules so it can run with no HTTP at all —
 // see review.js, which drives the identical guardrails over a pull request.
@@ -104,6 +105,8 @@ app.use((req, res, next) => {
   if (!r.ok) return res.status(429).json({ error: llmLimitMessage(r.minutes) });
   next();
 });
+
+app.use("/agent/hub", createHubRouter({ allowLLM }));
 
 // Someone else's container reads as unregistered, the same answer as one that does not exist.
 app.use((req, res, next) => {

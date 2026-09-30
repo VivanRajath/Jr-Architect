@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Studio - Jr Architect</title>
+  <link rel="stylesheet" href="/css/tokens.css" />
+  <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="/css/hub.css" />
+</head>
+
+<body class="h-page">
+  <header class="h-top">
+    <div class="h-brand">
+      <a href="/hub.html" target="jr-agent-hub">Agent Hub</a>
+      <span class="h-title" id="s-title">Agent Studio</span>
+    </div>
+    <span class="h-pill" id="s-version" hidden></span>
+    <span class="s-dirty" id="s-dirty" hidden>Unsaved changes</span>
+    <span class="h-spacer"></span>
+    <div class="h-row" id="s-save-bar" hidden>
+      <input class="h-input" id="s-message" placeholder="What changed? (saved as the version note)" style="width: 280px">
+      <button class="h-btn" id="s-save">Save</button>
+    </div>
+    <button class="h-btn h-btn-ghost h-btn-sm" onclick="toggleTheme()" title="Toggle dark mode">Theme</button>
+  </header>
+
+  <div id="view-start" class="s-start h-hidden">
+    <h1>How do you want to build your agent?</h1>
+    <p>Either way you end up with the same thing: a versioned agent definition you can inspect, test and run through the Jr Architect runtime.</p>
+    <div class="s-choices">
+      <button class="s-choice" onclick="startCustom()">
+        <h2>Custom Agent</h2>
+        <q>I know exactly what I want to build.</q>
+        <ul>
+          <li>Write the instructions and pick the model yourself</li>
+          <li>Choose tools, context, memory and guardrails</li>
+          <li>Set permissions, approval points and input/output formats</li>
+          <li>Jr Architect validates the result</li>
+        </ul>
+      </button>
+      <button class="s-choice" onclick="startBuilder()">
+        <h2>Agent Builder</h2>
+        <q>I know what I want my agent to do, but not how to design it.</q>
+        <ul>
+          <li>Describe the job in plain English</li>
+          <li>Get a suggested design, with the reason for each choice</li>
+          <li>Accept, change or skip every suggestion</li>
+          <li>Improve it later by saying things like "make it stricter"</li>
+        </ul>
+      </button>
+    </div>
+  </div>
+
+  <div id="view-builder" class="s-builder h-hidden"></div>
+
+  <div id="view-editor" class="s-editor h-hidden">
+    <nav class="s-nav" id="s-nav" aria-label="Sections"></nav>
+    <main class="s-form" id="s-form"></main>
+    <aside class="s-side">
+      <nav class="h-tabs" id="s-side-tabs"></nav>
+      <div class="s-side-body" id="s-side-body"></div>
+    </aside>
+  </div>
+
+  <script src="/js/hub-common.js"></script>
+  <script src="/js/studio.js"></script>
+</body>
+
+</html>
