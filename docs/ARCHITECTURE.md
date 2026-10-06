@@ -14,7 +14,6 @@
    - [Runtime Detector (`internal/detect/`)](#32-runtime-detector-internaldetect)
    - [GitAgent Generator (`internal/gitagent/generator.go`)](#33-gitagent-generator-internalgitagentgeneratorgo)
    - [Agent Service: Node.js (`agent-services/server.js`)](#34-agent-service-nodejs-agent-servicesserverjs)
-   - [Agent Service: Python (`agent/main.py`)](#35-agent-service-python-agentmainpy)
    - [Frontend (`web/`)](#36-frontend-web)
    - [AI Agent Chat Panel (`web/js/ide-agent.js`)](#37-ai-agent-chat-panel-webjside-agentjs)
    - [Docker Sandbox Images (`sandbox-images/`)](#38-docker-sandbox-images-sandbox-images)
@@ -63,8 +62,7 @@ User Browser
         ▼
 ┌────────────────────────────────────────────────┐
 │  Agent Service  (port 8001)                    │
-│  Option A: Node.js + gitclaw (WebSocket + REST)│
-│  Option B: Python FastAPI + multi-provider AI  │
+│  Node.js + Express (WebSocket + REST)          │
 └────────────────────────────────────────────────┘
 ```
 
@@ -162,13 +160,6 @@ The Orchestrator routes with free heuristics for the obvious cases (an edit verb
 │  POST /agent/chat     │               │    /workspace/skills/ui-editor/    │
 │  WS   /agent/ws       │               │         SKILL.md                  │
 │                       │               └────────────────────────────────────┘
-│  or               │
-│  Python FastAPI        │
-│  (agent/main.py)       │
-│  POST /agent/chat      │
-│  POST /agent/suggest   │
-│  GET  /agent/providers │
-│  GET  /agent/health    │
 └───────────────────────┘
 ```
 
@@ -326,25 +317,6 @@ The service also installs `unhandledRejection` / `uncaughtException` handlers so
 Both toolless modes are covered by `agent-services/server.test.js` (`node --test`). This is the same insight as Ask mode extended to writes: keep the model out of the function-calling path it's bad at.
 
 **Tool scope & error surfacing:** the agent is restricted to the core coding tools (`allowedTools: read, write, search_code, shell`, overridable via `AGENT_ALLOWED_TOOLS`). gitclaw's built-ins are replaced outright (`replaceBuiltinTools`): its `read`/`write` accept absolute host paths and its `cli` runs on the host, so `read`/`write` here are workspace-bound (symlinks that leave the workspace are refused) and `shell` replaces `cli` and runs `docker exec` inside the container via the Go host, with a timeout, an output cap and a real exit code. gitclaw otherwise injects extra built-ins (`capture_photo`, `task_tracker`, `skill_learner`) plus a system prompt that pushes the model through skill/task rituals, noise that bloats the request and derails smaller models (a small free-tier model loops on bookkeeping and never answers). gitclaw reports a failed model call as a `{type:"system", subtype:"error"}` message (and as an `assistant` message with `stopReason:"error"`); the server maps **both** to a client `error` frame, so a failed call shows the reason instead of the panel spinning forever. Chain-of-thought (`deltaType:"thinking"`) deltas are dropped, and only workspace-mutating tools (`write`/`edit`/`create`/`shell`) trigger a `file_changed`, and each one is written through the container before the frame is sent so the dev server actually recompiles.
-
----
-
-### 3.5 Agent Service: Python (`agent/main.py`)
-
-An alternative agent backend implemented as a **FastAPI** service. This is the legacy/fallback AI layer.
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/agent/chat` | POST | Chat with AI, optionally with project file tree + currently open file as context |
-| `/agent/suggest` | POST | Get AI suggestions for a specific file with an instruction |
-| `/agent/providers` | GET | List configured AI providers and the default |
-| `/agent/health` | GET | Health check with available providers |
-
-**Multi-provider support** (via `providers.py`): Reads API keys from `.env` in the project root. Falls back gracefully, whichever key is present becomes the default provider.
-
-**Context injection:** When `container` is provided in a chat request, the agent fetches the live file tree from the Go backend (`GET /files?container=...`) and injects it as structured context into the prompt.
-
-**File change extraction:** Parses AI responses for `File: path/to/file` + code block patterns and returns `file_changes[]` so the frontend can apply them.
 
 ---
 
@@ -719,16 +691,6 @@ All sandbox ports are bound to `0.0.0.0:<port>` on the host and mapped to the co
 | AI library | `gitclaw` (agentic execution loop) |
 | Default model | `anthropic:claude-sonnet-4-6` |
 
-### Agent Service (Python)
-
-| Item | Value |
-|---|---|
-| Runtime | Python 3.x |
-| Framework | FastAPI + uvicorn |
-| HTTP client | `httpx` (async) |
-| Config | `python-dotenv` (`.env` file) |
-| AI providers | Anthropic, OpenAI (multi-provider, key-based) |
-
 ### Frontend
 
 | Item | Value |
@@ -759,9 +721,6 @@ AGENT_MODEL_GROQ=groq:openai/gpt-oss-120b
 AGENT_MODEL_ANTHROPIC=anthropic:claude-sonnet-4-5
 AGENT_MODEL_OPENAI=openai:gpt-4.1
 AGENT_MODEL_GEMINI=google:gemini-2.0-flash
-
-# Go backend URL for Python agent (default: http://127.0.0.1:9000)
-GO_BACKEND_URL=http://127.0.0.1:9000
 
 # Agent service port (default: 8001)
 AGENT_PORT=8001
