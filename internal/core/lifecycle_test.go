@@ -15,7 +15,10 @@ func stubDocker(t *testing.T) *[]string {
 	docker = func(args ...string) (string, error) {
 		calls = append(calls, strings.Join(args, " "))
 		if args[0] == "ps" {
-			return "abc123\ndef456\n", nil
+			return "abc123 " + InstanceID() + "\ndef456 \nghi789 another-server\n", nil
+		}
+		if args[0] == "inspect" {
+			return `C:\Users\x\AppData\Local\Temp\builder-333` + "\n", nil
 		}
 		return "", nil
 	}
@@ -104,17 +107,19 @@ func TestRemoveWorkdirRefusesAnythingButAWorkspace(t *testing.T) {
 func TestReapOrphansAtStartup(t *testing.T) {
 	calls := stubDocker(t)
 	work := withWorkDir(t)
-	for _, d := range []string{"sandbox-111", "builder-222", "sandbox-notdigits", "jr-agent-homes"} {
+	for _, d := range []string{"sandbox-111", "builder-222", "builder-333", "sandbox-notdigits", "jr-agent-homes"} {
 		os.MkdirAll(filepath.Join(work, d), 0o755)
 	}
 	ReapOrphans()
-	for d, gone := range map[string]bool{"sandbox-111": true, "builder-222": true, "sandbox-notdigits": false, "jr-agent-homes": false} {
+	for d, gone := range map[string]bool{"sandbox-111": true, "builder-222": true, "builder-333": false, "sandbox-notdigits": false, "jr-agent-homes": false} {
 		_, err := os.Stat(filepath.Join(work, d))
 		if gone != os.IsNotExist(err) {
 			t.Errorf("%s: removed=%v, want %v", d, os.IsNotExist(err), gone)
 		}
 	}
-	want := []string{"ps -aq --filter label=jrarch.sandbox", "rm -f -v abc123", "rm -f -v def456"}
+	// Its own container and an unlabelled one from an older version go; another server's container and its workspace stay.
+	want := []string{`ps -a --filter label=jrarch.sandbox --format {{.ID}} {{.Label "jrarch.instance"}}`, "rm -f -v abc123", "rm -f -v def456",
+		`inspect --format {{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}} ghi789`}
 	if strings.Join(*calls, "|") != strings.Join(want, "|") {
 		t.Errorf("docker calls = %v, want %v", *calls, want)
 	}

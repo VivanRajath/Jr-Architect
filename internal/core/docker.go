@@ -76,6 +76,7 @@ func RunArgs(container, memory, cpus string, pids int, ports []PortMap, workdir 
 		"run", "-d",
 		"--name", container,
 		"--label", SandboxLabel + "=" + container,
+		"--label", InstanceLabel + "=" + InstanceID(),
 		"--memory", memory,
 		"--cpus", cpus,
 		"--pids-limit", strconv.Itoa(pids),

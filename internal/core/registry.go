@@ -18,8 +18,10 @@ const (
 type Sandbox struct {
 	Container string `json:"container"`
 	// The primary service's host port, so single-service callers are unaffected.
-	Port      int       `json:"port"`
-	Repo      string    `json:"repo"`
+	Port int    `json:"port"`
+	Repo string `json:"repo"`
+	// The saved project this sandbox was opened from, so saving again updates it in place.
+	Project   string    `json:"project,omitempty"`
 	Workdir   string    `json:"-"`
 	Framework string    `json:"framework,omitempty"`
 	Status    string    `json:"status,omitempty"`
@@ -115,12 +117,6 @@ func IsCapacityError(err error) bool {
 	return errors.Is(err, ErrAtCapacity) || errors.Is(err, ErrUserLimit) || errors.Is(err, ErrLowDisk)
 }
 
-func PutSandbox(sb Sandbox) {
-	mutex.Lock()
-	defer mutex.Unlock()
-	sandboxes[sb.Container] = sb
-}
-
 func GetSandbox(container string) (Sandbox, bool) {
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -169,4 +165,11 @@ func CleanupAll() {
 	for _, sb := range AllSandboxes() {
 		Reap(sb, "shutdown")
 	}
+}
+
+// Puts a sandbox straight into the registry; tests use it to set up a given state.
+func PutSandbox(sb Sandbox) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	sandboxes[sb.Container] = sb
 }

@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,6 +14,16 @@ import (
 
 // Every container we start carries this label, so a restart can find what it orphaned.
 const SandboxLabel = "jrarch.sandbox"
+
+// Which server started a container, so a second Jr Architect on the same machine never removes the first one's sandboxes.
+const InstanceLabel = "jrarch.instance"
+
+// Stable per data folder and port: a restart of the same server recognises its own containers.
+func InstanceID() string {
+	dir, _ := filepath.Abs(Cfg.DataDir)
+	sum := sha256.Sum256([]byte(dir + "|" + Cfg.ListenPort()))
+	return hex.EncodeToString(sum[:6])
+}
 
 const (
 	// A failed sandbox stays long enough for its owner to read why.
@@ -163,19 +175,31 @@ func anyLocalImage() string {
 	return ""
 }
 
-// At startup nothing is registered, so every labelled container and every workspace dir is an orphan.
+// At startup nothing is registered, so this server's containers (and unlabelled ones from older versions) are orphans; another server's are left alone, with their workspaces.
 func ReapOrphans() {
 	containers := 0
-	if out, err := docker("ps", "-aq", "--filter", "label="+SandboxLabel); err == nil {
-		for _, id := range strings.Fields(out) {
-			docker("rm", "-f", "-v", id)
+	inUse := map[string]bool{}
+	me := InstanceID()
+	if out, err := docker("ps", "-a", "--filter", "label="+SandboxLabel, "--format", `{{.ID}} {{.Label "`+InstanceLabel+`"}}`); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			f := strings.Fields(line)
+			if len(f) == 0 {
+				continue
+			}
+			if len(f) > 1 && f[1] != me {
+				if src, err := docker("inspect", "--format", `{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}`, f[0]); err == nil && strings.TrimSpace(src) != "" {
+					inUse[filepath.Base(filepath.FromSlash(strings.ReplaceAll(strings.TrimSpace(src), "\\", "/")))] = true
+				}
+				continue
+			}
+			docker("rm", "-f", "-v", f[0])
 			containers++
 		}
 	}
 	dirs := 0
 	entries, _ := os.ReadDir(Cfg.WorkDir)
 	for _, e := range entries {
-		if e.IsDir() && workspaceDirName.MatchString(e.Name()) {
+		if e.IsDir() && workspaceDirName.MatchString(e.Name()) && !inUse[e.Name()] {
 			RemoveWorkdir(filepath.Join(Cfg.WorkDir, e.Name()), "")
 			dirs++
 		}

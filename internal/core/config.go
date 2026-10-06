@@ -19,20 +19,32 @@ type Config struct {
 	PreviewDomain string // previews live at p-<token>.<PreviewDomain>; empty keeps 127.0.0.1:<port>
 	PreviewScheme string
 	WorkDir       string
+	DataDir       string // saved projects and API keys; outlives every sandbox
 	BetaCode      string
 	SessionSecret []byte
-	MaxSandboxes  int // 0 means no cap
-	MaxPerUser    int
-	IdleTTL       time.Duration
-	MaxTTL        time.Duration
-	SpawnAgent    bool
-	AgentPort     int
-	LLMPerHour    int    // agent and builder calls per user per hour; 0 means no cap
-	InternalToken string // lets the agent service call back into Go past the login gate
-	ContainerCLI  string // "docker" or "podman"; both take the same arguments here
-	PreheatImages []string
-	MinFreeDiskMB int64  // new sandboxes are refused below this; 0 means no check
-	PreviewMode   string // "" routes by PreviewDomain (or loopback); "quicktunnel" gives each preview a cloudflared host
+	// OAuth apps for sign-in; either one turns the login on, and GitHub's also links repos.
+	GoogleClientID     string
+	GoogleClientSecret string
+	GitHubClientID     string
+	GitHubClientSecret string
+	// Who may sign in with OAuth: emails, "@domain" or "gh:login"; empty lets anyone in.
+	OAuthAllow []string
+	// A GitHub account this server controls, invited to every repo it publishes; empty invites no one.
+	GitHubCollaborator string
+	// That account's own token, used only to accept invitations to repos this server published.
+	GitHubCollaboratorToken string
+	MaxSandboxes            int // 0 means no cap
+	MaxPerUser              int
+	IdleTTL                 time.Duration
+	MaxTTL                  time.Duration
+	SpawnAgent              bool
+	AgentPort               int
+	LLMPerHour              int    // agent and builder calls per user per hour; 0 means no cap
+	InternalToken           string // lets the agent service call back into Go past the login gate
+	ContainerCLI            string // "docker" or "podman"; both take the same arguments here
+	PreheatImages           []string
+	MinFreeDiskMB           int64  // new sandboxes are refused below this; 0 means no check
+	PreviewMode             string // "" routes by PreviewDomain (or loopback); "quicktunnel" gives each preview a cloudflared host
 	// Under WSL the workdir's filesystem is a sparse ~1TB disk, so the Windows drive has to be checked too.
 	DiskCheckPaths []string
 	Cloudflared    string
@@ -47,6 +59,7 @@ func DefaultConfig() Config {
 		ListenAddr:    "127.0.0.1:9000",
 		PreviewScheme: "http",
 		WorkDir:       os.TempDir(),
+		DataDir:       defaultDataDir(),
 		MaxSandboxes:  6,
 		IdleTTL:       15 * time.Minute,
 		MaxTTL:        45 * time.Minute,
@@ -58,7 +71,9 @@ func DefaultConfig() Config {
 }
 
 func (c Config) Public() bool      { return c.PublicOrigin != "" }
-func (c Config) AuthEnabled() bool { return c.BetaCode != "" }
+func (c Config) AuthEnabled() bool { return c.BetaCode != "" || c.GoogleOAuth() || c.GitHubOAuth() }
+func (c Config) GoogleOAuth() bool { return c.GoogleClientID != "" && c.GoogleClientSecret != "" }
+func (c Config) GitHubOAuth() bool { return c.GitHubClientID != "" && c.GitHubClientSecret != "" }
 
 // The port the agent service calls back on.
 func (c Config) ListenPort() string {
@@ -75,8 +90,20 @@ func LoadConfig() (Config, error) {
 	c.PublicOrigin = strings.TrimSuffix(envStr("JR_PUBLIC_ORIGIN", ""), "/")
 	c.PreviewDomain = strings.ToLower(strings.Trim(envStr("JR_PREVIEW_DOMAIN", ""), "."))
 	c.WorkDir = envStr("JR_WORK_DIR", c.WorkDir)
+	c.DataDir = envStr("JR_DATA_DIR", c.DataDir)
 	c.BetaCode = envStr("JR_BETA_CODE", "")
 	c.SessionSecret = []byte(envStr("JR_SESSION_SECRET", ""))
+	c.GoogleClientID = envStr("JR_GOOGLE_CLIENT_ID", "")
+	c.GoogleClientSecret = envStr("JR_GOOGLE_CLIENT_SECRET", "")
+	c.GitHubClientID = envStr("JR_GITHUB_CLIENT_ID", "")
+	c.GitHubClientSecret = envStr("JR_GITHUB_CLIENT_SECRET", "")
+	c.GitHubCollaborator = strings.TrimPrefix(envStr("JR_GITHUB_COLLABORATOR", ""), "@")
+	c.GitHubCollaboratorToken = envStr("JR_GITHUB_COLLABORATOR_TOKEN", "")
+	for _, a := range strings.Split(envStr("JR_OAUTH_ALLOW", ""), ",") {
+		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
+			c.OAuthAllow = append(c.OAuthAllow, a)
+		}
+	}
 	c.InternalToken = envStr("JR_INTERNAL_TOKEN", "")
 	c.ContainerCLI = envStr("JR_CONTAINER_CLI", c.ContainerCLI)
 	c.PreviewMode = strings.ToLower(envStr("JR_PREVIEW_MODE", ""))
@@ -100,8 +127,12 @@ func LoadConfig() (Config, error) {
 		c.MinFreeDiskMB = 5120
 		c.MaxSandboxDiskMB = 3072
 	}
-	if c.AuthEnabled() {
+	if c.BetaCode != "" || (c.Public() && c.AuthEnabled()) {
 		c.MaxPerUser = 1
+	}
+	// A local server signing in with OAuth keeps one generated secret, so sessions survive restarts.
+	if len(c.SessionSecret) == 0 && c.AuthEnabled() && !c.Public() {
+		c.SessionSecret = []byte(localSecret(c.DataDir))
 	}
 	c.PreviewScheme = envStr("JR_PREVIEW_SCHEME", c.PreviewScheme)
 	if c.PreviewMode == "quicktunnel" {
@@ -164,7 +195,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("JR_INTERNAL_TOKEN must be at least 32 characters when the agent runs as its own service")
 	}
 	if c.AuthEnabled() && len(c.SessionSecret) < 32 {
-		return fmt.Errorf("JR_SESSION_SECRET must be at least 32 characters when JR_BETA_CODE is set")
+		return fmt.Errorf("JR_SESSION_SECRET must be at least 32 characters when a login (JR_BETA_CODE or an OAuth app) is set")
 	}
 	if c.PreviewMode != "" && c.PreviewMode != "quicktunnel" {
 		return fmt.Errorf("JR_PREVIEW_MODE must be empty or quicktunnel, got %q", c.PreviewMode)
@@ -184,12 +215,25 @@ func (c Config) Validate() error {
 		return fmt.Errorf("JR_PUBLIC_ORIGIN must be an http(s) origin, got %q", c.PublicOrigin)
 	}
 	if !c.AuthEnabled() {
-		return fmt.Errorf("JR_PUBLIC_ORIGIN is set but JR_BETA_CODE is not: a public server needs a login")
+		return fmt.Errorf("JR_PUBLIC_ORIGIN is set but no login is: set JR_BETA_CODE or a Google/GitHub OAuth app")
 	}
 	if c.PreviewDomain == "" && c.PreviewMode != "quicktunnel" {
 		return fmt.Errorf("JR_PUBLIC_ORIGIN is set but neither JR_PREVIEW_DOMAIN nor JR_PREVIEW_MODE=quicktunnel is: previews would point at 127.0.0.1")
 	}
 	return nil
+}
+
+// Reads or creates DataDir/session.key; a failure falls back to a per-run secret.
+func localSecret(dataDir string) string {
+	path := filepath.Join(dataDir, "session.key")
+	if b, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(b))) >= 32 {
+		return strings.TrimSpace(string(b))
+	}
+	secret := randomHex(32)
+	if os.MkdirAll(dataDir, 0700) == nil {
+		os.WriteFile(path, []byte(secret), 0600)
+	}
+	return secret
 }
 
 func randomHex(n int) string {
@@ -203,4 +247,12 @@ func envStr(name, def string) string {
 		return v
 	}
 	return def
+}
+
+// Shares ~/.jr-architect with the agent hub so one folder holds everything a user keeps.
+func defaultDataDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".jr-architect")
+	}
+	return filepath.Join(os.TempDir(), "jr-architect")
 }
