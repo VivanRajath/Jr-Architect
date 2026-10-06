@@ -105,7 +105,7 @@ test("the code floor denies a secret and a protected path with no provider at al
   const { blocked } = guardEditBlocks([
     { path: "src/ok.js", content: "export const a = 1;\n" },
     { path: ".env", content: "X=1\n" },
-    { path: "src/leak.js", content: "const k = 'gsk_abcdefghijklmnopqrstuvwxyz012345';\n" },
+    { path: "src/leak.js", content: "const k = 'AKIAIOSFODNN7EXAMPLE';\n" },
   ]);
   assert.deepEqual(blocked.map((b) => b.path).sort(), [".env", "src/leak.js"]);
 });
