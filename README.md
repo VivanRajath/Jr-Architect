@@ -28,6 +28,10 @@ Prompt-to-app builders are good at producing a first version. The moment a devel
 - **AI coding agent.** Three modes: **Ask** (grounded answers about the repo), **Edit** (a layered pipeline that applies changes directly and shows them as clickable before/after diffs with an explicit Apply control), and **Agent** (a tool-driven loop for stronger models).
 - **A self-diagnosing IDE.** When the app is slow to boot or the logs show an error, a built-in build doctor reads the container logs, tells a genuine failure from noise, and proposes a single safe fix, applied in one click. The IDE troubleshoots itself.
 - **GitAgent standard, end to end.** Every repository becomes its own versioned agent: identity, rules, memory, and a full `skills` / `tools` / `hooks` / `workflows` / `compliance` tree scaffolded at clone time. The built-in developer personas are editable skill files, and community agents from the GitAgent registry plug straight into the edit pipeline. See [GitAgent integration](#gitagent-integration).
+- **Sign in with Google or GitHub.** OAuth login, with accounts joined by verified email. Signing in with GitHub connects the user's repositories; a Google user connects GitHub from Settings or the IDE (OAuth or a personal access token).
+- **GitHub sync.** Pick any of your repos (private included) and the whole repository is cloned into a sandbox. The IDE's Source Control view shows changes from you and the coding agent, and can pull, commit and push, push to a new branch with a pull request, or publish a project as a new repo. Finished Build-mode apps are pushed to the user's GitHub automatically (private by default, switchable in Settings) with a README written from the app's spec and blank `.env.example` copies of secret files. Git runs inside the sandbox, the token is passed only through the environment and stored encrypted, and it never reaches the browser.
+- **OpenGAP agent team in the IDE.** The Agents panel manages the repo's `.gitagent/` team in the OpenGAP / GitAgent layout: agents as folders (`SOUL.md` front matter for role, priority, owned files, escalation; `RULES.md`), guardrails in `hooks/*.yaml` (four sealed in code), `DUTIES.md` and routing in `agent.yaml`. Tasks are routed by `@name`, owned files or a classifier with a confidence floor; each agent gets its attempts, then hands off with a compiled brief from the Context Orchestration Engine's ledger (claims vs verified facts, append-only failures), and a terminal agent stops and asks you. A live Workflow graph, a Runs history, smoke tests, `/check`, and installing agents or guards from Git or the GitAgent registry are built in. Engine modules are vendored from [jr-arch](https://github.com/VivanRajath/jr-arch) (MIT).
+- **Git Graph.** Every branch's history as lanes in the IDE, with refs, commit details and per-file diffs; shallow clones can load their full history.
 - **Build Mode (experimental).** Scaffold a small, fully local app from a plain-language description and run it immediately in the same IDE.
 
 ## How it works
@@ -128,11 +132,14 @@ A short tour of the harder problems this project solves, and how.
 
 ## Modes
 
-Jr Architect has three entry points, chosen on the landing screen.
+Jr Architect has four entry points, chosen on the home screen.
 
-- **Prompt Mode.** Paste a URL and get the app running fast, with no IDE. For when you only want to see a repository run.
-- **Dev Mode.** The full cloud IDE described above: editor, terminal, live preview, and the agent.
-- **Build Mode (experimental).** Scaffolds a small, fully local app from a plain-language description. This is an experiment for exercising the generate-then-edit loop end to end, guarded against third-party integrations, not a general-purpose app builder.
+- **Run a repo.** Paste a URL and get the app running fast, with no IDE. For when you only want to see a repository run.
+- **Open in IDE.** The full cloud IDE described above: editor, terminal, live preview, and the agent. Open a saved project, clone from GitHub, or upload a local folder.
+- **Build an app (experimental).** Describe an app in plain language. Build mode asks two or three questions about that idea (and which tech stack, unless the prompt names one), writes a spec that says which AI agents and workflows the app needs, creates them in Agent Hub with a webhook token each, and generates the app. Stacks: Next.js, React + Vite, Express, Bun, Deno, Django, FastAPI, Flask, Go, Rust, Java (Spring Boot), .NET, PHP, Ruby (Sinatra) and static HTML. Each stack starts from a small working server in `builder-template/` that serves the UI and exposes `/api/workflows/<name>`, reading tokens from `jr-workflows.json` (Next.js uses `.env.local`) so they never reach the browser; the model writes only the UI, from a shared design system: shadcn/ui components and theme tokens for Next.js and React + Vite, and a shadcn-style CSS kit (`builder-template/_kit`) for the plain-HTML stacks, with light and dark modes, an accent picked from the spec's style note, and responsive layouts. Generated code is checked for syntax slips, broken imports and components used without an import, and sent back to the model for repair before the app starts. Apps run through the same scan-and-launch pipeline as a cloned repo, so the agents, the workflows and the app are then edited in Agent Hub, the workflow editor and the IDE.
+- **Agent Hub.** Build agents, chain them into workflows, and call them from n8n or any app over a webhook.
+
+Generated apps reach their workflows at `host.docker.internal` (Docker Desktop and Podman) or `JR_PUBLIC_ORIGIN` on a public server. On native Linux Docker the server must listen on an address the container can reach, not only 127.0.0.1.
 
 ## Getting started
 
@@ -158,7 +165,7 @@ Run `go run .`, not `go run main.go`. Naming one file compiles it in isolation a
 
 ## Configuration
 
-The agent auto-selects the first provider that has a key, preferring Groq, so a Groq-only setup needs no extra configuration.
+The agent auto-selects the first provider that has a key, preferring Groq, so a Groq-only setup needs no extra configuration. Keys can also be pasted in **Settings** (`/settings.html`): the provider is detected from the key prefix, checked once, and stored in `keys.json` under the data directory. A key set in `.env` always wins and cannot be changed from Settings.
 
 | Variable | Purpose |
 | :--- | :--- |
@@ -167,13 +174,20 @@ The agent auto-selects the first provider that has a key, preferring Groq, so a 
 | `AGENT_MAX_OUTPUT_TOKENS` | Caps reserved output so a turn stays under the Groq free-tier limit (default 3000). |
 | `AGENT_EDIT_STRATEGY` | Set to `agentic` to route edits through the tool-driven Agent loop instead of the default Edit engine. |
 | `AGENT_MODEL_GROQ` / `_ANTHROPIC` / `_OPENAI` / `_GEMINI` | Override the model used per provider. |
+| `JR_DATA_DIR` | Where saved projects and Settings keys live (default `~/.jr-architect`). |
+| `JR_GOOGLE_CLIENT_ID` / `JR_GOOGLE_CLIENT_SECRET` | Google sign-in. Callback: `<origin>/auth/oauth/google/callback`. |
+| `JR_GITHUB_CLIENT_ID` / `JR_GITHUB_CLIENT_SECRET` | GitHub sign-in and repo access (scopes `repo read:user user:email`). Callback: `<origin>/auth/oauth/github/callback`. |
+| `JR_GITHUB_COLLABORATOR` | A GitHub account you own, invited with push access to repos Jr Architect publishes (each user can turn it off). |
+| `JR_GITHUB_COLLABORATOR_TOKEN` | That account's token (scope `repo`); it accepts invitations to repos this server published, right away and every 5 minutes. |
+| `JR_OAUTH_ALLOW` | Optional allow-list for OAuth sign-in: emails, `@domain`s or `gh:<login>`. |
+| `JR_KEYS_EDITABLE` | Set to `true` to allow editing keys from Settings on a public server (it is always allowed locally). |
 
 ### The front end lives in `web/`
 
 ```
 web/index.html      markup and load order only
-web/css/            tokens.css (the only file that defines a token), then app, ide, ide-agent
-web/js/             app.js, ide.js, ide-agent.js
+web/css/            tokens.css (the only file that defines a token), shell.css (rail, key widget), then app, ide, ide-agent, hub
+web/js/             shell.js (rail, theme, key widget), app.js, ide.js, ide-agent.js, hub/studio/flows/settings
 web/vendor/         Monaco, xterm, and the webfonts — no CDN, works offline
 ```
 
