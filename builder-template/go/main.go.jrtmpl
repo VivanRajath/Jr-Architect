@@ -1,0 +1,88 @@
+// Serves the UI from public/ and runs Agent Hub workflows for it; the tokens in jr-workflows.json never reach the browser.
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+)
+
+type workflow struct {
+	ID    string `json:"id"`
+	Token string `json:"token"`
+}
+
+type config struct {
+	Base      string              `json:"base"`
+	Workflows map[string]workflow `json:"workflows"`
+}
+
+func loadConfig() config {
+	var cfg config
+	if data, err := os.ReadFile("jr-workflows.json"); err == nil {
+		json.Unmarshal(data, &cfg)
+	}
+	return cfg
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func runWorkflow(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]string{"status": "failed", "error": "POST only"})
+		return
+	}
+	cfg := loadConfig()
+	key := strings.TrimPrefix(r.URL.Path, "/api/workflows/")
+	flow, ok := cfg.Workflows[key]
+	if !ok {
+		log.Printf("[workflow] %s: unknown workflow (check jr-workflows.json)", key)
+		writeJSON(w, 404, map[string]string{"status": "failed", "error": "Unknown workflow"})
+		return
+	}
+	var input any = map[string]any{}
+	json.NewDecoder(io.LimitReader(r.Body, 256<<10)).Decode(&input)
+	body, _ := json.Marshal(map[string]any{"input": input})
+	req, _ := http.NewRequest("POST", cfg.Base+"/hooks/workflows/"+flow.ID+"/run", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+flow.Token)
+	started := time.Now()
+	res, err := (&http.Client{Timeout: 3 * time.Minute}).Do(req)
+	if err != nil {
+		log.Printf("[workflow] %s: could not reach %s (%v)", key, cfg.Base, err)
+		writeJSON(w, 502, map[string]string{"status": "failed", "error": "Could not reach Jr Architect at " + cfg.Base})
+		return
+	}
+	defer res.Body.Close()
+	var run struct {
+		Status string `json:"status"`
+		Output any    `json:"output"`
+		Error  string `json:"error"`
+	}
+	json.NewDecoder(res.Body).Decode(&run)
+	if run.Status == "" {
+		run.Status = "failed"
+	}
+	log.Printf("[workflow] %s -> %s in %s %s", key, run.Status, time.Since(started).Round(time.Millisecond), run.Error)
+	code := res.StatusCode
+	if code < 300 {
+		code = 200
+	}
+	writeJSON(w, code, run)
+}
+
+func main() {
+	http.HandleFunc("/api/workflows/", runWorkflow)
+	http.Handle("/", http.FileServer(http.Dir("public")))
+	log.Println("App running on port 8080")
+	log.Fatal(http.ListenAndServe("0.0.0.0:8080", nil))
+}
