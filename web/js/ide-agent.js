@@ -40,11 +40,21 @@ function ensureAgentSocket() {
   });
 }
 
+// The send button doubles as Stop while the agent works.
+function agentSendOrStop() {
+  if (agentTurn) { if (typeof stopAgent === 'function') stopAgent(); return; }
+  sendAgentMessage();
+}
+
 async function sendAgentMessage() {
   const input = document.getElementById('agent-input');
-  const msg = input.value.trim();
+  let msg = input.value.trim();
   if (!msg) return;
   if (agentTurn) return; // a turn is already streaming
+  // "/plan …", "/fast …" and "/ask …" pick the mode for this message only.
+  const slash = typeof parseSlash === 'function' ? parseSlash(msg) : { mode: null, text: msg };
+  if (slash.mode && !slash.text.trim()) { showToast('Add what you want after ' + msg.split(' ')[0], 'error'); return; }
+  msg = slash.text.trim() || msg;
   input.value = '';
   autoGrowAgentInput(input); // collapse the composer back to one line
 
@@ -67,7 +77,8 @@ async function sendAgentMessage() {
 
   const provider = document.getElementById('agent-provider').value;
   const modeEl = document.getElementById('agent-mode');
-  const mode = modeEl ? modeEl.value : 'auto';
+  const mode = slash.mode || (modeEl ? modeEl.value : 'auto');
+  if (mode === 'plan') loadEl.textContent = 'Researching and planning';
 
   agentTurn = {
     messagesEl: messages,
@@ -86,10 +97,10 @@ async function sendAgentMessage() {
       sock.send(JSON.stringify({ type: 'bind', container: IDE.container }));
       AgentWS.bound = IDE.container;
     }
-    sock.send(JSON.stringify({ type: 'chat', container: IDE.container, message: msg, provider, mode }));
+    sock.send(JSON.stringify({ type: 'chat', container: IDE.container, message: msg, provider, mode, policy: typeof AgentPolicy !== 'undefined' ? AgentPolicy.get() : undefined }));
   } catch (e) {
     // Streaming transport unavailable — fall back to the single-shot REST path.
-    await sendAgentViaRest(msg, provider, messages, mode);
+    await sendAgentViaRest(msg, provider, messages, mode === 'plan' || mode === 'fast' ? 'edit' : mode);
   }
 }
 
@@ -97,6 +108,10 @@ function handleAgentWsMessage(ev) {
   let msg;
   try { msg = JSON.parse(ev.data); } catch { return; }
   const t = agentTurn;
+  if (typeof planHandle === 'function' && /^(artifact|artifact_update|awaiting_review|command_request|command_result)$/.test(msg.type)) {
+    planHandle(msg);
+    return;
+  }
 
   switch (msg.type) {
     case 'ready':
@@ -134,6 +149,10 @@ function handleAgentWsMessage(ev) {
 
     case 'file_changed':
       if (t) t.sawFileChange = true;
+      break;
+
+    case 'og':
+      if (typeof ogHandleEvent === 'function' && msg.event) ogHandleEvent(msg.event);
       break;
 
     case 'edit_summary': {
@@ -433,7 +452,12 @@ function setAgentBusy(busy) {
   const input = document.getElementById('agent-input');
   const btn = document.querySelector('.agent-send-btn');
   if (input) input.disabled = busy;
-  if (btn) { btn.disabled = busy; btn.style.opacity = busy ? '0.6' : ''; }
+  if (btn) {
+    btn.classList.toggle('stop', busy);
+    btn.title = busy ? 'Stop after the current step' : 'Send';
+    const label = btn.querySelector('.agent-send-label');
+    if (label) label.textContent = busy ? 'Stop' : 'Send';
+  }
   if (!busy && input) input.focus();
 }
 
@@ -710,7 +734,8 @@ function gaResetForContainer() {
   GitAgent.draft = null;
   GitAgent.detail = null;
   GitAgent.steps = [];
-  GitAgent.tab = 'agent';
+  GitAgent.tab = 'team';
+  if (typeof OG !== 'undefined') Object.assign(OG, { status: null, runs: [], editing: null, smoke: {}, live: null, openRun: null, guardForm: false, fileEdit: null });
 }
 
 // `tab` is optional — the AI-panel header button opens straight to the registry, while the activity bar opens the repo's own agent.
@@ -738,6 +763,7 @@ function closeGitAgentPanel() {
 
 function gaSwitchTab(tab) {
   GitAgent.tab = tab;
+  if (typeof OG !== 'undefined') { OG.editing = null; OG.fileEdit = null; if (tab === 'runs' || tab === 'workflow') ogLoadRuns(true).then(() => gaRender()); }
   GitAgent.editor = null;   // leaving a tab abandons an open file editor
   GitAgent.draft = null;
   gaRender();
@@ -745,7 +771,7 @@ function gaSwitchTab(tab) {
 }
 
 async function gaRefresh() {
-  await Promise.all([gaLoadStatus(), GitAgent.tab === 'registry' ? gaLoadRegistry() : null]);
+  await Promise.all([gaLoadStatus(), GitAgent.tab === 'registry' ? gaLoadRegistry() : null, typeof ogLoad === 'function' ? ogLoad() : null]);
 }
 
 async function gaLoadStatus() {
@@ -782,11 +808,19 @@ function gaRender() {
   });
   // A file editor takes over the panel body so the textarea keeps focus and caret position — re-rendering the whole tab on every keystroke would not.
   if (GitAgent.editor) { body.innerHTML = gaEditorHTML(); gaFocusEditor(); return; }
+  // The OpenGAP tabs (Team, Workflow, Guardrails, Runs) render from ide-agents.js.
+  if (typeof OG_TABS !== 'undefined' && OG_TABS.includes(GitAgent.tab)) {
+    body.innerHTML = ogTabHTML(GitAgent.tab);
+    gaRenderSteps();
+    ogAfterRender(GitAgent.tab);
+    return;
+  }
   if (GitAgent.tab === 'agent') body.innerHTML = gaAgentTabHTML();
   else if (GitAgent.tab === 'skills') body.innerHTML = gaSkillsTabHTML();
   else body.innerHTML = gaRegistryTabHTML();
   gaBindTabInputs();
   gaRenderSteps();
+  if (typeof ogAfterRender === 'function') ogAfterRender(GitAgent.tab);
 }
 
 // Re-attach the handlers for inputs that must not trigger a re-render on every keystroke (search box, new-skill draft).

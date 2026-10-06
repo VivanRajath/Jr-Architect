@@ -11,7 +11,7 @@ const IDE = {
   terminals: [],
   activeTerminalId: null,
   terminalCounter: 0,
-  darkMode: false,
+  darkMode: true,
   // Build doctor (auto issue diagnosis)
   launchedAt: 0, doctorRan: false, doctorRunning: false,
 };
@@ -28,16 +28,16 @@ function initIDE(containerId, repoUrl, port) {
   document.body.classList.add('ide-mode');
   document.getElementById('landing-page').style.display = 'none';
   document.getElementById('ide-page').style.display = 'flex';
-  document.querySelector('.repo-name').textContent = repoUrl.replace(/https?:\/\/github\.com\//, '');
+  document.querySelector('.repo-name').textContent = repoUrl.replace(/https?:\/\/github\.com\//, '').replace(/^(project|local|generated):/, '');
+  setProjectSaved(repoUrl.startsWith('project:'));
   loadFileTree();
   initMonaco();
   initTerminal();
   startLogsPolling();
   startStatusPolling();
-  // Restore dark mode preference
-  if (localStorage.getItem('jr-dark-mode') === 'true') {
-    setDarkMode(true);
-  }
+  setDarkMode(document.body.classList.contains('dark-mode'));
+  if (window.jrKeyBanner) jrKeyBanner(document.getElementById('agent-keybanner'));
+  if (typeof scmInit === 'function') scmInit();
 }
 
 // File Tree The workspace is populated asynchronously (clone/scaffold), so early calls can come back empty.
@@ -368,53 +368,22 @@ function askAIAbout(path) {
 function getTerminalTheme() {
   if (IDE.darkMode) {
     return {
-      background: '#1a1410',
-      foreground: '#D7CCC8',
-      cursor: '#A67C52',
-      cursorAccent: '#1a1410',
-      selectionBackground: '#3E2C1E80',
-      black: '#1a1410',
-      red: '#CF6679',
-      green: '#81C784',
-      yellow: '#FFD54F',
-      blue: '#64B5F6',
-      magenta: '#CE93D8',
-      cyan: '#4DD0E1',
-      white: '#D7CCC8',
-      brightBlack: '#5D4037',
-      brightRed: '#EF5350',
-      brightGreen: '#A5D6A7',
-      brightYellow: '#FFE082',
-      brightBlue: '#90CAF9',
-      brightMagenta: '#E1BEE7',
-      brightCyan: '#80DEEA',
-      brightWhite: '#EFEBE9',
-    };
-  } else {
-    return {
-      background: '#FAF8F5',
-      foreground: '#2C1810',
-      cursor: '#6B3E1A',
-      cursorAccent: '#FAF8F5',
-      selectionBackground: '#DEDAD180',
-      black: '#2C1810',
-      red: '#A4161A',
-      green: '#2D6A4F',
-      yellow: '#B07D05',
-      blue: '#1565C0',
-      magenta: '#7B1FA2',
-      cyan: '#00838F',
-      white: '#F5F2EE',
-      brightBlack: '#5D4037',
-      brightRed: '#C62828',
-      brightGreen: '#388E3C',
-      brightYellow: '#F9A825',
-      brightBlue: '#1E88E5',
-      brightMagenta: '#8E24AA',
-      brightCyan: '#00ACC1',
-      brightWhite: '#FFFFFF',
+      background: '#09090B', foreground: '#E4E4E7', cursor: '#FAFAFA', cursorAccent: '#09090B',
+      selectionBackground: '#3F3F4680',
+      black: '#18181B', red: '#F87171', green: '#4ADE80', yellow: '#FACC15', blue: '#60A5FA',
+      magenta: '#C084FC', cyan: '#22D3EE', white: '#D5DAE2',
+      brightBlack: '#71717A', brightRed: '#FCA5A5', brightGreen: '#86EFAC', brightYellow: '#FDE047',
+      brightBlue: '#93C5FD', brightMagenta: '#D8B4FE', brightCyan: '#67E8F9', brightWhite: '#FFFFFF',
     };
   }
+  return {
+    background: '#FFFFFF', foreground: '#09090B', cursor: '#18181B', cursorAccent: '#FFFFFF',
+    selectionBackground: '#E4E4E7',
+    black: '#09090B', red: '#B91C1C', green: '#15803D', yellow: '#8A6100', blue: '#1D4ED8',
+    magenta: '#7E22CE', cyan: '#0E7490', white: '#F4F4F5',
+    brightBlack: '#71717A', brightRed: '#DC2626', brightGreen: '#16A34A', brightYellow: '#A16207',
+    brightBlue: '#2563EB', brightMagenta: '#9333EA', brightCyan: '#0891B2', brightWhite: '#FFFFFF',
+  };
 }
 
 function initMonaco() {
@@ -426,23 +395,27 @@ function initMonaco() {
       rules: [],
       colors: {
         'editor.background': '#FFFFFF',
-        'editor.foreground': '#2C1810',
-        'editorLineNumber.foreground': '#8D6E63',
-        'editorCursor.foreground': '#6B3E1A',
-        'editor.selectionBackground': '#DEDAD180',
-        'editor.lineHighlightBackground': '#F5F2EE',
+        'editor.foreground': '#09090B',
+        'editorLineNumber.foreground': '#A1A1AA',
+        'editorLineNumber.activeForeground': '#09090B',
+        'editorCursor.foreground': '#18181B',
+        'editor.selectionBackground': '#E4E4E7',
+        'editor.lineHighlightBackground': '#FAFAFA',
       }
     });
     monaco.editor.defineTheme('jr-architect-dark', {
       base: 'vs-dark', inherit: true,
       rules: [],
       colors: {
-        'editor.background': '#1a1410',
-        'editor.foreground': '#D7CCC8',
-        'editorLineNumber.foreground': '#8D6E63',
-        'editorCursor.foreground': '#A67C52',
-        'editor.selectionBackground': '#3E2C1E80',
-        'editor.lineHighlightBackground': '#231C16',
+        'editor.background': '#09090B',
+        'editor.foreground': '#E4E4E7',
+        'editorLineNumber.foreground': '#52525B',
+        'editorLineNumber.activeForeground': '#FAFAFA',
+        'editorCursor.foreground': '#FAFAFA',
+        'editor.selectionBackground': '#3F3F4680',
+        'editor.lineHighlightBackground': '#18181B',
+        'editorWidget.background': '#18181B',
+        'minimap.background': '#09090B',
       }
     });
     IDE.editor = monaco.editor.create(document.getElementById('monaco-container'), {
@@ -1129,32 +1102,21 @@ function toggleAgentPanel() {
   }
 }
 
+// shell.js owns the body class and the stored choice; this keeps Monaco and the terminals in step.
 function setDarkMode(enabled) {
   IDE.darkMode = enabled;
-  document.body.classList.toggle('dark-mode', enabled);
-  localStorage.setItem('jr-dark-mode', enabled);
-
-  // Update dark mode button icon
-  const btn = document.getElementById('dark-mode-btn');
-  if (btn) {
-    btn.innerHTML = enabled
-      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg> Light'
-      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> Dark';
+  if (document.body.classList.contains('dark-mode') !== enabled && window.jrSetTheme) {
+    window.jrSetTheme(enabled);
+    return;
   }
-
-  // Update Monaco theme
   if (IDE.editor && typeof monaco !== 'undefined') {
     monaco.editor.setTheme(enabled ? 'jr-architect-dark' : 'jr-architect-light');
   }
-
-  // Update all terminal themes
   const termTheme = getTerminalTheme();
-  IDE.terminals.forEach(t => {
-    if (t.term) {
-      t.term.options.theme = termTheme;
-    }
-  });
+  IDE.terminals.forEach(t => { if (t.term) t.term.options.theme = termTheme; });
 }
+
+window.addEventListener('jr-theme', (e) => setDarkMode(e.detail.dark));
 
 // ── Toast ──
 function showToast(msg, type) {
@@ -1163,6 +1125,32 @@ function showToast(msg, type) {
   el.className = 'ide-toast show ' + type;
   clearTimeout(el._t);
   el._t = setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// ── Saved projects ──
+function setProjectSaved(saved) {
+  IDE.projectSaved = saved;
+  document.getElementById('project-chip').hidden = !saved;
+  document.querySelector('#save-project-btn span').textContent = saved ? 'Save changes' : 'Save project';
+}
+
+// Copies the sandbox's files into the user's saved projects; saving again updates the same project.
+async function saveProject() {
+  const btn = document.getElementById('save-project-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/projects/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ container: IDE.container }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'save failed');
+    setProjectSaved(true);
+    showToast(`Saved "${data.name}" (${data.files} files). Open it any time from Home.`, 'success');
+  } catch (e) {
+    showToast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ── Back to Landing ──
@@ -1182,6 +1170,7 @@ function backToLanding() {
   IDE.terminals = [];
   IDE.activeTerminalId = null;
   closePreview();
+  if (typeof loadProjects === 'function') loadProjects();
 }
 
 // ── Panel Resize ──
@@ -1204,10 +1193,6 @@ function initPanelResize() {
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
   initPanelResize();
-  // Restore dark mode on landing page too
-  if (localStorage.getItem('jr-dark-mode') === 'true') {
-    setDarkMode(true);
-  }
 });
 
 // Handle window resize for active terminal
