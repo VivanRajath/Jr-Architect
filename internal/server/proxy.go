@@ -12,7 +12,7 @@ import (
 )
 
 // Only Go calls these, straight on the loopback port; /agent/register takes an arbitrary host workdir.
-var internalAgentPaths = map[string]bool{"/agent/register": true}
+var internalAgentPaths = map[string]bool{"/agent/register": true, "/agent/keys": true}
 
 func agentProxyHandler() http.Handler {
 	return newAgentProxy(fmt.Sprintf("http://127.0.0.1:%d", core.Cfg.AgentPort))

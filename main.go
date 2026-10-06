@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -52,6 +53,8 @@ func startAgentService() {
 		"HOST_PORT="+core.Cfg.ListenPort(),
 		"JR_WORK_DIR="+core.Cfg.WorkDir,
 		"JR_INTERNAL_TOKEN="+core.Cfg.InternalToken,
+		// Keys saved in Settings; the agent service already reads the .env ones itself.
+		"JR_PROVIDER_KEYS="+agentKeysJSON(),
 		fmt.Sprintf("JR_LLM_PER_HOUR=%d", core.Cfg.LLMPerHour),
 	)
 	if err := cmd.Start(); err != nil {
@@ -108,6 +111,7 @@ func main() {
 		os.Exit(1)
 	}
 	core.Cfg = cfg
+	core.LoadSavedKeys()
 	builder.SetTemplates(builderTemplates)
 
 	core.ReapOrphans()
@@ -122,6 +126,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	server.Routes(mux, webFS)
+	server.StartCollaboratorSweeper()
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -146,4 +151,9 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Printf("server error: %v\n", err)
 	}
+}
+
+func agentKeysJSON() string {
+	data, _ := json.Marshal(core.AgentKeys())
+	return string(data)
 }

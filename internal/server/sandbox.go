@@ -20,17 +20,27 @@ type Request struct {
 	Instructions string `json:"instructions,omitempty"`
 	Mode         string `json:"mode,omitempty"`
 	AutoApprove  bool   `json:"autoApprove,omitempty"`
+	Branch       string `json:"branch,omitempty"`
 }
 
 // Per-service logs land here so a crashed service can still be read.
 const logDir = "/tmp/jr"
 
 // Clone and scan only. Nothing is built or started until approveSandbox runs.
-func startSandbox(owner, repo, instructions, mode string, autoApprove bool) (core.Sandbox, error) {
+func startSandbox(owner, repo, branch, instructions string, autoApprove bool) (core.Sandbox, error) {
 	if err := core.ValidateRepoURL(repo); err != nil {
 		return core.Sandbox{}, err
 	}
+	if branch != "" && !validBranch(branch) {
+		return core.Sandbox{}, fmt.Errorf("that branch name is not valid")
+	}
+	return startSandboxFrom(owner, repo, "", instructions, autoApprove, func(container, workdir string) error {
+		return cloneInto(container, repo, workdir, branch, cloneToken(owner, repo))
+	})
+}
 
+// Fills a fresh workdir with fill, then scans it; label is what the UI shows in place of a repo URL.
+func startSandboxFrom(owner, label, project, instructions string, autoApprove bool, fill func(container, workdir string) error) (core.Sandbox, error) {
 	workdir, err := os.MkdirTemp(core.Cfg.WorkDir, "sandbox-*")
 	if err != nil {
 		return core.Sandbox{}, err
@@ -41,7 +51,8 @@ func startSandbox(owner, repo, instructions, mode string, autoApprove bool) (cor
 	abs, _ := filepath.Abs(workdir)
 	sb := core.Sandbox{
 		Container: container,
-		Repo:      repo,
+		Repo:      label,
+		Project:   project,
 		Workdir:   abs,
 		Status:    core.StatusDetecting,
 		Owner:     owner,
@@ -49,10 +60,14 @@ func startSandbox(owner, repo, instructions, mode string, autoApprove bool) (cor
 	if err := core.AddSandbox(sb, core.Cfg.MaxSandboxes, core.Cfg.MaxPerUser); err != nil {
 		return core.Sandbox{}, err
 	}
-	core.Logf("sandbox", "created %s owner=%s repo=%s", container, owner, repo)
+	core.Logf("sandbox", "created %s owner=%s source=%s", container, owner, label)
 
 	go func() {
-		if err := detectSandbox(container, repo, workdir, instructions); err != nil {
+		err := fill(container, workdir)
+		if err == nil {
+			err = detectSandbox(container, workdir, instructions)
+		}
+		if err != nil {
 			fmt.Printf("Sandbox detection failed: %v\n", err)
 			core.UpdateSandbox(container, func(s *core.Sandbox) {
 				s.Status = core.StatusFailed
@@ -68,20 +83,17 @@ func startSandbox(owner, repo, instructions, mode string, autoApprove bool) (cor
 	return sb, nil
 }
 
-func detectSandbox(container, repo, workdir, instructions string) error {
-	core.AddLog(container, "Cloning repo: "+repo)
-	err := core.Run(
-		container,
-		"git", "clone",
-		"--depth", "1",
-		"--single-branch",
-		"--recurse-submodules=no",
-		"--", repo, workdir,
-	)
-	if err != nil {
-		core.AddLog(container, "Failed to clone repo: "+err.Error())
-		return err
+// With a linked GitHub account the whole history comes down, so the workspace can pull and push.
+func cloneInto(container, repo, workdir, branch, token string) error {
+	if token != "" {
+		core.AddLog(container, "Cloning repo with your GitHub account: "+repo)
+	} else {
+		core.AddLog(container, "Cloning repo: "+repo)
 	}
+	return hostClone(container, repo, workdir, branch, token, token != "")
+}
+
+func detectSandbox(container, workdir, instructions string) error {
 	if n := core.PruneEscapingSymlinks(workdir); n > 0 {
 		core.AddLog(container, fmt.Sprintf("Removed %d symlink(s) pointing outside the repo", n))
 	}
@@ -402,7 +414,7 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ensureNetwork()
-	sb, err := startSandbox(core.UserOf(r), req.Repo, req.Instructions, mode, req.AutoApprove)
+	sb, err := startSandbox(core.UserOf(r), req.Repo, req.Branch, req.Instructions, req.AutoApprove)
 	if err != nil {
 		code := 400
 		if core.IsCapacityError(err) {
@@ -677,6 +689,9 @@ func stageOf(sb core.Sandbox, status, url string) (string, string) {
 		}
 		return "failed", msg
 	case core.StatusBuilding:
+		if sb.Stage == "generating" {
+			return "generate", "Writing the app's code"
+		}
 		if sb.Stage != "container" {
 			return "image", "Preparing the " + strings.TrimPrefix(sb.Image, "sandbox-") + " runtime (the first build of a new kind of project takes a few minutes)"
 		}

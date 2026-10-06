@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -33,6 +34,7 @@ func TestStageOfCoversEveryStep(t *testing.T) {
 		{core.Sandbox{}, core.StatusDetecting, "", "clone"},
 		{core.Sandbox{}, core.StatusAwaiting, "", "approve"},
 		{core.Sandbox{Stage: "image", Image: "sandbox-react"}, core.StatusBuilding, "", "image"},
+		{core.Sandbox{Stage: "generating"}, core.StatusBuilding, "", "generate"},
 		{core.Sandbox{Error: "clone failed"}, core.StatusFailed, "", "failed"},
 		{core.Sandbox{}, "exited", "", "failed"},
 		{core.Sandbox{Port: 3000}, "running", "", "preview"},
@@ -43,5 +45,19 @@ func TestStageOfCoversEveryStep(t *testing.T) {
 		if got, detail := stageOf(c.sb, c.status, c.url); got != c.want || detail == "" {
 			t.Errorf("status %q stage %q: got %q (%q), want %q", c.status, c.sb.Stage, got, detail, c.want)
 		}
+	}
+}
+
+// A Build mode app has no container while its code is written; the status check must say so instead of asking Docker and reporting a stopped sandbox.
+func TestGeneratingBuildIsNotReportedAsStopped(t *testing.T) {
+	req := httptest.NewRequest("GET", "/sandbox/status?container=builder-build-test-generating", nil)
+	sb := core.Sandbox{Container: "builder-build-test-generating", Status: core.StatusBuilding, Stage: "generating", Owner: core.UserOf(req)}
+	core.PutSandbox(sb)
+	defer core.DeleteSandbox(sb.Container)
+	rec := httptest.NewRecorder()
+	sandboxStatusHandler(rec, req)
+	body := rec.Body.String()
+	if rec.Code != 200 || !strings.Contains(body, `"stage":"generate"`) || strings.Contains(body, "failed") {
+		t.Fatalf("status %d: %s", rec.Code, body)
 	}
 }

@@ -24,12 +24,15 @@ func Routes(mux *http.ServeMux, webFS fs.FS) {
 	mux.HandleFunc("/auth/login", loginHandler)
 	mux.HandleFunc("/auth/logout", logoutHandler)
 	mux.HandleFunc("/auth/me", meHandler)
+	mux.HandleFunc("/auth/providers", providersHandler)
+	mux.HandleFunc("/auth/oauth/", oauthHandler)
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/ready", readyHandler)
 
 	mux.HandleFunc("/run", runHandler)
 	mux.HandleFunc("/run/plan", runPlanHandler)
 	mux.HandleFunc("/run/approve", runApproveHandler)
+	mux.HandleFunc("/run/upload", runUploadHandler)
 	mux.HandleFunc("/sandboxes", listHandler)
 	mux.HandleFunc("/stop/", stopHandler)
 	mux.HandleFunc("/logs/", logsHandler)
@@ -51,10 +54,34 @@ func Routes(mux *http.ServeMux, webFS fs.FS) {
 	mux.Handle(hookPrefix, hooksHandler())
 	mux.Handle(wfHookPrefix, hooksHandler())
 
+	builder.Launch = launchGenerated
+	builder.OnReady = autoPushBuild
 	mux.HandleFunc("/build/questions", llmLimited(builder.QuestionsHandler))
 	mux.HandleFunc("/build/prd", llmLimited(builder.PRDHandler))
 	mux.HandleFunc("/build/scaffold", llmLimited(builder.ScaffoldHandler))
 	mux.HandleFunc("/build/history", builder.HistoryHandler)
+
+	mux.HandleFunc("/projects", projectsHandler)
+	mux.HandleFunc("/projects/save", projectSaveHandler)
+	mux.HandleFunc("/projects/open", projectOpenHandler)
+	mux.HandleFunc("/projects/delete", projectDeleteHandler)
+
+	mux.HandleFunc("/github/status", githubStatusHandler)
+	mux.HandleFunc("/github/token", githubTokenHandler)
+	mux.HandleFunc("/github/disconnect", githubDisconnectHandler)
+	mux.HandleFunc("/github/repos", githubReposHandler)
+	mux.HandleFunc("/github/branches", githubBranchesHandler)
+	mux.HandleFunc("/github/sync", githubSyncStatusHandler)
+	mux.HandleFunc("/github/pull", githubPullHandler)
+	mux.HandleFunc("/github/push", githubPushHandler)
+	mux.HandleFunc("/github/publish", githubPublishHandler)
+	mux.HandleFunc("/github/prefs", githubPrefsHandler)
+	mux.HandleFunc("/github/log", githubLogHandler)
+	mux.HandleFunc("/github/show", githubShowHandler)
+	mux.HandleFunc("/github/unshallow", githubUnshallowHandler)
+
+	mux.HandleFunc("/settings/keys", keysHandler)
+	mux.HandleFunc("/settings/keys/test", llmLimited(keyTestHandler))
 }
 
 // Each call spends from the user's hourly model budget, which the Groq keys are shared across.
@@ -89,4 +116,14 @@ func OriginGuard(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Build mode's non-Next.js stacks run through the same pipeline as a cloned repo, approved automatically.
+func launchGenerated(owner, label string, fill func(container, workdir string) error) (string, error) {
+	if !engineUp() {
+		return "", fmt.Errorf("%s", core.EngineDownMessage())
+	}
+	ensureNetwork()
+	sb, err := startSandboxFrom(owner, label, "", "", true, fill)
+	return sb.Container, err
 }

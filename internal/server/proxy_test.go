@@ -99,7 +99,7 @@ func TestAgentProxyBlocksInternalRoutes(t *testing.T) {
 	front := httptest.NewServer(newAgentProxy(backend.URL))
 	defer front.Close()
 
-	for _, p := range []string{"/agent/register", "/agent/register/", "/agent//register", "/agent/Register", "/agent/x/../register"} {
+	for _, p := range []string{"/agent/register", "/agent/register/", "/agent//register", "/agent/Register", "/agent/x/../register", "/agent/keys", "/agent/Keys/"} {
 		resp, err := http.Post(front.URL+p, "application/json", strings.NewReader(`{"container":"x","workdir":"/"}`))
 		if err != nil {
 			t.Fatal(err)

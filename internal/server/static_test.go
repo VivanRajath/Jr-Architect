@@ -132,7 +132,7 @@ func TestOnlyTokensFileDefinesTokens(t *testing.T) {
 // Every var(--x) must resolve to something tokens.css declares.
 func TestNoUndefinedTokens(t *testing.T) {
 	// --depth is set per file-tree row at runtime by ide.js, not in CSS.
-	runtimeSet := map[string]bool{"--depth": true}
+	runtimeSet := map[string]bool{"--depth": true, "--hue": true}
 
 	tokens, err := fs.ReadFile(webFS, "css/tokens.css")
 	if err != nil {
