@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -177,16 +178,25 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func meHandler(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]interface{}{"user": core.UserOf(r), "auth": core.Cfg.AuthEnabled()})
+	user := core.UserOf(r)
+	out := map[string]interface{}{"user": user, "auth": core.Cfg.AuthEnabled()}
+	if p, ok := core.GetProfile(user); ok {
+		out["profile"] = p
+	}
+	if gh, ok := core.GetGitHub(user); ok {
+		out["github"] = githubPublic(gh)
+	}
+	writeJSON(w, out)
 }
 
 // Reachable without a session: the login page, what it loads, and the health probe.
 func isPublicPath(p string) bool {
 	switch p {
-	case "/login", "/login.html", "/auth/login", "/health", "/ready", "/css/tokens.css", "/css/login.css", "/js/login.js", "/vendor/fonts/fonts.css":
+	case "/login", "/login.html", "/auth/login", "/auth/providers", "/health", "/ready", "/css/tokens.css", "/css/login.css", "/js/login.js", "/vendor/fonts/fonts.css":
 		return true
 	}
-	return strings.HasPrefix(p, "/vendor/fonts/")
+	// The OAuth handlers check the session themselves where it matters.
+	return strings.HasPrefix(p, "/vendor/fonts/") || strings.HasPrefix(p, "/auth/oauth/")
 }
 
 // Only honoured from loopback: the agent service is the one caller that holds the token.
@@ -200,6 +210,14 @@ func isInternalCall(r *http.Request) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(tok), []byte(core.Cfg.InternalToken)) == 1
+}
+
+// Sends the user back to the page they asked for once they are signed in.
+func loginURL(r *http.Request) string {
+	if p := r.URL.RequestURI(); p != "/" && safeNext(p) == p {
+		return "/login?next=" + url.QueryEscape(p)
+	}
+	return "/login"
 }
 
 func isSafeMethod(m string) bool {
@@ -234,7 +252,7 @@ func RequireAuth(next http.Handler) http.Handler {
 		user, ok := sessionUser(r)
 		if !ok {
 			if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
-				http.Redirect(w, r, "/login", http.StatusFound)
+				http.Redirect(w, r, loginURL(r), http.StatusFound)
 				return
 			}
 			core.JSONError(w, "login required", 401)
