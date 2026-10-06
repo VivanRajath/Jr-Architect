@@ -1,4 +1,4 @@
-// Agent Studio: choose Custom or Builder, then edit the structured definition with live validation, Improve and Test.
+// Agent Studio: describe, answer a few questions, review, then edit with live validation, Improve and Test.
 const ST = {
   meta: null, def: null, saved: '', agentId: null, preview: null, sideTab: 'check', why: {},
   builder: null, proposal: null, undo: [], schemaRows: {}, lastRunAgent: null,
@@ -29,9 +29,91 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 function show(view) {
   for (const v of ['start', 'builder', 'editor']) $(`view-${v}`).classList.toggle('h-hidden', v !== view);
   $('s-save-bar').hidden = view !== 'editor';
+  ST.view = view;
+  renderSteps();
+}
+
+// --- stepper (new agents only; an existing agent opens straight in the editor) ---
+
+const STEPS = ['Describe', 'Questions', 'Review', 'Test & save'];
+
+function currentStep() {
+  if (ST.view === 'start') return 0;
+  if (ST.view === 'builder') return ST.builder ? 2 : 1;
+  return 3;
+}
+
+function renderSteps() {
+  const el = $('s-steps');
+  el.hidden = !!ST.existing;
+  if (el.hidden) return;
+  const at = currentStep();
+  const saved = ST.view === 'editor' && ST.agentId && !isDirty();
+  // A blank-form agent skips the interview, so those two steps read as skipped rather than done.
+  const skipped = ST.view === 'editor' && !ST.fromBuilder ? [1, 2] : [];
+  el.innerHTML = STEPS.map((label, i) => {
+    const state = skipped.includes(i) ? 'skip' : i < at || (i === 3 && saved) ? 'done' : i === at ? 'active' : '';
+    return `<li class="s-step ${state}">${state === 'done' ? '✓ ' : ''}${label}</li>`;
+  }).join('');
+}
+
+// --- local draft: an unsaved new agent survives a refresh ---
+
+const DRAFT_KEY = 'jr-studio-draft';
+
+function saveDraft() {
+  if (ST.agentId || !ST.def) return;
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ def: ST.def, fromBuilder: !!ST.fromBuilder, at: Date.now() })); } catch { /* storage blocked */ }
+}
+
+function readDraft() {
+  try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch { return null; }
+}
+
+function clearDraft() {
+  try { localStorage.removeItem(DRAFT_KEY); } catch { /* storage blocked */ }
 }
 
 // --- start ---
+
+const ARROW = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+
+const TEMPLATES = [
+  ['Support triage', 'Read a customer support email, label it bug, billing or other, and draft a short, polite reply.'],
+  ['Repo security review', 'Review a GitHub repository for security risks and list the top issues with file paths and a fix for each.'],
+  ['Meeting actions', 'Turn meeting notes into a list of action items, each with an owner and a due date if one is mentioned.'],
+  ['Policy checker', 'Check a product web page against our pricing policy and say whether it complies, with a one-line reason.'],
+];
+
+function renderStart() {
+  const draft = readDraft();
+  $('view-start').innerHTML = `
+    <h1 class="s-h1">New agent</h1>
+    <p class="s-lead">Describe what it should do. You'll answer a few questions and review the design before anything is saved.</p>
+    <div id="s-keybanner" hidden></div>
+    ${draft ? `<button class="s-resume" id="s-resume"><span class="h-muted">Continue your draft</span><strong>${esc(draft.def.identity.name || 'Untitled agent')}</strong>${ARROW}</button>` : ''}
+    <div class="s-describe">
+      <textarea id="s-desc" class="s-desc" rows="4" placeholder="e.g. Read incoming support emails, label each as bug, billing or other, and draft a short reply."></textarea>
+      <div class="s-describe-foot">
+        <span class="h-muted">Ctrl + Enter to continue</span>
+        <button class="h-btn" id="s-go">Continue</button>
+      </div>
+    </div>
+    <div class="s-sub">Or start from an example</div>
+    <div class="s-tpls">${TEMPLATES.map(([name, text]) => `<button class="s-tpl" data-tpl="${esc(text)}"><strong>${esc(name)}</strong><span>${esc(text)}</span></button>`).join('')}</div>
+    <p class="s-alt">Prefer filling in a form? <button class="h-link" id="s-blank">Start from a blank form</button></p>`;
+  const desc = $('s-desc');
+  if (ST.chat && ST.chat.description) desc.value = ST.chat.description;
+  desc.focus();
+  document.querySelectorAll('[data-tpl]').forEach((b) => b.addEventListener('click', () => { desc.value = b.dataset.tpl; desc.focus(); }));
+  desc.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) startBuilder(desc.value); });
+  $('s-go').addEventListener('click', () => startBuilder(desc.value));
+  $('s-blank').addEventListener('click', startCustom);
+  if ($('s-resume')) $('s-resume').addEventListener('click', () => { ST.fromBuilder = draft.fromBuilder; openEditor(draft.def, false, true); });
+  if (!ST.meta.providers.some((p) => p.hasKey)) {
+    jrKeyBanner($('s-keybanner'), { onSaved: async () => { ST.meta = await hubApi('GET', '/meta'); } });
+  }
+}
 
 async function boot() {
   try { ST.meta = await hubApi('GET', '/meta'); } catch (e) { document.body.innerHTML = `<div class="h-main"><div class="h-callout bad">${esc(e.message)}</div></div>`; return; }
@@ -40,14 +122,17 @@ async function boot() {
     try {
       const data = await hubApi('GET', `/agents/${encodeURIComponent(id)}`);
       ST.agentId = id;
+      ST.existing = true;
       openEditor(data.definition, true);
-    } catch (e) { hubToast(e.message, 'error'); show('start'); }
+    } catch (e) { hubToast(e.message, 'error'); renderStart(); show('start'); }
     return;
   }
+  renderStart();
   show('start');
 }
 
 function startCustom() {
+  ST.fromBuilder = false;
   openEditor(clone(ST.meta.blank), false);
 }
 
@@ -67,10 +152,14 @@ function providerOptions(selected) {
   return ST.meta.providers.map((p) => `<option value="${esc(p.id)}" ${p.id === selected ? 'selected' : ''} ${p.hasKey ? '' : 'disabled'}>${esc(p.id)}${p.hasKey ? '' : ' (no key on this server)'}</option>`).join('');
 }
 
-function startBuilder() {
+// The description box on the start screen answers the first question.
+function startBuilder(description) {
+  const first = String(description || '').trim();
+  if (!first) { hubToast('Describe what the agent should do first.', 'error'); $('s-desc').focus(); return; }
   ST.chat = {
-    answers: [], queue: BASE_QUESTIONS.slice(), current: null, phase: 'asking', followupsLoaded: false,
+    answers: [{ q: BASE_QUESTIONS[0].q, a: first, item: BASE_QUESTIONS[0] }], queue: BASE_QUESTIONS.slice(1), current: null, phase: 'asking', followupsLoaded: false,
     provider: (ST.meta.providers.find((p) => p.hasKey) || {}).id || 'groq', note: '',
+    description: first,
   };
   ST.builder = null;
   nextQuestion();
@@ -82,7 +171,7 @@ function nextQuestion() {
   c.current = c.queue.shift() || null;
   if (!c.current && !c.followupsLoaded && c.answers.length >= 3) { loadFollowups(); return; }
   if (!c.current && c.phase === 'asking') {
-    c.current = { q: 'Anything else it should know? Rules, tone, examples, edge cases.', hint: 'Optional. Or press "Design my agent".', options: ['No, that is everything'], last: true };
+    c.current = { q: 'Anything else it should know?', hint: 'Rules, tone, examples or edge cases. Optional.', options: ['No, that is everything'], last: true };
   }
   renderChat();
 }
@@ -107,53 +196,65 @@ function answer(text) {
   const t = String(text || '').trim();
   if (!c.current) return;
   if (!t && c.answers.length < 3) { hubToast('Answer this one so the agent knows what to do.', 'error'); return; }
-  const wasLast = c.current.last;
-  if (t && !(wasLast && /^no, that is everything$/i.test(t))) c.answers.push({ q: c.current.q, a: t });
-  else if (!t) c.answers.push({ q: c.current.q, a: '(skipped)' });
-  if (wasLast) { designFromChat(); return; }
+  const item = c.current;
+  if (t && !(item.last && /^no, that is everything$/i.test(t))) c.answers.push({ q: item.q, a: t, item });
+  else if (!t) c.answers.push({ q: item.q, a: '(skipped)', item });
+  if (item.last) { designFromChat(); return; }
   nextQuestion();
+}
+
+// Back steps to the previous question; from the first one it returns to the description.
+function previousQuestion() {
+  const c = ST.chat;
+  if (c.answers.length <= 1) { renderStart(); show('start'); return; }
+  const last = c.answers.pop();
+  if (c.current) c.queue.unshift(c.current);
+  c.current = last.item;
+  c.phase = 'asking';
+  renderChat();
 }
 
 function renderChat() {
   const c = ST.chat;
-  const bubbles = c.answers.map((x) => `
-    <div class="s-msg bot">${esc(x.q)}</div>
-    <div class="s-msg user">${esc(x.a)}</div>`).join('');
-  const thinking = c.phase === 'thinking' ? '<div class="s-msg bot s-typing">Thinking of a few questions about your agent…</div>'
-    : c.phase === 'designing' ? '<div class="s-msg bot s-typing">Designing your agent… (10 to 40 seconds)</div>' : '';
-  const cur = c.current && c.phase === 'asking' ? `<div class="s-msg bot"><strong>${esc(c.current.q)}</strong>${c.current.hint ? `<small>${esc(c.current.hint)}</small>` : ''}</div>` : '';
-  const canDesign = c.answers.length >= 3 && c.phase === 'asking';
+  const q = c.current;
+  const asked = c.answers.length;
+  const asking = c.phase === 'asking' && q;
+  const canDesign = asked >= 3 && c.phase === 'asking';
+  const opts = (asking && q.options) || [];
+  const body = c.phase === 'thinking' ? '<div class="q-wait"><span class="q-spin"></span>Thinking of a couple of questions about your agent…</div>'
+    : c.phase === 'designing' ? '<div class="q-wait"><span class="q-spin"></span>Designing your agent. This takes 10 to 40 seconds.</div>'
+      : asking ? `
+        <div class="q-count">Question ${asked + 1}</div>
+        <h1 class="q-title">${esc(q.q)}</h1>
+        ${q.hint ? `<p class="q-hint">${esc(q.hint)}</p>` : ''}
+        ${opts.length ? `<div class="q-options">${opts.map((o) => `<button class="q-option" data-opt="${esc(o)}"><span>${esc(o)}</span>${ARROW}</button>`).join('')}</div>` : ''}
+        <div class="q-own">
+          <input id="c-input" class="h-input" placeholder="${opts.length ? 'Or type your own answer' : 'Type your answer'}">
+          <button class="h-btn h-btn-ghost" id="c-send">Next</button>
+        </div>` : '';
+  const recap = asked ? `<details class="q-recap"><summary>Your answers so far (${asked})</summary>
+    <dl>${c.answers.map((x) => `<dt>${esc(x.q)}</dt><dd>${esc(x.a)}</dd>`).join('')}</dl></details>` : '';
   $('view-builder').innerHTML = `
-    <div class="s-chat-head">
-      <div><h1>Agent Builder</h1><p class="h-muted">Answer a few questions. You will see the design and can change anything before it is saved.</p></div>
-      <label class="h-row h-muted">Model <select id="c-provider" class="h-select" style="width:auto">${providerOptions(c.provider)}</select></label>
-    </div>
-    <div class="s-chat" id="c-log">${bubbles}${cur}${thinking}</div>
-    ${c.current && c.phase === 'asking' ? `
-      <div class="s-chips">${(c.current.options || []).map((o) => `<button class="s-example" data-opt="${esc(o)}">${esc(o)}</button>`).join('')}</div>
-      <div class="s-chat-input">
-        <textarea id="c-input" class="h-textarea" rows="2" placeholder="Type your answer, or pick one above. Enter to send."></textarea>
-        <button class="h-btn" id="c-send">Send</button>
-      </div>` : ''}
-    <div class="s-builder-foot">
-      <button class="h-btn h-btn-ghost" id="c-back">Back</button>
-      <button class="h-link" id="c-restart">Start over</button>
-      <span class="h-spacer"></span>
-      ${c.current && c.answers.length >= 3 && c.phase === 'asking' ? '<button class="h-btn h-btn-ghost" id="c-skip">Skip question</button>' : ''}
-      <button class="h-btn" id="c-design" ${canDesign ? '' : 'disabled'}>Design my agent</button>
+    <div class="q-wrap">
+      ${body}
+      ${recap}
+      <div class="q-foot">
+        <button class="h-btn h-btn-ghost" id="c-back" ${c.phase === 'asking' ? '' : 'disabled'}>Back</button>
+        ${asking && asked >= 3 ? '<button class="h-link" id="c-skip">Skip</button>' : ''}
+        <span class="h-spacer"></span>
+        <label class="q-model">Model <select id="c-provider" class="h-select">${providerOptions(c.provider)}</select></label>
+        <button class="h-btn" id="c-design" ${canDesign ? '' : 'disabled'} title="${canDesign ? '' : 'Answer three questions first'}">Design my agent</button>
+      </div>
     </div>`;
-  const log = $('c-log');
-  log.scrollTop = log.scrollHeight;
   $('c-provider').addEventListener('change', (e) => { c.provider = e.target.value; });
-  $('c-back').addEventListener('click', () => show('start'));
-  $('c-restart').addEventListener('click', startBuilder);
+  $('c-back').addEventListener('click', previousQuestion);
   $('c-design').addEventListener('click', designFromChat);
   if ($('c-skip')) $('c-skip').addEventListener('click', () => answer(''));
   document.querySelectorAll('[data-opt]').forEach((b) => b.addEventListener('click', () => answer(b.dataset.opt)));
   const input = $('c-input');
   if (input) {
     input.focus();
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); answer(input.value); } });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); answer(input.value); } });
     $('c-send').addEventListener('click', () => answer(input.value));
   }
 }
@@ -169,11 +270,14 @@ async function designFromChat() {
     const s = await hubApi('POST', '/builder', { description, provider: c.provider });
     ST.builder = { description, suggestion: s, provider: c.provider, use: {}, decided: {}, edgeCases: false };
     for (const k of ST.meta.sections) if (!IMPORTANT.includes(k)) ST.builder.use[k] = true;
+    // Kept by default but listed under "Check these", so nothing that widens access slips by unseen.
+    for (const k of IMPORTANT) ST.builder.decided[k] = 'accept';
     renderBuilderReview();
+    renderSteps();
   } catch (e) {
     hubToast(e.message, 'error');
     c.phase = 'asking';
-    c.current = { q: 'Something went wrong while designing. Add anything, or press "Design my agent" to try again.', options: [], last: true };
+    c.current = { q: 'Something went wrong while designing.', hint: 'Add anything else, or press "Design my agent" to try again.', options: [], last: true };
     renderChat();
   }
 }
@@ -213,42 +317,70 @@ function summarize(key, d) {
   }
 }
 
+// One line on what each access-widening section means, shown next to its Keep/Remove switch.
+const CHECK_HINT = {
+  tools: 'What it can reach on its own',
+  permissions: 'Which repositories and sites those tools may touch',
+  guardrails: 'Rules it must never break',
+  humanInTheLoop: 'When a person has to approve',
+  memory: 'What it remembers between runs',
+};
+const CARD_SECTIONS = ['identity', 'purpose', 'inputSchema', 'outputSchema'];
+
 function renderBuilderReview() {
   const b = ST.builder;
   const s = b.suggestion;
   const d = s.definition;
-  const pending = IMPORTANT.filter((k) => !b.decided[k]);
+  const others = ST.meta.sections.filter((k) => !IMPORTANT.includes(k) && !CARD_SECTIONS.includes(k));
   $('view-builder').innerHTML = `
-    <h1>Suggested design</h1>
-    <p class="h-muted">Nothing is decided yet. Sections marked <span class="h-pill warn">your call</span> affect what the agent can do or who approves it, so accept or skip each one. You can change anything in the editor afterwards.</p>
-    ${s.questions.length ? `<div class="h-callout warn"><strong>Questions only you can answer</strong>${ul(s.questions)}</div>` : ''}
-    ${ST.meta.sections.map((k) => {
-      const imp = IMPORTANT.includes(k);
-      const state = imp ? (b.decided[k] === 'accept' ? 'accepted' : b.decided[k] === 'skip' ? 'skipped' : 'important') : (b.use[k] ? 'accepted' : 'skipped');
-      const ctrl = imp
-        ? `<span class="h-pill warn">your call</span>
-           <button class="h-btn h-btn-sm ${b.decided[k] === 'accept' ? 'h-btn-ok' : 'h-btn-ghost'}" data-decide="${k}" data-v="accept">Accept</button>
-           <button class="h-btn h-btn-sm h-btn-ghost" data-decide="${k}" data-v="skip">${b.decided[k] === 'skip' ? 'Skipped' : 'Skip'}</button>`
-        : `<label class="h-row h-muted"><input type="checkbox" data-use="${k}" ${b.use[k] ? 'checked' : ''}> Use this</label>`;
-      return `<section class="s-suggest ${state}">
-        <div class="s-suggest-head"><h3>${esc(SECTION_TITLES[k])}</h3>${ctrl}</div>
+    <div class="s-chat-head"><div><h1>Here's your agent</h1>
+      <p class="h-muted">Check that it reads right. Anything can still be changed in the next step, where you'll also test it.</p></div></div>
+    <div class="s-agent-card">
+      <div class="s-agent-name">${esc(d.identity.name)}</div>
+      <div class="h-muted">${esc(d.identity.description)}</div>
+      <dl class="s-agent-facts">
+        <dt>It does</dt><dd>${esc(d.purpose)}</dd>
+        <dt>It receives</dt><dd>${schemaText(d.inputSchema)}</dd>
+        <dt>It returns</dt><dd>${d.runtime.outputFormat === 'json' ? schemaText(d.outputSchema) : 'Plain text'}</dd>
+      </dl>
+    </div>
+    ${s.questions.length ? `<div class="h-callout warn"><strong>Questions only you can answer</strong>${ul(s.questions)}<div class="h-help">Add the answers in the next step, or ignore them for now.</div></div>` : ''}
+    <h2 class="s-review-h">Check these</h2>
+    <p class="h-help" style="margin-top:0">These decide what the agent can reach and who approves it. All are kept unless you remove them.</p>
+    <div class="s-checks">
+      ${IMPORTANT.map((k) => `
+        <div class="s-check-row ${b.decided[k] === 'skip' ? 'off' : ''}">
+          <div class="s-check-main">
+            <div class="s-check-title">${esc(SECTION_TITLES[k])} <span class="h-muted">${esc(CHECK_HINT[k] || '')}</span></div>
+            <div class="s-check-body">${summarize(k, d)}</div>
+            ${s.explanations[k] ? `<div class="s-why">${esc(s.explanations[k])}</div>` : ''}
+          </div>
+          <div class="s-seg" role="group" aria-label="${esc(SECTION_TITLES[k])}">
+            <button class="${b.decided[k] !== 'skip' ? 'on' : ''}" data-decide="${k}" data-v="accept">Keep</button>
+            <button class="${b.decided[k] === 'skip' ? 'on' : ''}" data-decide="${k}" data-v="skip">Remove</button>
+          </div>
+        </div>`).join('')}
+    </div>
+    ${s.edgeCases.length ? `<label class="h-check" style="margin-top: var(--sp-4)"><input type="checkbox" id="b-edge" ${b.edgeCases ? 'checked' : ''}>
+      <span><strong>Also handle these edge cases</strong><small>${s.edgeCases.map(esc).join(' · ')}</small></span></label>` : ''}
+    <details class="s-advanced" style="margin-top: var(--sp-5)">
+      <summary><span>Everything else it suggested (${others.length})</span><small>Instructions, model, knowledge, limits. Untick anything you don't want.</small></summary>
+      ${others.map((k) => `<section class="s-section">
+        <div class="s-suggest-head"><h3>${esc(SECTION_TITLES[k])}</h3><label class="h-row h-muted"><input type="checkbox" data-use="${k}" ${b.use[k] ? 'checked' : ''}> Use</label></div>
         <div>${summarize(k, d)}</div>
         ${s.explanations[k] ? `<div class="s-why">${esc(s.explanations[k])}</div>` : ''}
-      </section>`;
-    }).join('')}
-    ${s.edgeCases.length ? `<section class="s-suggest"><div class="s-suggest-head"><h3>Edge cases to handle</h3>
-      <label class="h-row h-muted"><input type="checkbox" id="b-edge" ${b.edgeCases ? 'checked' : ''}> Add to the instructions</label></div>${ul(s.edgeCases)}</section>` : ''}
+      </section>`).join('')}
+    </details>
     <div class="s-builder-foot">
       <button class="h-btn h-btn-ghost" id="b-back">Back to the questions</button>
       <span class="h-spacer"></span>
-      <span class="h-muted">${pending.length ? `Decide on: ${pending.map((k) => SECTION_TITLES[k]).join(', ')}` : 'Ready'}</span>
-      <button class="h-btn" id="b-continue" ${pending.length ? 'disabled' : ''}>Continue to the editor</button>
+      <button class="h-btn" id="b-continue">Continue: edit &amp; test →</button>
     </div>`;
   document.querySelectorAll('[data-decide]').forEach((x) => x.addEventListener('click', () => { b.decided[x.dataset.decide] = x.dataset.v; renderBuilderReview(); }));
-  document.querySelectorAll('[data-use]').forEach((x) => x.addEventListener('change', () => { b.use[x.dataset.use] = x.checked; renderBuilderReview(); }));
+  document.querySelectorAll('[data-use]').forEach((x) => x.addEventListener('change', () => { b.use[x.dataset.use] = x.checked; }));
   const edge = $('b-edge');
   if (edge) edge.addEventListener('change', () => { b.edgeCases = edge.checked; });
-  $('b-back').addEventListener('click', () => { ST.chat.phase = 'asking'; nextQuestion(); });
+  $('b-back').addEventListener('click', () => { ST.builder = null; ST.chat.phase = 'asking'; previousQuestion(); renderSteps(); });
   $('b-continue').addEventListener('click', acceptBuilder);
 }
 
@@ -257,15 +389,17 @@ function acceptBuilder() {
   const s = b.suggestion;
   const def = clone(ST.meta.blank);
   for (const k of ST.meta.sections) {
-    const take = IMPORTANT.includes(k) ? b.decided[k] === 'accept' : b.use[k];
+    const take = IMPORTANT.includes(k) ? b.decided[k] === 'accept' : CARD_SECTIONS.includes(k) || b.use[k];
     if (take) def[k] = clone(s.definition[k]);
   }
   if (b.use.runtime === false && b.use.outputSchema) def.runtime.outputFormat = s.definition.runtime.outputFormat;
   if (b.edgeCases && s.edgeCases.length) def.instructions = `${def.instructions}\n\nEdge cases:\n${s.edgeCases.map((e) => `- ${e}`).join('\n')}`.trim();
   if (b.provider) def.model.provider = b.provider;
   ST.why = s.explanations;
+  ST.fromBuilder = true;
+  ST.sideTab = 'test';
   openEditor(def, false, true);
-  hubToast('Review the design, then Save to create the agent');
+  hubToast('Try it in the Test panel, then Create agent to save it');
 }
 
 // --- editor ---
@@ -293,6 +427,7 @@ function updateHeader() {
   v.textContent = `v${ST.def.version}`;
   $('s-dirty').hidden = !isDirty();
   $('s-save').textContent = ST.agentId ? 'Save version' : 'Create agent';
+  renderSteps();
 }
 
 function isDirty() {
@@ -459,6 +594,7 @@ function changed(rerender) {
   if (rerender === 'io') { renderForm(); }
   updateHeader();
   schedulePreview();
+  saveDraft();
 }
 
 function bindForm() {
@@ -589,7 +725,7 @@ async function refreshPreview() {
   } catch (e) { hubToast(e.message, 'error'); }
 }
 
-const SIDE_TABS = [['check', 'Check'], ['prompt', 'Prompt'], ['improve', 'Improve'], ['test', 'Test']];
+const SIDE_TABS = [['test', 'Test'], ['improve', 'Improve'], ['check', 'Check'], ['prompt', 'Prompt']];
 
 function renderSideTabs() {
   $('s-side-tabs').innerHTML = SIDE_TABS.map(([k, l]) => `<button class="h-tab ${k === ST.sideTab ? 'active' : ''}" data-side="${k}">${l}</button>`).join('');
@@ -772,6 +908,7 @@ async function save() {
       hubToast(`Created ${out.definition.identity.name}`);
     }
     ST.saved = JSON.stringify(ST.def);
+    clearDraft();
     $('s-message').value = '';
     renderForm();
     updateHeader();

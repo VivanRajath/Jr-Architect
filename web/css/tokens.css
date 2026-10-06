@@ -2,45 +2,45 @@
 
 :root {
 
-  /* ── Colour: surfaces ──────────────────────────────────────────────────── */
-  --bg: #F5F2EE;
+  /* ── Colour: surfaces (shadcn/ui zinc; light here, dark in body.dark-mode below) ── */
+  --bg: #FFFFFF;
   --surface: #FFFFFF;
-  --surface2: #EBE8E3;
-  --border: #DEDAD1;
-  --border2: #CEC8BA;
+  --surface2: #F4F4F5;
+  --border: #E4E4E7;
+  --border2: #E4E4E7;
+  --scrim: rgba(0, 0, 0, .5);
 
-  /* Tinted toward the ground; the overlays used neutral black at two opacities. */
-  --scrim: rgba(28, 20, 14, .62);
-
-  /* ── Colour: brand ─────────────────────────────────────────────────────── */
-  --accent: #6B3E1A;
-  --accent2: #8B5A2B;
-  --accent-soft: rgba(107, 62, 26, .08);
-  --accent-glow: rgba(107, 62, 26, .15);
+  /* ── Colour: primary (shadcn has no brand hue; "accent" names keep the old call sites working) ── */
+  --accent: #18181B;
+  --accent2: #27272A;
+  --accent-hi: #18181B;
+  --accent-soft: #F4F4F5;
+  --accent-glow: rgba(161, 161, 170, .45);
 
   /* ── Colour: semantic ──────────────────────────────────────────────────── */
-  /* On --surface: green 6.4:1, red 7.8:1, yellow 4.9:1. The yellow was #B07D05, which measures 3.6:1 and failed AA everywhere it was used. */
-  --green: #2D6A4F;
-  --green-soft: rgba(45, 106, 79, .1);
-  --red: #A4161A;
-  --red-soft: rgba(164, 22, 26, .1);
-  --yellow: #96690A;
-  --yellow-soft: rgba(150, 105, 10, .1);
+  --green: #16A34A;
+  --green-soft: rgba(22, 163, 74, .08);
+  --red: #DC2626;
+  --red-soft: rgba(220, 38, 38, .08);
+  --yellow: #A16207;
+  --yellow-soft: rgba(202, 138, 4, .1);
 
   /* ── Colour: text ──────────────────────────────────────────────────────── */
-  --text: #2C1810;
-  --text2: #5D4037;
-  --text3: #8D6E63;
-  --on-accent: #FFFFFF;
+  --text: #09090B;
+  --text2: #3F3F46;
+  --text3: #71717A;
+  --on-accent: #FAFAFA;
 
   /* ── Colour: interaction ───────────────────────────────────────────────── */
-  --hover: rgba(107, 62, 26, .07);
-  --hover-strong: rgba(107, 62, 26, .12);
+  --hover: #F4F4F5;
+  --hover-strong: #E4E4E7;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .05);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, .1);
 
   /* ── Colour: IDE chrome ────────────────────────────────────────────────── */
-  --activity-bg: #EFEBE5;
-  --statusbar-bg: var(--accent);
-  --statusbar-text: rgba(255, 255, 255, .92);
+  --activity-bg: #FAFAFA;
+  --statusbar-bg: #FAFAFA;
+  --statusbar-text: #71717A;
 
   /* Icon-only accents so a file tree is scannable by language; the theme itself stays brown and cream. */
   --ic-js: #C9A21B;
@@ -81,6 +81,7 @@
   --fs-lg: 16px;    /* section headings, form inputs */
   --fs-xl: 20px;    /* panel titles, icon glyphs */
   --fs-2xl: 28px;   /* page title */
+  --fs-3xl: 40px;   /* home hero */
 
   /* ── Type: weights and rhythm ──────────────────────────────────────────── */
   --fw-regular: 400;
@@ -104,12 +105,14 @@
   --sp-8: 48px;
 
   /* Four steps, replacing twelve: 6/7/8/9/10/12px in one panel looked hand-cut. */
-  --r-sm: 4px;      /* inputs, chips, small controls */
-  --r-md: 8px;      /* cards, rows, buttons */
-  --r-lg: 14px;     /* modals, large panels */
+  --r-sm: 4px;      /* chips, small controls */
+  --r-md: 6px;      /* inputs, buttons, rows (shadcn rounded-md) */
+  --r-lg: 10px;     /* cards, modals (shadcn rounded-xl) */
   --r-pill: 999px;  /* pills and circular controls */
 
   /* ── Layout ────────────────────────────────────────────────────────────── */
+  --rail-w: 232px;
+  --rail-collapsed: 56px;
   --activity-w: 48px;
   --sidebar-w: 260px;
   --topbar-h: 40px;
@@ -127,39 +130,41 @@
   --dur-base: 200ms;
 }
 
-/* Dark theme — every token that changes, in one place. */
+/* Dark theme (shadcn/ui zinc), the default: every page ships body.dark-mode and shell.js drops it for light. */
 body.dark-mode {
-  --bg: #1A1410;
-  --surface: #231C16;
-  --surface2: #2E241C;
-  --border: #3E2C1E;
-  --border2: #4E3C2E;
-  --scrim: rgba(10, 7, 5, .66);
+  --bg: #09090B;
+  --surface: #09090B;
+  --surface2: #18181B;
+  --border: #27272A;
+  --border2: #27272A;
+  --scrim: rgba(0, 0, 0, .7);
 
-  --accent: #A67C52;
-  --accent2: #C19A6B;
-  --accent-soft: rgba(166, 124, 82, .1);
-  --accent-glow: rgba(166, 124, 82, .2);
+  --accent: #FAFAFA;
+  --accent2: #E4E4E7;
+  --accent-hi: #FAFAFA;
+  --accent-soft: #27272A;
+  --accent-glow: rgba(113, 113, 122, .5);
 
-  /* ide-agent.css hardcoded the light values here, so the edit-status markers measured 2.6:1 on #231C16 — on the UI that reports guardrail blocks. */
-  --green: #81C784;
-  --green-soft: rgba(129, 199, 132, .1);
-  --red: #EF5350;
-  --red-soft: rgba(239, 83, 80, .1);
-  --yellow: #FFD54F;
-  --yellow-soft: rgba(255, 213, 79, .1);
+  --green: #4ADE80;
+  --green-soft: rgba(74, 222, 128, .08);
+  --red: #F87171;
+  --red-soft: rgba(248, 113, 113, .08);
+  --yellow: #FACC15;
+  --yellow-soft: rgba(250, 204, 21, .08);
 
-  --text: #EFEBE9;
-  --text2: #D7CCC8;
-  --text3: #8D6E63;
-  --on-accent: #1A1410;
+  --text: #FAFAFA;
+  --text2: #D4D4D8;
+  --text3: #A1A1AA;
+  --on-accent: #18181B;
 
-  --hover: rgba(166, 124, 82, .12);
-  --hover-strong: rgba(166, 124, 82, .18);
+  --hover: #18181B;
+  --hover-strong: #27272A;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, .5);
 
-  --activity-bg: #1F1811;
-  --statusbar-bg: #3E2C1E;
-  --statusbar-text: #EFE3D6;
+  --activity-bg: #09090B;
+  --statusbar-bg: #09090B;
+  --statusbar-text: #A1A1AA;
 
   --ic-js: #D9B54A;
   --ic-ts: #5A9BE0;
@@ -186,6 +191,10 @@ body.dark-mode {
   --tag-other: #94A3B8;
 }
 
+/* Native scrollbars and form controls follow the theme. */
+:root { color-scheme: light; }
+body.dark-mode { color-scheme: dark; }
+
 /* Base reset — one copy; it was duplicated in app.css and ide.css. */
 *,
 *::before,
@@ -202,8 +211,8 @@ body {
 
 /* The reset above suppresses the UA default on some controls. */
 :focus-visible {
-  outline: 2px solid var(--accent2);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent-glow);
+  outline-offset: 1px;
 }
 
 @media (prefers-reduced-motion: reduce) {

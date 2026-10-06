@@ -5,35 +5,33 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Agent Hub - Jr Architect</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27%2318181B%27/%3E%3Ctext x=%2716%27 y=%2721.5%27 font-family=%27Arial,sans-serif%27 font-size=%2714%27 font-weight=%27700%27 text-anchor=%27middle%27 fill=%27%23FAFAFA%27%3EJr%3C/text%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/css/tokens.css" />
   <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="/css/shell.css" />
   <link rel="stylesheet" href="/css/hub.css" />
 </head>
 
-<body class="h-page">
+<body class="h-page dark-mode">
   <header class="h-top">
-    <a class="h-btn h-btn-ghost h-btn-sm" href="/">&larr; Home</a>
     <div class="h-brand">
       <a href="/">Jr Architect</a>
       <span class="h-title">Agent Hub</span>
     </div>
     <span class="h-spacer"></span>
-    <span class="h-motto">Your model. Your agents. Your tools. Your guardrails. Your repository.</span>
-    <button class="h-btn h-btn-ghost h-btn-sm" onclick="toggleTheme()" title="Toggle dark mode">Theme</button>
   </header>
 
   <main class="h-main">
     <nav class="h-tabs h-section-tabs" aria-label="Hub sections">
       <button class="h-tab active" data-section="agents">Agents</button>
       <button class="h-tab" data-section="workflows">Workflows</button>
+      <a class="h-tab" href="/playground.html">Playground</a>
     </nav>
     <div id="sec-agents">
     <section class="h-intro">
       <div>
         <h1>Your agents</h1>
-        <p>Build agents in Agent Studio, test them here, and plug them into n8n workflows. Every agent is a
-          versioned git folder in gitagent layout, and every run goes through the Jr Architect runtime, which enforces
-          its tools, permissions and guardrails.</p>
+        <p>Each agent is versioned and runs with only the tools and guardrails you give it.</p>
       </div>
       <div class="h-row">
         <button class="h-btn h-btn-ghost" onclick="openImport()">Import</button>
@@ -70,6 +68,7 @@
 
   <div id="modal-root"></div>
 
+  <script src="/js/shell.js"></script>
   <script src="/js/hub-common.js"></script>
   <script src="/js/hub.js"></script>
 </body>

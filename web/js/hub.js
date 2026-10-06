@@ -50,6 +50,7 @@ async function loadAgents() {
   list.querySelectorAll('.h-card').forEach((c) => {
     c.addEventListener('click', () => openAgent(c.dataset.id));
     c.addEventListener('keydown', (e) => { if (e.key === 'Enter') openAgent(c.dataset.id); });
+    c.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, agentMenu(c.dataset.id)); });
   });
   if (HUB.current && !HUB.agents.some((a) => a.definition.id === HUB.current.id)) closeDrawer();
 }
@@ -311,8 +312,8 @@ async function exportAgent(id) {
   } catch (e) { hubToast(e.message, 'error'); }
 }
 
-async function deleteAgent(id) {
-  if (!confirm('Delete this agent, its versions, runs and n8n token? This cannot be undone.')) return;
+async function deleteAgent(id, confirmed = false) {
+  if (!confirmed && !confirm('Delete this agent, its versions, runs and n8n token? This cannot be undone.')) return;
   try {
     await hubApi('DELETE', `/agents/${id}`);
     hubToast('Agent deleted');
@@ -388,22 +389,68 @@ async function loadWorkflows() {
       </div>
       <div class="h-row" style="justify-content:space-between">
         <span class="h-muted">Updated ${esc(timeAgo(w.updatedAt))}</span>
-        <span class="h-row"><button class="h-link" data-dup="${esc(w.id)}">Duplicate</button><button class="h-link" data-del="${esc(w.id)}">Delete</button></span>
+        <span class="h-row"><a class="h-link" href="/playground.html?id=${encodeURIComponent(w.id)}">Playground</a><button class="h-link" data-dup="${esc(w.id)}">Duplicate</button><button class="h-link" data-del="${esc(w.id)}">Delete</button></span>
       </div>
     </article>`;
   }).join('');
   list.querySelectorAll('[data-wf]').forEach((c) => {
-    c.addEventListener('click', (e) => { if (!e.target.closest('button')) openFlow(c.dataset.wf); });
+    c.addEventListener('click', (e) => { if (!e.target.closest('button, a')) openFlow(c.dataset.wf); });
     c.addEventListener('keydown', (e) => { if (e.key === 'Enter') openFlow(c.dataset.wf); });
+    c.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, workflowMenu(c.dataset.wf)); });
   });
   list.querySelectorAll('[data-dup]').forEach((b) => b.addEventListener('click', async () => {
     try { await hubApi('POST', `/workflows/${b.dataset.dup}/duplicate`); hubToast('Duplicated'); loadWorkflows(); } catch (e) { hubToast(e.message, 'error'); }
   }));
-  list.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
-    if (!confirm('Delete this workflow, its run history and its webhook token? Its past versions stay in the git history.')) return;
-    try { await hubApi('DELETE', `/workflows/${b.dataset.del}`); hubToast('Workflow deleted'); loadWorkflows(); } catch (e) { hubToast(e.message, 'error'); }
+  list.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
+    if (confirm('Delete this workflow, its run history and its webhook token? Its past versions stay in the git history.')) deleteWorkflow(b.dataset.del);
   }));
 }
+
+async function duplicateWorkflow(id) {
+  try { await hubApi('POST', `/workflows/${id}/duplicate`); hubToast('Duplicated'); loadWorkflows(); } catch (e) { hubToast(e.message, 'error'); }
+}
+
+async function deleteWorkflow(id) {
+  try { await hubApi('DELETE', `/workflows/${id}`); hubToast('Workflow deleted'); loadWorkflows(); } catch (e) { hubToast(e.message, 'error'); }
+}
+
+// --- right-click menus on cards and on the empty part of each list ---
+
+function agentMenu(id) {
+  return [
+    { label: 'Open', icon: 'open', onClick: () => openAgent(id) },
+    { label: 'Edit in Studio', icon: 'pencil', onClick: () => openStudio(id) },
+    { label: 'Use in a new workflow', icon: 'flows', onClick: () => openFlow(null, id) },
+    '-',
+    { label: 'Duplicate', icon: 'copy', onClick: () => duplicateAgent(id) },
+    { label: 'Export', icon: 'external', onClick: () => exportAgent(id) },
+    { label: 'New agent', icon: 'plus', onClick: () => openStudio() },
+    '-',
+    { label: 'Delete', icon: 'trash', danger: true, confirm: 'Click again to delete', onClick: () => deleteAgent(id, true) },
+  ];
+}
+
+function workflowMenu(id) {
+  return [
+    { label: 'Open', icon: 'open', onClick: () => openFlow(id) },
+    { label: 'Open Playground', icon: 'play', onClick: () => { location.href = `/playground.html?id=${encodeURIComponent(id)}`; } },
+    { label: 'Open in new tab', icon: 'external', onClick: () => window.open(`/flows.html?id=${encodeURIComponent(id)}`, '_blank') },
+    '-',
+    { label: 'Duplicate', icon: 'copy', onClick: () => duplicateWorkflow(id) },
+    { label: 'New workflow', icon: 'plus', onClick: () => openFlow() },
+    '-',
+    { label: 'Delete', icon: 'trash', danger: true, confirm: 'Click again to delete', onClick: () => deleteWorkflow(id) },
+  ];
+}
+
+document.getElementById('agent-list').addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  showMenu(e.clientX, e.clientY, [{ label: 'New agent', icon: 'plus', onClick: () => openStudio() }, { label: 'Import an agent', icon: 'clipboard', onClick: openImport }]);
+});
+document.getElementById('workflow-list').addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  showMenu(e.clientX, e.clientY, [{ label: 'New workflow', icon: 'plus', onClick: () => openFlow() }]);
+});
 
 function showSection(name) {
   document.querySelectorAll('[data-section]').forEach((b) => b.classList.toggle('active', b.dataset.section === name));
@@ -411,9 +458,14 @@ function showSection(name) {
   document.getElementById('sec-workflows').hidden = name !== 'workflows';
   if (name === 'workflows') { closeDrawer(); loadWorkflows(); }
   history.replaceState(null, '', name === 'workflows' ? '#workflows' : location.pathname);
+  window.dispatchEvent(new Event('jr-nav'));
 }
+
+const sectionFromHash = () => location.hash === '#workflows' ? 'workflows' : 'agents';
 document.querySelectorAll('[data-section]').forEach((b) => b.addEventListener('click', () => showSection(b.dataset.section)));
 if (location.hash === '#workflows') showSection('workflows');
+// The rail's Workflows link only changes the hash when this page is already open.
+window.addEventListener('hashchange', () => showSection(sectionFromHash()));
 
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { document.getElementById('modal-root').innerHTML = ''; closeDrawer(); } });
 if (hubChannel) hubChannel.onmessage = (e) => {

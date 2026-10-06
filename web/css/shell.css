@@ -1,0 +1,365 @@
+/* Shared chrome in the shadcn/ui style: the sidebar, the API key widget, and base page type. */
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+body.has-rail {
+  padding-left: var(--rail-collapsed);
+}
+
+body.has-rail.rail-pinned {
+  padding-left: var(--rail-w);
+}
+
+body.ide-mode .jr-rail {
+  display: none;
+}
+
+body.has-rail.ide-mode {
+  padding-left: 0;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* ── Sidebar: icons on a transparent strip, opening over the page on hover ── */
+.jr-rail {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--rail-collapsed);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  padding: var(--sp-3);
+  overflow: hidden;
+  background: transparent;
+  border-right: 1px solid var(--border);
+  transition: width 180ms var(--ease), background 180ms var(--ease), box-shadow 180ms var(--ease);
+}
+
+.jr-rail:hover,
+.jr-rail:has(:focus-visible),
+body.rail-pinned .jr-rail {
+  width: var(--rail-w);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+}
+
+.jr-rail:hover,
+.jr-rail:has(:focus-visible) {
+  box-shadow: var(--shadow-lg);
+  transition-delay: 80ms;
+}
+
+body.rail-pinned .jr-rail {
+  box-shadow: none;
+}
+
+.jr-rail-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 2px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.jr-rail-logo {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-xs);
+}
+
+.jr-rail-name,
+.jr-rail-label,
+.jr-rail-item span {
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+
+.jr-rail:hover .jr-rail-name,
+.jr-rail:hover .jr-rail-label,
+.jr-rail:hover .jr-rail-item span,
+.jr-rail:has(:focus-visible) .jr-rail-name,
+.jr-rail:has(:focus-visible) .jr-rail-label,
+.jr-rail:has(:focus-visible) .jr-rail-item span,
+body.rail-pinned .jr-rail-name,
+body.rail-pinned .jr-rail-label,
+body.rail-pinned .jr-rail-item span {
+  opacity: 1;
+  transition-delay: 100ms;
+}
+
+.jr-rail-name {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+.jr-rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.jr-rail-label {
+  padding: 0 var(--sp-3) var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--text3);
+}
+
+.jr-rail-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: auto;
+}
+
+.jr-rail-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--text2);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-decoration: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jr-rail-item svg {
+  flex-shrink: 0;
+  color: var(--text3);
+}
+
+.jr-rail-item:hover {
+  background: var(--hover-strong);
+  color: var(--text);
+}
+
+.jr-rail-item.active {
+  background: var(--hover-strong);
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.jr-rail-item.active svg {
+  color: var(--text);
+}
+
+body.rail-pinned .jr-rail-pin svg {
+  color: var(--text);
+}
+
+@media (max-width: 720px) {
+  body.has-rail {
+    padding-left: 0;
+    padding-bottom: 60px;
+  }
+
+  .jr-rail {
+    inset: auto 0 0 0;
+    width: auto;
+    height: 56px;
+    flex-direction: row;
+    align-items: center;
+    gap: 0;
+    padding: 0 var(--sp-2);
+    border-right: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  body.has-rail.rail-pinned {
+    padding-left: 0;
+  }
+
+  .jr-rail,
+  .jr-rail:hover,
+  .jr-rail:has(:focus-visible),
+  body.rail-pinned .jr-rail {
+    width: auto;
+    background: var(--surface);
+    box-shadow: none;
+  }
+
+  .jr-rail-brand,
+  .jr-rail-label,
+  .jr-rail-pin {
+    display: none;
+  }
+
+  .jr-rail-group,
+  .jr-rail-foot {
+    flex-direction: row;
+    margin: 0;
+  }
+
+  .jr-rail-group {
+    flex: 1;
+    justify-content: space-around;
+  }
+
+  .jr-rail-item {
+    width: 40px;
+    height: 40px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .jr-rail-item span {
+    display: none;
+  }
+}
+
+/* ── API key widget ───────────────────────────────────────────────────────── */
+.jr-key-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 40px;
+  padding: 0 4px 0 var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.jr-key-row:focus-within {
+  border-color: var(--text3);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.jr-key-icon {
+  display: flex;
+  color: var(--text3);
+}
+
+.jr-key-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  -webkit-text-security: disc;
+}
+
+.jr-key-input::placeholder {
+  font-family: var(--sans);
+  color: var(--text3);
+}
+
+.jr-key-badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+
+.jr-key-badge.ok {
+  color: var(--text);
+}
+
+.jr-key-save {
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 var(--sp-4);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.jr-key-save:hover {
+  background: var(--accent2);
+}
+
+.jr-key-save:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.jr-key-note {
+  margin-top: var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--text3);
+}
+
+.jr-key-note:empty {
+  display: none;
+}
+
+.jr-key-note.ok { color: var(--green); }
+.jr-key-note.warn { color: var(--yellow); }
+.jr-key-note.err { color: var(--red); }
+
+.jr-key-banner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: var(--sp-5);
+  align-items: center;
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  font-size: var(--fs-sm);
+  color: var(--text3);
+  line-height: var(--lh-normal);
+}
+
+.jr-key-banner strong {
+  display: block;
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.jr-key-banner[hidden] {
+  display: none;
+}
+
+.ide-agent-panel .jr-key-banner {
+  grid-template-columns: 1fr;
+  margin: var(--sp-4) var(--sp-3) 0;
+  text-align: left;
+}
+
+@media (max-width: 820px) {
+  .jr-key-banner {
+    grid-template-columns: 1fr;
+  }
+}
+
+.jr-rail-avatar { width: 16px; height: 16px; flex: none; border-radius: 50%; display: inline-grid; place-items: center; font-size: var(--fs-2xs); font-weight: 700; background: var(--surface2); color: var(--text); object-fit: cover; }

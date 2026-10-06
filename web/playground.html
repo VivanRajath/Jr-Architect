@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Workflow Playground - Jr Architect</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27%2318181B%27/%3E%3Ctext x=%2716%27 y=%2721.5%27 font-family=%27Arial,sans-serif%27 font-size=%2714%27 font-weight=%27700%27 text-anchor=%27middle%27 fill=%27%23FAFAFA%27%3EJr%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/css/tokens.css" />
+  <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="/css/shell.css" />
+  <link rel="stylesheet" href="/css/hub.css" />
+</head>
+
+<body class="h-page dark-mode">
+  <header class="h-top">
+    <div class="h-brand">
+      <a href="/hub.html#workflows">Agent Hub</a>
+      <span class="h-title">Workflow Playground</span>
+    </div>
+    <span class="h-spacer"></span>
+  </header>
+
+  <section class="pg" id="pg">
+    <aside class="pg-side">
+      <input class="h-input" id="pg-search" type="search" placeholder="Search workflows" aria-label="Search workflows">
+      <div class="pg-list" id="pg-list" aria-label="Workflows"></div>
+    </aside>
+    <div class="pg-main">
+      <header class="pg-head" id="pg-head"></header>
+      <div class="pg-thread" id="pg-thread" aria-live="polite"></div>
+      <div class="pg-fields" id="pg-fields" hidden></div>
+      <form class="pg-composer" id="pg-composer">
+        <button type="button" class="h-btn h-btn-ghost h-btn-sm" id="pg-fields-toggle" hidden></button>
+        <textarea id="pg-input" class="pg-input" rows="1" placeholder="Pick a workflow to start" disabled aria-label="Message"></textarea>
+        <button type="submit" class="h-btn" id="pg-send" disabled>Send</button>
+      </form>
+    </div>
+    <aside class="pg-about" id="pg-about" aria-label="About this workflow"></aside>
+  </section>
+
+  <script src="/js/shell.js"></script>
+  <script src="/js/hub-common.js"></script>
+  <script src="/js/playground.js"></script>
+</body>
+
+</html>

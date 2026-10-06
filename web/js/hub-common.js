@@ -66,17 +66,99 @@ async function copyText(text) {
   try { await navigator.clipboard.writeText(text); hubToast('Copied'); } catch { hubToast('Copy failed; select and copy by hand', 'error'); }
 }
 
-// The same preference the IDE stores, so every window matches.
-function applyTheme() {
-  let dark = false;
-  try { dark = localStorage.getItem('jr-dark-mode') === 'true'; } catch { /* storage blocked */ }
-  document.body.classList.toggle('dark-mode', dark);
+// shell.js owns the theme.
+function toggleTheme() { if (window.jrToggleTheme) window.jrToggleTheme(); }
+
+// --- context menu: items are {label, icon, hint, danger, confirm, disabled, onClick, items} or '-' for a divider ---
+
+function closeMenu() {
+  document.querySelectorAll('.h-menu').forEach((m) => m.remove());
 }
-function toggleTheme() {
-  const dark = !document.body.classList.contains('dark-mode');
-  document.body.classList.toggle('dark-mode', dark);
-  try { localStorage.setItem('jr-dark-mode', dark); } catch { /* storage blocked */ }
+
+function placeMenu(m, x, y, flipX) {
+  const w = m.offsetWidth;
+  const h = m.offsetHeight;
+  let left = x;
+  if (left + w > innerWidth - 8) left = (flipX ?? x) - w;
+  m.style.left = `${Math.max(8, left)}px`;
+  m.style.top = `${Math.max(8, Math.min(y, innerHeight - h - 8))}px`;
 }
+
+function closeSubmenu(parent) {
+  if (!parent._sub) return;
+  closeSubmenu(parent._sub);
+  parent._sub.remove();
+  parent._sub = null;
+}
+
+function openSubmenu(parent, btn, items) {
+  if (parent._sub && parent._sub._owner === btn) return;
+  closeSubmenu(parent);
+  const sub = buildMenu(items);
+  sub._owner = btn;
+  document.body.appendChild(sub);
+  const r = btn.getBoundingClientRect();
+  placeMenu(sub, r.right + 2, r.top - 5, r.left - 2);
+  parent._sub = sub;
+}
+
+function buildMenu(items) {
+  const m = document.createElement('div');
+  m.className = 'h-menu';
+  m.setAttribute('role', 'menu');
+  for (const it of items) {
+    if (it === '-') { m.insertAdjacentHTML('beforeend', '<div class="h-menu-sep" role="separator"></div>'); continue; }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `h-menu-item${it.danger ? ' danger' : ''}`;
+    b.disabled = !!it.disabled;
+    b.setAttribute('role', 'menuitem');
+    const icon = it.icon && window.jrIcon ? jrIcon(it.icon, 15) : '';
+    const tail = it.items ? (window.jrIcon ? jrIcon('chevronRight', 14) : '') : it.hint ? `<kbd>${esc(it.hint)}</kbd>` : '';
+    b.innerHTML = `<span class="h-menu-icon">${icon}</span><span class="h-menu-label">${esc(it.label)}</span>${tail}`;
+    if (it.items) {
+      b.addEventListener('mouseenter', () => openSubmenu(m, b, it.items));
+      b.addEventListener('click', (e) => { e.stopPropagation(); openSubmenu(m, b, it.items); });
+    } else {
+      b.addEventListener('mouseenter', () => closeSubmenu(m));
+      b.addEventListener('click', () => {
+        // A destructive item asks for a second click instead of a browser dialog.
+        if (it.confirm && !b.dataset.armed) {
+          b.dataset.armed = '1';
+          b.querySelector('.h-menu-label').textContent = it.confirm;
+          return;
+        }
+        closeMenu();
+        if (it.onClick) it.onClick();
+      });
+    }
+    m.appendChild(b);
+  }
+  return m;
+}
+
+function showMenu(x, y, items) {
+  closeMenu();
+  const m = buildMenu(items);
+  document.body.appendChild(m);
+  placeMenu(m, x, y);
+  const first = m.querySelector('.h-menu-item:not(:disabled)');
+  if (first) first.focus({ preventScroll: true });
+}
+
+document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.h-menu')) closeMenu(); }, true);
+window.addEventListener('blur', closeMenu);
+window.addEventListener('resize', closeMenu);
+document.addEventListener('keydown', (e) => {
+  const menu = document.activeElement && document.activeElement.closest && document.activeElement.closest('.h-menu');
+  if (!document.querySelector('.h-menu')) return;
+  if (e.key === 'Escape') { closeMenu(); e.stopPropagation(); return; }
+  if (!menu || !['ArrowDown', 'ArrowUp'].includes(e.key)) return;
+  e.preventDefault();
+  const items = [...menu.querySelectorAll('.h-menu-item:not(:disabled)')];
+  const i = items.indexOf(document.activeElement);
+  items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+}, true);
 
 // Studio saves in its own window; the Hub listens so its list stays current.
 const hubChannel = 'BroadcastChannel' in window ? new BroadcastChannel('jr-agent-hub') : null;
@@ -162,4 +244,3 @@ function renderDiff(diff) {
     </div>`).join('')}</div>`;
 }
 
-applyTheme();
