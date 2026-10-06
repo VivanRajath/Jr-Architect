@@ -9,7 +9,7 @@ process.env.AGENT_NO_LISTEN = "1";
 // Point the registry index at a dead port so no test touches the network.
 process.env.GITAGENT_REGISTRY_INDEX = "http://127.0.0.1:1/index.json";
 const {
-  resolveTurnMode, heuristicMode, extractSearchTerms, parseEditBlocks, applyEditBlocks, gatherEditFiles,
+  heuristicMode, extractSearchTerms, parseEditBlocks, applyEditBlocks, applyHunks, editOutputBudget, roomAfter413, gatherEditFiles,
   classifyEditComplexity, makeShellTool, writtenPathFrom, server,
 } = await import("./server.js");
 const { guardEditBlocks, buildGuardrailPrompt, reviewEditBlocks, applyGuardrailVerdicts } = await import("./guardrails.js");
@@ -108,22 +108,19 @@ test("buildGuardrailPrompt truncates a large file to stay inside the token budge
   assert.match(p, /truncated/);
 });
 
-test("resolveTurnMode routes edit intent to edit, questions to ask", () => {
-  assert.equal(resolveTurnMode("", "change the ui to dark theme"), "edit");
-  assert.equal(resolveTurnMode("", "add a footer component"), "edit");
-  assert.equal(resolveTurnMode("", "fix the checkout bug"), "edit");
+test("heuristicMode routes edit intent to edit, questions to ask", () => {
+  assert.equal((heuristicMode("change the ui to dark theme") || "ask"), "edit");
+  assert.equal((heuristicMode("add a footer component") || "ask"), "edit");
+  assert.equal((heuristicMode("fix the checkout bug") || "ask"), "edit");
   // imperative styling command — the case that used to narrate instead of edit
-  assert.equal(resolveTurnMode("", "make the ui dark red theme"), "edit");
-  assert.equal(resolveTurnMode("", "turn the theme purple"), "edit");
-  assert.equal(resolveTurnMode("", "summarize this app"), "ask");
-  assert.equal(resolveTurnMode("", "where is login handled?"), "ask");
+  assert.equal((heuristicMode("make the ui dark red theme") || "ask"), "edit");
+  assert.equal((heuristicMode("turn the theme purple") || "ask"), "edit");
+  assert.equal((heuristicMode("summarize this app") || "ask"), "ask");
+  assert.equal((heuristicMode("where is login handled?") || "ask"), "ask");
   // "make" without a style target stays a question
-  assert.equal(resolveTurnMode("", "make a summary of the repo"), "ask");
+  assert.equal((heuristicMode("make a summary of the repo") || "ask"), "ask");
   // "rebrand" is now a recognized edit verb (the case that used to narrate)
-  assert.equal(resolveTurnMode("", "rebrand the heading to Re-work"), "edit");
-  // explicit client mode always wins
-  assert.equal(resolveTurnMode("ask", "add a button"), "ask");
-  assert.equal(resolveTurnMode("agent", "summarize"), "agent");
+  assert.equal((heuristicMode("rebrand the heading to Re-work") || "ask"), "edit");
 });
 
 test("heuristicMode returns null for genuinely ambiguous messages (→ LLM router)", () => {
@@ -151,7 +148,7 @@ test("guardEditBlocks blocks sensitive files and secret injection", () => {
     { path: "app/page.tsx", content: "export default function P(){return null}" },
     { path: ".env", content: "X=1" },
     { path: "package-lock.json", content: "{}" },
-    { path: "lib/key.ts", content: "const k = 'gsk_abcdefghijklmnopqrstuvwxyz012345'" },
+    { path: "lib/key.ts", content: "const k = 'AKIAIOSFODNN7EXAMPLE'" },
   ];
   const { allowed, blocked } = guardEditBlocks(blocks);
   assert.deepEqual(allowed.map((b) => b.path), ["app/page.tsx"]);
@@ -258,4 +255,56 @@ test("makeShellTool refuses to run without a bound container", async () => {
   assert.equal(tool.name, "shell");
   assert.match(await tool.handler({ command: "ls" }), /no sandbox container/);
   assert.match(await makeShellTool("c1").handler({ command: "   " }), /empty command/);
+});
+
+test("parseEditBlocks reads SEARCH/REPLACE edits", () => {
+  const reply = "=== EDIT: public/styles.css ===\n<<<<<<< SEARCH\n  --accent: #f97316;\n=======\n  --accent: #7dd3fc;\n>>>>>>> REPLACE\n<<<<<<< SEARCH\n.btn { color: orange; }\n=======\n.btn { color: hotpink; }\n>>>>>>> REPLACE\n=== END EDIT ===";
+  const [b] = parseEditBlocks(reply);
+  assert.equal(b.path, "public/styles.css");
+  assert.equal(b.hunks.length, 2);
+  assert.equal(b.hunks[1].replace, ".btn { color: hotpink; }");
+});
+
+test("applyHunks matches exactly, then by trimmed lines keeping the file's indentation", () => {
+  const css = ":root {\n    --accent: #f97316;\n    --bg: #fff;\n}\n";
+  const exact = applyHunks(css, [{ search: "    --accent: #f97316;", replace: "    --accent: #7dd3fc;" }]);
+  assert.equal(exact.failed.length, 0);
+  assert.match(exact.text, /--accent: #7dd3fc;/);
+  const loose = applyHunks(css, [{ search: "--accent: #f97316;\n--bg: #fff;", replace: "--accent: #f9a8d4;\n--bg: #f0f9ff;" }]);
+  assert.equal(loose.failed.length, 0);
+  assert.match(loose.text, /\n    --accent: #f9a8d4;\n    --bg: #f0f9ff;\n/);
+  assert.equal(applyHunks(css, [{ search: "--nope: 1;", replace: "x" }]).failed.length, 1);
+});
+
+test("applyEditBlocks applies a patch and refuses one that does not match", () => {
+  const dir = mkdtempSync(join(tmpdir(), "edit-patch-"));
+  mkdirSync(join(dir, "public"), { recursive: true });
+  writeFileSync(join(dir, "public", "styles.css"), ":root { --accent: #f97316; }\n");
+  const ok = applyEditBlocks(dir, [{ path: "public/styles.css", hunks: [{ search: "--accent: #f97316;", replace: "--accent: #7dd3fc;" }] }], [{ path: "public/styles.css" }]);
+  assert.equal(ok[0].status, "edited");
+  assert.match(readFileSync(join(dir, "public", "styles.css"), "utf8"), /#7dd3fc/);
+  const bad = applyEditBlocks(dir, [{ path: "public/styles.css", hunks: [{ search: "nothing like this", replace: "x" }] }], [{ path: "public/styles.css" }]);
+  assert.match(bad[0].status, /not applied/);
+});
+
+test("gatherEditFiles leads with stylesheets for a colour change and skips data files", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "edit-colour-"));
+  mkdirSync(join(dir, "public"), { recursive: true });
+  writeFileSync(join(dir, "public", "index.html"), "<link rel=stylesheet href=styles.css><div class=ui>orange</div>\n");
+  writeFileSync(join(dir, "public", "styles.css"), ":root{--accent:orange}\n.ui{color:var(--accent)}\n");
+  writeFileSync(join(dir, "jr-workflows.example.json"), '{"ui":"orange"}\n');
+  const files = await gatherEditFiles(dir, "change the ui from orange to light blue and pink");
+  const paths = files.map((f) => f.path);
+  assert.equal(paths[0], "public/styles.css");
+  assert.ok(!paths.includes("jr-workflows.example.json"));
+});
+
+test("editOutputBudget leaves room for the reply under Groq's limit", () => {
+  assert.equal(editOutputBudget("groq:openai/gpt-oss-120b", "x".repeat(3400)), 5100);
+  assert.equal(editOutputBudget("groq:openai/gpt-oss-120b", "x".repeat(34000)), 1500);
+});
+
+test("roomAfter413 reads Groq's limit message", () => {
+  assert.equal(roomAfter413("413 ... (TPM): Limit 8000, Requested 8130, please reduce", 3000), 2720);
+  assert.equal(roomAfter413("some other error", 3000), null);
 });

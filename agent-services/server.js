@@ -1,3 +1,4 @@
+import "./models.js";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { createServer } from "http";
@@ -22,11 +23,13 @@ import { createHubRouter } from "./hub/routes.js";
 import { reviewRange, writeAudit, AUDIT_DIR } from "./review.js";
 import {
   NO_KEY_MESSAGE, KNOWLEDGE_KEY,
-  rotateGroqKey, collectTurn, stripFences, parseJsonLoose,
+  rotateKey, collectTurn, stripFences, parseJsonLoose,
   AGENT_MAX_OUTPUT_TOKENS, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR, dropRejectedKey, pruneGroqKeys,
-  firstAvailableProvider, modelFor,
+  firstAvailableProvider, modelFor, applyKeys, outputCap, providerHasKey,
 } from "./llm.js";
 import { guardEditBlocks, reviewEditBlocks } from "./guardrails.js";
+import { createPlanner } from "./planner.js";
+import * as opengap from "./opengap/index.js";
 
 // ESM has no __dirname; the knowledge worker is spawned by absolute path so the service works regardless of the cwd Go happens to start it from.
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -486,21 +489,13 @@ function heuristicMode(message) {
   return null;
 }
 
-// Sync router used by tests and as the confident fast-path.
-function resolveTurnMode(explicit, message) {
-  if (explicit === "ask" || explicit === "edit" || explicit === "agent") return explicit;
-  const mode = heuristicMode(message) || "ask";
-  if (mode === "edit" && process.env.AGENT_EDIT_STRATEGY === "agentic") return "agent";
-  return mode;
-}
-
 // Shared stream+retry loop for one turn.
 async function streamTurn(ws, queryOptions, model, container) {
   let streamedAny = false;
   let attempt = 0;
   let pendingWrite = null;
   while (true) {
-    rotateGroqKey(model);
+    rotateKey(model);
     let turnError = null;
     try {
       for await (const msg of query(queryOptions)) {
@@ -558,15 +553,23 @@ const EDIT_ENTRY_CANDIDATES = [
 // Files most likely targeted by look-and-feel changes.
 const EDIT_STYLE_CANDIDATES = [
   "app/globals.css", "src/app/globals.css", "styles/globals.css", "src/globals.css",
-  "src/index.css", "src/App.css", "app/layout.tsx", "src/app/layout.tsx",
-  "tailwind.config.ts", "tailwind.config.js",
+  "src/index.css", "src/App.css", "src/styles.css",
+  "public/styles.css", "public/style.css", "public/css/styles.css", "public/css/style.css", "public/app.css",
+  "styles.css", "style.css", "css/styles.css", "css/style.css", "static/styles.css", "static/css/styles.css",
+  "tailwind.config.ts", "tailwind.config.js", "app/layout.tsx", "src/app/layout.tsx",
 ];
+// Colour and theme requests are answered by stylesheets first, before markup.
+const EDIT_COLOR_INTENT = /\b(colou?rs?|theme|palette|dark|light|accent|primary|brand|orange|blue|pink|red|green|purple|violet|yellow|teal|cyan|indigo|gr[ae]y|black|white|gradient|background)\b/i;
+// Data, lockfiles, generated specs and examples never answer a UI request, even when a search word matches them.
+const EDIT_NOT_TARGET = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|[^/]*\.example\.[^/]+|\.env[^/]*|jr-workflows[^/]*\.json|agent\.yaml|INSTRUCTIONS\.md|(?:public\/)?ui\.(?:css|js))$|^(?:\.gitagent|knowledge)\//i;
 const EDIT_STYLE_INTENT = /\b(theme|dark|light|colou?r|style|styling|css|font|background|ui|layout|design|spacing|padding|margin)\b/i;
 // Library and generated boilerplate is never a good edit target, even when a keyword search matches it.
 const EDIT_SKIP_PATH = /(?:^|\/)(?:components\/ui|node_modules|\.next|dist|build|out|coverage|vendor|\.git)\//i;
 const EDIT_MAX_FILES = 5;      // how many files to *show* the model as context
-const EDIT_MAX_FILE_CHARS = 7000;
-// A file we're willing to have the model rewrite whole.
+// Files are shown in full up to this size; the model patches them with SEARCH/REPLACE, so size no longer has to fit in the reply.
+const EDIT_MAX_FILE_CHARS = 24000;
+const EDIT_TOTAL_CHARS = 30000;
+// Small enough that a whole-file rewrite is also acceptable.
 const WHOLE_FILE_MAX_CHARS = 6000;
 const EDIT_MAX_EDITABLE = 3;   // don't offer more than this many rewritable files
 
@@ -605,19 +608,29 @@ function firstExistingFile(dir, candidates) {
 // Choose which files to hand the model for an edit.
 async function gatherEditFiles(dir, message) {
   const chosen = [];
+  const named = new Set((message.match(/[\w./-]+\.[a-z0-9]{1,6}\b/gi) || []).map((x) => x.replace(/^\.\//, "")));
   const add = (p) => {
     if (!p || chosen.includes(p)) return;
     if (EDIT_SKIP_PATH.test(p)) return;              // never edit library boilerplate
+    if (EDIT_NOT_TARGET.test(p) && !named.has(p)) return;
     if (!existsSync(join(dir, p))) return;
     if (chosen.length >= EDIT_MAX_FILES) return;
     chosen.push(p);
   };
 
-  // 1. The UI entry point — the most common target for a UI/page change.
-  add(firstExistingFile(dir, EDIT_ENTRY_CANDIDATES));
-  // 2. Style files, for look-and-feel requests.
-  if (EDIT_STYLE_INTENT.test(message)) {
+  // 0. Files the user named always come first.
+  for (const n of named) add(n);
+  const colour = EDIT_COLOR_INTENT.test(message);
+  // 1. For colour and theme changes the stylesheets lead; otherwise the UI entry point does.
+  if (colour) {
     for (const c of EDIT_STYLE_CANDIDATES) add(c);
+    for (const c of findStylesheets(dir)) add(c);
+    add(firstExistingFile(dir, EDIT_ENTRY_CANDIDATES));
+  } else {
+    add(firstExistingFile(dir, EDIT_ENTRY_CANDIDATES));
+    if (EDIT_STYLE_INTENT.test(message)) {
+      for (const c of EDIT_STYLE_CANDIDATES) add(c);
+    }
   }
   // 3. Fill any remaining slots with files that mention the request's key terms.
   const tool = makeSearchCodeTool(dir);
@@ -636,11 +649,47 @@ async function gatherEditFiles(dir, message) {
     }
   }
 
+  let budget = EDIT_TOTAL_CHARS;
   return chosen.map((p) => {
-    const content = readFileCapped(join(dir, p), EDIT_MAX_FILE_CHARS);
-    const whole = content.length > 0 && content.length <= WHOLE_FILE_MAX_CHARS && !content.includes("…truncated…");
-    return { path: p, content, whole };
+    const content = readFileCapped(join(dir, p), Math.min(EDIT_MAX_FILE_CHARS, Math.max(budget, 0)));
+    const complete = content.length > 0 && !content.includes("…truncated…");
+    budget -= content.length;
+    // Every complete file can be patched; only small ones may also be rewritten whole.
+    return { path: p, content, whole: complete, small: complete && content.length <= WHOLE_FILE_MAX_CHARS };
   });
+}
+
+// A plan task's files: existing ones in full, missing ones offered as new files to create.
+function readTaskFiles(dir, paths) {
+  let budget = EDIT_TOTAL_CHARS;
+  return paths.filter((p) => !EDIT_SKIP_PATH.test(p)).map((p) => {
+    const abs = join(dir, p);
+    if (!existsSync(abs)) return { path: p, content: "(new file: it does not exist yet; create it with a FILE block)", whole: true, small: true, isNew: true };
+    const content = readFileCapped(abs, Math.min(EDIT_MAX_FILE_CHARS, Math.max(budget, 0)));
+    budget -= content.length;
+    const complete = content.length > 0 && !content.includes("…truncated…");
+    return { path: p, content, whole: complete, small: complete && content.length <= WHOLE_FILE_MAX_CHARS };
+  });
+}
+
+// Stylesheets in the project, shallow first, without libraries or build output.
+function findStylesheets(dir, limit = 6) {
+  const out = [];
+  const walk = (rel, depth) => {
+    if (depth > 3 || out.length >= limit) return;
+    let ents = [];
+    try { ents = readdirSync(join(dir, rel), { withFileTypes: true }); } catch { return; }
+    ents.sort((a, b) => Number(a.isDirectory()) - Number(b.isDirectory()) || a.name.localeCompare(b.name));
+    for (const e of ents) {
+      if (out.length >= limit) return;
+      const p = rel ? `${rel}/${e.name}` : e.name;
+      if (e.name.startsWith(".") || EDIT_SKIP_PATH.test(p + "/") || /^(node_modules|dist|build|out|vendor|components)$/.test(e.name)) continue;
+      if (e.isDirectory()) walk(p, depth + 1);
+      else if (/\.(css|scss)$/i.test(e.name)) out.push(p);
+    }
+  };
+  walk("", 0);
+  return out;
 }
 
 // The whole-file rewrite prompt.
@@ -656,30 +705,47 @@ function skillPersona(dir, name) {
   return loadSkill(dir, name) || SKILL_FALLBACK[name] || "";
 }
 
-function buildEditPrompt(files, message, cls, persona) {
+function buildEditPrompt(files, message, cls, persona, strict = false) {
   const wrap = (f) => `=== FILE: ${f.path} ===\n${f.content}\n=== END FILE ===`;
   const fileBlocks = files.map(wrap).join("\n\n");
   const scopeLine = cls && cls.tier === "junior"
-    ? `- Scope: this is a FOCUSED change — edit the single most relevant file (at most ${files.length}).\n`
-    : `- Scope: edit only the file(s) that must change to satisfy the request.\n`;
+    ? `- Scope: a focused change. Edit the fewest files that satisfy the request (at most ${files.length}). For colours and themes, change the stylesheet's colour variables and colour values rather than the markup.\n`
+    : `- Scope: edit every file that must change together to satisfy the request, and nothing else.\n`;
   return (
-    (persona || "") +
-    `You are the Developer layer of a coding agent. You DO the edit — you never ` +
-    `describe it. Here are the current files:\n\n${fileBlocks}\n\n` +
-    `Apply the requested change by returning, for EACH file you change, its COMPLETE ` +
-    `updated contents wrapped EXACTLY like the files above:\n\n` +
-    `=== FILE: relative/path ===\n{the ENTIRE file, with your change applied}\n=== END FILE ===\n\n` +
+    (persona ? persona + "\n\n" : "") +
+    `You are the Developer layer of a coding agent. You DO the edit; you never describe it. ` +
+    `Here are the current files:\n\n${fileBlocks}\n\n` +
+    `Return your change as EDIT blocks. Each SEARCH must copy lines EXACTLY as they appear in the file ` +
+    `(same spacing), and be just long enough to be unique:\n\n` +
+    `=== EDIT: relative/path ===\n<<<<<<< SEARCH\n{exact existing lines}\n=======\n{replacement lines}\n>>>>>>> REPLACE\n=== END EDIT ===\n\n` +
+    `One EDIT block may hold several SEARCH/REPLACE pairs. To create a NEW file, use:\n` +
+    `=== FILE: relative/path ===\n{entire contents}\n=== END FILE ===\n\n` +
     `Rules:\n` +
-    `- Return the WHOLE file, not a snippet — include every line, changed or not.\n` +
-    `- Change ONLY what the request asks for; keep everything else exactly as-is.\n` +
+    `- Change ONLY what the request asks for; keep everything else as it is.\n` +
     `- Do NOT invent features, extra options, comments, or placeholder content.\n` +
     scopeLine +
-    `- Only edit files shown above. Do not touch any other file.\n` +
-    `- NEVER answer with prose like "I would…" or "First I would look at…". ` +
-    `If you cannot produce the file, output nothing.\n` +
-    `- Output ONLY FILE blocks — no explanation, no code fences.\n\n` +
-    `Change requested: ${message}`
+    `- Only edit files shown above.\n` +
+    `- Output ONLY EDIT/FILE blocks: no explanation, no code fences around the blocks.\n` +
+    (strict ? `- Think briefly. Start your answer with "=== EDIT:" right away.\n` : "") +
+    `\nChange requested: ${message}`
   );
+}
+
+// Groq bills input plus reserved output against the key's tokens-per-minute (8k on the free tier for the big models), so the reply gets what the prompt leaves.
+const GROQ_REQUEST_TOKENS = Number(process.env.GROQ_EDIT_REQUEST_TOKENS) || 7600;
+function editOutputBudget(model, prompt) {
+  if (!String(model || "").startsWith("groq:")) return outputCap(model);
+  // The engine adds its own system prompt and the repo's agent spec, roughly 1.5k tokens.
+  const inputTokens = Math.ceil(prompt.length / 3.4) + 1500;
+  return Math.max(1500, Math.min(6000, GROQ_REQUEST_TOKENS - inputTokens));
+}
+
+// "Limit 8000, Requested 8130": the room the next try has, given what this one reserved.
+function roomAfter413(error, reserved) {
+  const m = /Limit\s+(\d+),\s*Requested\s+(\d+)/i.exec(String(error || ""));
+  if (!m) return null;
+  const limit = Number(m[1]), requested = Number(m[2]);
+  return limit - (requested - reserved) - 150;
 }
 
 
@@ -694,6 +760,19 @@ function parseEditBlocks(text) {
     seen.add(p);
     blocks.push({ path: p, content });
   };
+  const reE = /={3,}\s*EDIT:\s*(.+?)\s*={3,}\s*\r?\n([\s\S]*?)={3,}\s*END\s*EDIT\s*={3,}/gi;
+  let e;
+  while ((e = reE.exec(text)) !== null) {
+    const path = (e[1] || "").trim().replace(/^["'`]|["'`]$/g, "");
+    const hunks = [];
+    const reH = /<{5,}\s*SEARCH\s*\r?\n([\s\S]*?)\r?\n?={5,}\s*\r?\n([\s\S]*?)\r?\n?>{5,}\s*REPLACE/g;
+    let h;
+    while ((h = reH.exec(e[2])) !== null) hunks.push({ search: h[1], replace: h[2] });
+    if (path && hunks.length && !seen.has(path)) {
+      seen.add(path);
+      blocks.push({ path, hunks });
+    }
+  }
   const reA = /={3,}\s*FILE:\s*(.+?)\s*={3,}\s*\r?\n([\s\S]*?)\r?\n?={3,}\s*END\s*FILE\s*={3,}/gi;
   let m;
   while ((m = reA.exec(text)) !== null) push(m[1], m[2]);
@@ -703,7 +782,7 @@ function parseEditBlocks(text) {
 }
 
 // Apply whole-file blocks to disk. Path-safe (stays inside dir).
-function applyEditBlocks(dir, blocks, offered) {
+function applyEditBlocks(dir, blocks, offered, guard) {
   const root = resolve(dir);
   const known = new Set((offered || []).map((f) => f.path));
   const results = [];
@@ -718,12 +797,38 @@ function applyEditBlocks(dir, blocks, offered) {
       results.push({ path: b.path, status: "skipped (not offered for edit)" });
       continue;
     }
+    if (b.hunks && !existed) {
+      results.push({ path: b.path, status: "skipped (edit for a file that does not exist)" });
+      continue;
+    }
     try {
       const prev = existed ? readFileSync(abs, "utf8") : null;
-      const next = b.content.endsWith("\n") ? b.content : b.content + "\n";
+      let next;
+      if (b.hunks) {
+        const patched = applyHunks(prev, b.hunks);
+        if (patched.failed.length) {
+          results.push({ path: b.path, status: `not applied (${patched.failed.length} of ${b.hunks.length} change(s) did not match the file)` });
+          continue;
+        }
+        next = patched.text;
+      } else {
+        next = b.content.endsWith("\n") ? b.content : b.content + "\n";
+      }
       if (prev !== null && prev === next) {
         results.push({ path: b.path, status: "unchanged" });
         continue;
+      }
+      // OpenGAP guardrails run at the harness level on the final content, so no persona can talk its way past them.
+      if (guard) {
+        const g = guard(b.path, prev, next);
+        if (g && g.blocked && g.blocked.length) {
+          results.push({
+            path: b.path, status: `blocked by guardrails (${g.blocked.map((x) => x.hook).join(", ")})`,
+            denial: { pack: "OpenGAP hooks", why: g.blocked.map((x) => x.reason).join(" "), tier: "floor", rulePath: ".gitagent/hooks/hooks.yaml", answerable: false },
+            proposed: next.length <= 120000 ? next : null, before: prev && prev.length <= 60000 ? prev : null,
+          });
+          continue;
+        }
       }
       writeFileSync(abs, next);
       // Carry before/after so the UI can show a diff on click (cap the payload).
@@ -742,6 +847,37 @@ function applyEditBlocks(dir, blocks, offered) {
 }
 
 
+// Applies SEARCH/REPLACE hunks in order; a hunk that matches nowhere is reported, never guessed at.
+function applyHunks(text, hunks) {
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  let out = text.replace(/\r\n/g, "\n");
+  const failed = [];
+  for (const h of hunks) {
+    const search = h.search.replace(/\r\n/g, "\n");
+    const replace = h.replace.replace(/\r\n/g, "\n");
+    if (!search.trim()) { failed.push(h); continue; }
+    if (out.includes(search)) {
+      out = out.replace(search, () => replace);
+      continue;
+    }
+    // Models often get indentation wrong: match line by line on trimmed text, keep the file's indentation.
+    const lines = out.split("\n");
+    const want = search.split("\n").map((l) => l.trim());
+    while (want.length && !want[want.length - 1]) want.pop();
+    let at = -1;
+    for (let i = 0; i + want.length <= lines.length && at < 0; i++) {
+      if (want.every((w, j) => lines[i + j].trim() === w)) at = i;
+    }
+    if (at < 0) { failed.push(h); continue; }
+    const indent = (lines[at].match(/^\s*/) || [""])[0];
+    const firstIndent = (search.split("\n")[0].match(/^\s*/) || [""])[0];
+    const repl = replace.split("\n").map((l) => (l.startsWith(firstIndent) ? indent + l.slice(firstIndent.length) : l));
+    lines.splice(at, want.length, ...repl);
+    out = lines.join("\n");
+  }
+  return { text: eol === "\n" ? out : out.replace(/\n/g, eol), failed };
+}
+
 // LLM Orchestrator: classify an ambiguous message as "edit" vs "ask" with a single cheap toolless call.
 async function classifyIntentLLM(message, dir, model) {
   const prompt =
@@ -752,7 +888,7 @@ async function classifyIntentLLM(message, dir, model) {
   try {
     const { text } = await collectTurn({
       prompt, dir, model, replaceBuiltinTools: true, allowedTools: [],
-      constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+      constraints: { maxTokens: outputCap(model) },
     }, model);
     return /\bedit\b/i.test(text || "") ? "edit" : "ask";
   } catch {
@@ -770,14 +906,14 @@ async function decideMode(explicit, message, dir, model) {
 }
 
 // The layered edit pipeline (gitagent squads): Orchestrator → Classifier → Guardrails → Developer → Guardrails(apply).
-async function runEditPipeline(dir, message, model, onStep, container) {
+async function runEditPipeline(dir, message, model, onStep, container, opts = {}) {
   const step = (name, detail) => { if (onStep) onStep(name, detail); };
 
   // Orchestrator already routed us here (mode=edit).
-  step("Orchestrator", "route → edit");
+  step("Orchestrator", opts.files ? `task → ${opts.files.join(", ") || "search"}` : "route → edit");
 
   // Gather candidate files, keep the ones small enough to rewrite whole.
-  const gathered = await gatherEditFiles(dir, message);
+  const gathered = opts.files && opts.files.length ? readTaskFiles(dir, opts.files) : await gatherEditFiles(dir, message);
   const whole = gathered.filter((f) => f.whole);
   // Relevant files we found but can't rewrite whole on the free tier.
   const tooLarge = gathered.filter((f) => !f.whole).map((f) => f.path);
@@ -785,8 +921,10 @@ async function runEditPipeline(dir, message, model, onStep, container) {
     return { ok: false, reason: gathered.length ? "too-large" : "not-found", tooLarge };
   }
 
-  // Complexity Classifier — decides how many files the Developer may rewrite.
-  const cls = classifyEditComplexity(message, whole.length);
+  // Complexity Classifier — decides how many files the Developer may rewrite; a plan's task already names its files.
+  const cls = opts.files && opts.files.length
+    ? { tier: whole.length > 1 ? "senior" : "junior", maxFiles: whole.length, label: `plan step · ${whole.length} file(s)` }
+    : classifyEditComplexity(message, whole.length);
   step("Classifier", cls.label);
   const editable = whole.slice(0, cls.maxFiles);
 
@@ -800,7 +938,8 @@ async function runEditPipeline(dir, message, model, onStep, container) {
 
   // Developer persona comes from the repo's own .gitagent/skills/ (source of truth).
   const tierSkill = cls.tier === "senior" ? "snr-developer" : "jnr-developer";
-  const devText = skillPersona(dir, tierSkill);
+  // An OpenGAP agent brings its own SOUL, RULES and handoff brief.
+  const devText = opts.persona || skillPersona(dir, tierSkill);
   const compliance = loadComplianceRules(dir);
   const persona = [
     devText,
@@ -815,20 +954,35 @@ async function runEditPipeline(dir, message, model, onStep, container) {
   step("Guardrails", `scope ok · ${editable.length} file(s)${guardNote}${complianceNote}`);
 
   // Developer — produce the whole-file rewrite, driven by the tier's skill.
-  const devLabel = agents.developer ? ` as ${agents.developer.name}` : ` · skills/${tierSkill}`;
+  const devLabel = opts.agentName ? ` as ${opts.agentName}` : agents.developer ? ` as ${agents.developer.name}` : ` · skills/${tierSkill}`;
   step("Developer", `editing ${editable.map((f) => f.path).join(", ")}${devLabel}`);
-  const { text, error } = await collectTurn({
-    prompt: buildEditPrompt(editable, message, cls, persona),
-    dir,
-    model,
-    replaceBuiltinTools: true,
-    allowedTools: [],
-    constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
-  }, model);
+  const ask = async (files, strict) => {
+    const prompt = buildEditPrompt(files, message, cls, persona, strict);
+    let maxTokens = editOutputBudget(model, prompt);
+    let res = await collectTurn({ prompt, dir, model, replaceBuiltinTools: true, allowedTools: [], constraints: { maxTokens } }, model);
+    // A 413 says exactly how much room there is; retry once with that, if it still leaves space to answer.
+    const room = !res.text && roomAfter413(res.error, maxTokens);
+    if (room && room >= 1200 && room < maxTokens) {
+      maxTokens = room;
+      res = await collectTurn({ prompt, dir, model, replaceBuiltinTools: true, allowedTools: [], constraints: { maxTokens } }, model);
+    }
+    return res;
+  };
+  let { text, error } = await ask(editable, false);
+  if (error && !text && /\b413\b|too large/i.test(error) && editable.length > 1) {
+    step("Developer", `request too large · retrying with ${editable[0].path} only`);
+    ({ text, error } = await ask(editable.slice(0, 1), true));
+  }
   if (error && !text) return { ok: false, reason: "error", error };
 
-  const blocks = parseEditBlocks(text);
-  if (blocks.length === 0) return { ok: false, reason: "no-blocks", text };
+  let blocks = parseEditBlocks(text);
+  if (blocks.length === 0) {
+    // An empty or unparseable reply is usually a reasoning model spending its whole budget thinking: retry once, shorter.
+    step("Developer", `retrying with ${editable[0].path} only`);
+    ({ text, error } = await ask(editable.slice(0, 1), true));
+    blocks = parseEditBlocks(text || "");
+    if (blocks.length === 0) return { ok: false, reason: "no-blocks", text: error ? "" : text, tried: editable.map((f) => f.path) };
+  }
 
   // Guardrails (apply) — refuse sensitive files / secret injection.
   const { allowed, blocked } = guardEditBlocks(blocks);
@@ -838,7 +992,7 @@ async function runEditPipeline(dir, message, model, onStep, container) {
   const reviewed = await reviewEditBlocks(dir, agents, message, allowed, model, step);
   blocked.push(...reviewed.blocked);
 
-  const results = applyEditBlocks(dir, reviewed.allowed, editable);
+  const results = applyEditBlocks(dir, reviewed.allowed, editable, opts.guard);
   await syncToContainer(container, results);
   for (const b of blocked) {
     results.push({
@@ -877,7 +1031,11 @@ function summarizeEdit(out) {
     }
     if (out.reason === "not-found") return { text: "I couldn't find the files to change for that request. Try naming a file or feature, e.g. \"make the header in app/page.tsx dark\".", changed: false, error: null };
     if (out.reason === "error") return { text: "", changed: false, error: out.error };
-    if (out.reason === "no-blocks") return { text: out.text || "No changes were produced.", changed: false, error: null };
+    if (out.reason === "no-blocks") {
+      const files = (out.tried || []).map((p) => `\`${p}\``).join(", ");
+      const said = out.text && !/^\s*$/.test(out.text) ? `\n\nThe model answered without an edit:\n${out.text.slice(0, 600)}` : "";
+      return { text: `I couldn't get an edit back from the model${files ? ` for ${files}` : ""}. Try again, name the exact file (for example \`public/styles.css\`), or pick a stronger model in the provider menu.${said}`, changed: false, error: null };
+    }
   }
   const changed = out.results.filter((r) => r.status === "edited" || r.status === "created");
   // When nothing changed, name any relevant file that was too large to rewrite.
@@ -893,9 +1051,15 @@ function summarizeEdit(out) {
 
 // Run the layered edit pipeline over a WebSocket, streaming each layer as a step.
 async function runEditModeWS(ws, dir, message, model, container) {
-  const out = await runEditPipeline(dir, message, model, (name, detail) => {
+  const out = await runCodingTask(dir, message, model, (name, detail) => {
     ws.send(JSON.stringify({ type: "tool", content: `${name}(${detail})` }));
-  }, container);
+  }, container, { onEvent: (e) => ws.send(JSON.stringify({ type: "og", event: e })) });
+  // A team run that changed nothing still ends with a record of who tried what.
+  if (out && out.run && !out.results.length) {
+    ws.send(JSON.stringify({ type: "delta", content: `No files changed. ${out.run.outcome === "stopped" ? "The team stopped and needs you: see the workflow card above." : ""}` }));
+    ws.send(JSON.stringify({ type: "complete", content: "" }));
+    return;
+  }
   const { text, changed, error } = summarizeEdit(out);
   if (error) {
     ws.send(JSON.stringify({ type: "error", content: error }));
@@ -950,7 +1114,7 @@ function runKnowledgeBuild(dir, { agent, force } = {}) {
     return st;
   }
 
-  const model = modelFor("groq");
+  const model = modelFor();
   const startedAt = Date.now();
   knowledgeState.set(dir, { status: "building", startedAt, agent: agent || KNOWLEDGE_SKILL });
 
@@ -1012,6 +1176,12 @@ app.post("/agent/register", (req, res) => {
 // Rebuild on demand — after editing the builder's SKILL.md, or after the repo has changed enough that the overview is stale.
 app.get("/agent/health", (_req, res) => res.json({ ok: true, sessions: sessions.size }));
 
+// Go calls this directly after Settings saves a key; its proxy refuses the path from browsers.
+app.post("/agent/keys", (req, res) => {
+  applyKeys(req.body);
+  res.json({ ok: true });
+});
+
 app.post("/agent/knowledge", (req, res) => {
   const { container } = req.body || {};
   const session = sessions.get(container);
@@ -1070,7 +1240,7 @@ app.post("/agent/chat", async (req, res) => {
         model,
         replaceBuiltinTools: true,
         allowedTools: [],
-        constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+        constraints: { maxTokens: outputCap(model) },
       }
     : {
         prompt: message,
@@ -1079,14 +1249,14 @@ app.post("/agent/chat", async (req, res) => {
         replaceBuiltinTools: true,
         allowedTools: AGENT_ALLOWED_TOOLS,
         tools: agentTools(session.dir, container),
-        constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+        constraints: { maxTokens: outputCap(model) },
       };
   let fullResponse = "";
   let errText = "";
   let pendingWrite = null;
   // Same transient-failure retry as the WS path (buffered, so no partial-reply concern): re-run on a fresh key until we get output or exhaust attempts.
   for (let attempt = 0; ; attempt++) {
-    rotateGroqKey(model);
+    rotateKey(model);
     fullResponse = "";
     errText = "";
     try {
@@ -1156,7 +1326,7 @@ app.post("/agent/diagnose", async (req, res) => {
     model,
     replaceBuiltinTools: true,
     allowedTools: [],
-    constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+    constraints: { maxTokens: outputCap(model) },
   }, model);
 
   if (error && !text) return res.status(502).json({ error });
@@ -1425,7 +1595,7 @@ app.post("/agent/guardrail/fix", async (req, res) => {
     const { text, error } = await collectTurn({
       prompt, dir: session.dir, model,
       replaceBuiltinTools: true, allowedTools: [],
-      constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+      constraints: { maxTokens: outputCap(model) },
     }, model);
     if (error && !text) return res.status(502).json({ error, steps });
 
@@ -1619,6 +1789,86 @@ app.post("/agent/gitagent", async (req, res) => {
   }
 });
 
+// Clones a pack for OpenGAP add-agent/add-guard with prompts and the host's credential helpers switched off.
+function gitClone(url, dest) {
+  return new Promise((resolveP, rejectP) => {
+    const child = spawn("git", ["clone", "--depth", "1", "--", url, dest], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: "" },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let err = "";
+    child.stderr.on("data", (d) => { err += d; });
+    const timer = setTimeout(() => child.kill(), 60000);
+    child.on("close", (code) => { clearTimeout(timer); code === 0 ? resolveP() : rejectP(new Error(`git clone failed: ${err.trim().split("\n").pop() || code}`)); });
+  });
+}
+
+const ogRunner = opengap.createRunner({
+  gatherEditFiles, runEditPipeline, collectTurn, parseJsonLoose, parseEditBlocks, providerHasKey,
+  outputBudget: (model, prompt) => editOutputBudget(model, prompt),
+});
+
+// The coding entry point: an installed OpenGAP team routes the task; otherwise the built-in pipeline edits directly.
+async function runCodingTask(dir, message, model, onStep, container, opts = {}) {
+  if (opengap.installed(dir)) {
+    return ogRunner.runTask(dir, message, { model, container, onStep, onEvent: opts.onEvent, files: opts.files });
+  }
+  return runEditPipeline(dir, message, model, onStep, container, opts);
+}
+
+function ogSession(req, res) {
+  const container = (req.body && req.body.container) || req.query.container;
+  const session = sessions.get(container);
+  if (!session) { res.status(404).json({ error: "sandbox not registered" }); return null; }
+  return session;
+}
+
+const ogRoute = (fn) => async (req, res) => {
+  const session = ogSession(req, res);
+  if (!session) return;
+  try {
+    const out = await fn(session, req);
+    res.json(out === undefined ? opengap.status(session.dir) : out);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+};
+
+app.get("/agent/opengap", ogRoute((s) => opengap.status(s.dir)));
+app.post("/agent/opengap/init", ogRoute((s) => { const wrote = opengap.init(s.dir); return { ...opengap.status(s.dir), wrote }; }));
+app.post("/agent/opengap/agent", ogRoute((s, req) => { opengap.saveAgent(s.dir, req.body.agent || {}); }));
+app.post("/agent/opengap/agent/delete", ogRoute((s, req) => { opengap.deleteAgent(s.dir, String(req.body.name || "")); }));
+app.get("/agent/opengap/file", ogRoute((s, req) => ({ path: req.query.path, content: opengap.readFile(s.dir, String(req.query.path || "")) })));
+app.post("/agent/opengap/file", ogRoute((s, req) => { opengap.saveFile(s.dir, String(req.body.path || ""), String(req.body.content ?? "")); }));
+app.post("/agent/opengap/routing", ogRoute((s, req) => { opengap.setRouting(s.dir, String(req.body.key || ""), req.body.value); }));
+app.post("/agent/opengap/guard", ogRoute((s, req) => { opengap.addGuard(s.dir, req.body.guard || {}); }));
+app.post("/agent/opengap/guard/toggle", ogRoute((s, req) => { opengap.toggleGuard(s.dir, String(req.body.name || ""), req.body.enabled !== false); }));
+app.post("/agent/opengap/add", ogRoute(async (s, req) => {
+  let url = req.body.url;
+  // A registry reference ("author/agent") resolves to its repository, so registry agents can join the team too.
+  if (!url && req.body.ref) {
+    const entry = findAgent(await fetchRegistryIndex(), String(req.body.ref));
+    if (!entry || !entry.repository) throw new Error("that agent is not in the registry");
+    url = entry.repository;
+  }
+  const installedNames = await opengap.addFromGit(s.dir, { url, as: req.body.as, kind: req.body.kind === "guard" ? "guard" : "agent" }, gitClone);
+  return { ...opengap.status(s.dir), installedNames };
+}));
+app.get("/agent/opengap/runs", ogRoute((s) => ({ runs: opengap.listRuns(s.dir) })));
+app.post("/agent/opengap/smoke", ogRoute(async (s, req) => {
+  const r = allowLLM(req.get("x-jr-user"));
+  if (!r.ok) throw new Error(llmLimitMessage(r.minutes));
+  return { steps: await ogRunner.smoke(s.dir, String(req.body.name || ""), modelFor(req.body.provider)) };
+}));
+
+const planner = createPlanner({
+  collectTurn, parseJsonLoose, gatherEditFiles, hostExec, readFileCapped,
+  checkCommand: (dir, command) => (opengap.installed(dir) ? opengap.checkCommandLine(dir, command) : null),
+  // Plan steps go through the OpenGAP team when one is installed, so its routing and guardrails apply to them too.
+  runEditPipeline: (dir, message, model, onStep, container, opts) => runCodingTask(dir, message, model, onStep, container, { ...opts, onEvent: opts && opts.onEvent }),
+  outputBudget: (model, prompt) => editOutputBudget(model, prompt),
+});
+
 // WebSocket: one connection per sandbox session.
 wss.on("connection", (ws, req) => {
   let boundContainer = null;
@@ -1651,6 +1901,32 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
+    if (type === "stop") {
+      planner.stop(ws);
+      return;
+    }
+    if (type === "command_decision") {
+      planner.decide(ws, payload);
+      return;
+    }
+    if (type === "plan_review" || type === "plan_proceed") {
+      const quota = allowLLM(user);
+      if (!quota.ok) {
+        ws.send(JSON.stringify({ type: "error", content: llmLimitMessage(quota.minutes) }));
+        ws.send(JSON.stringify({ type: "complete", content: "" }));
+        return;
+      }
+      const entry = planner._plans.get(payload.id);
+      if (!entry || !sessionFor(entry.container)) {
+        ws.send(JSON.stringify({ type: "error", content: "That plan is not available any more; ask again." }));
+        ws.send(JSON.stringify({ type: "complete", content: "" }));
+        return;
+      }
+      if (type === "plan_review") await planner.revise(ws, { id: payload.id, comments: (payload.comments || []).slice(0, 30), policy: payload.policy });
+      else await planner.proceed(ws, { id: payload.id, policy: payload.policy });
+      return;
+    }
+
     if (type === "chat") {
       const quota = allowLLM(user);
       if (!quota.ok) {
@@ -1677,11 +1953,20 @@ wss.on("connection", (ws, req) => {
       }
 
       const model = modelFor(provider);
-      const mode = await decideMode(payload.mode, message, session.dir, model);
+      // Planning and Fast are the Antigravity modes; a plain question in either is still just answered.
+      let mode;
+      if (payload.mode === "plan" || payload.mode === "fast") {
+        const route = await decideMode("auto", message, session.dir, model);
+        mode = route === "ask" ? "ask" : payload.mode === "plan" ? "plan" : "edit";
+      } else {
+        mode = await decideMode(payload.mode, message, session.dir, model);
+      }
       console.log(`[agent] chat container=${targetContainer} model=${model} mode=${mode}`);
       ws.send(JSON.stringify({ type: "thinking", content: "" }));
 
-      if (mode === "ask") {
+      if (mode === "plan") {
+        await planner.startPlan(ws, { message, dir: session.dir, model, container: targetContainer, policy: payload.policy });
+      } else if (mode === "ask") {
         // Toolless retrieve-then-generate: reliable on weak-tool-calling models.
         const askPrompt = await buildAskPrompt(session.dir, message);
         await streamTurn(ws, {
@@ -1690,7 +1975,7 @@ wss.on("connection", (ws, req) => {
           model,
           replaceBuiltinTools: true, // no built-in tools…
           allowedTools: [],          // …and nothing survives the filter → toolless
-          constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+          constraints: { maxTokens: outputCap(model) },
         }, model, targetContainer);
       } else if (mode === "edit") {
         // Toolless generate-then-apply: the model outputs edits, the backend writes them — so the model never has to call a tool.
@@ -1710,13 +1995,14 @@ wss.on("connection", (ws, req) => {
           replaceBuiltinTools: true,
           allowedTools: AGENT_ALLOWED_TOOLS,
           tools: agentTools(session.dir, targetContainer),
-          constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+          constraints: { maxTokens: outputCap(model) },
         }, model, targetContainer);
       }
     }
   });
 
   ws.on("close", () => {
+    planner.stop(ws);
     if (boundContainer) {
       const session = sessions.get(boundContainer);
       if (session) session.clients.delete(ws);
@@ -1726,8 +2012,8 @@ wss.on("connection", (ws, req) => {
 
 // For tests; server lets them drive the routes over real HTTP.
 export {
-  makeShellTool, makeReadTool, makeWriteTool, writtenPathFrom, resolveTurnMode, heuristicMode, extractSearchTerms,
-  parseEditBlocks, applyEditBlocks, gatherEditFiles, classifyEditComplexity, server,
+  makeShellTool, makeReadTool, makeWriteTool, writtenPathFrom, heuristicMode, extractSearchTerms,
+  parseEditBlocks, applyEditBlocks, applyHunks, gatherEditFiles, classifyEditComplexity, buildEditPrompt, editOutputBudget, roomAfter413, runEditPipeline, planner, server,
 };
 
 // Skip binding a port when imported for tests (AGENT_NO_LISTEN=1).

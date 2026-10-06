@@ -1,22 +1,34 @@
 // Providers, keys, and a single buffered turn.
 
+import "./models.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { safeQuery as query } from "./agent-home.js";
 import { getModels } from "@mariozechner/pi-ai";
 
-// UI provider selector -> gitclaw model id, each overridable by env.
-export const PROVIDER_MODELS = {
-  groq: process.env.AGENT_MODEL_GROQ || "groq:openai/gpt-oss-120b",
-  anthropic: process.env.AGENT_MODEL_ANTHROPIC || "anthropic:claude-sonnet-4-5",
-  openai: process.env.AGENT_MODEL_OPENAI || "openai:gpt-4.1",
-  gemini: process.env.AGENT_MODEL_GEMINI || "google:gemini-2.0-flash",
+// The strongest model each provider offers for agent and coding work, and a quick one for short helper turns; env overrides either.
+export const MODEL_TIERS = {
+  groq: { code: process.env.AGENT_MODEL_GROQ || "groq:openai/gpt-oss-120b", fast: process.env.AGENT_MODEL_GROQ_FAST || "groq:openai/gpt-oss-120b" },
+  anthropic: { code: process.env.AGENT_MODEL_ANTHROPIC || "anthropic:claude-opus-5-5", fast: process.env.AGENT_MODEL_ANTHROPIC_FAST || "anthropic:claude-haiku-4-5" },
+  openai: { code: process.env.AGENT_MODEL_OPENAI || "openai:gpt-5.2", fast: process.env.AGENT_MODEL_OPENAI_FAST || "openai:gpt-5-mini" },
+  gemini: { code: process.env.AGENT_MODEL_GEMINI || "google:gemini-2.5-pro", fast: process.env.AGENT_MODEL_GEMINI_FAST || "google:gemini-2.5-flash" },
 };
+export const PROVIDER_MODELS = Object.fromEntries(Object.entries(MODEL_TIERS).map(([p, t]) => [p, t.code]));
+
+const PROVIDER_ENV = { groq: "GROQ_API_KEY", anthropic: "ANTHROPIC_API_KEY", openai: "OPENAI_API_KEY", gemini: "GEMINI_API_KEY" };
+// Keys the user saved in Settings beat the server's own; among them the strongest provider wins.
+const USER_ORDER = ["anthropic", "openai", "gemini", "groq"];
+// The server's .env keys are the fallback, Groq (the free tier) first.
+const SYSTEM_ORDER = ["groq", "anthropic", "openai", "gemini"];
+const userProviders = new Set();
+
+const providerOfModel = (model) => { const p = String(model || "").split(":")[0]; return p === "google" ? "gemini" : p; };
 
 // pi-ai crashes the process if handed a provider with no key, so never offer one.
 export function providerHasKey(p) {
   switch (p) {
+    case "auto": return !!firstAvailableProvider();
     case "anthropic": return !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN);
     case "openai": return !!process.env.OPENAI_API_KEY;
     case "gemini":
@@ -27,7 +39,7 @@ export function providerHasKey(p) {
 }
 
 export const NO_KEY_MESSAGE =
-  "No AI provider API key configured. Set GROQ_API_KEY (or ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) in .env and restart the server.";
+  "No AI provider API key configured. Paste one in Settings (/settings.html), or set GROQ_API_KEY (or ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) in .env and restart.";
 
 // Groq's TPM cap is per ORG, so keys from separate orgs each get their own bucket.
 const ALL_GROQ_KEYS = (() => {
@@ -64,6 +76,12 @@ if (!GROQ_KEYS.includes(process.env.GROQ_API_KEY) && GROQ_KEYS.length) {
 }
 if (GROQ_KEYS.length > 1) console.error(`[agent] Groq key pool: ${GROQ_KEYS.length} keys (round-robin per turn)`);
 
+// Every provider rotates through its own pool; the Groq one is GROQ_KEYS itself.
+export const POOLS = { groq: GROQ_KEYS, anthropic: [], openai: [], gemini: [] };
+for (const p of ["anthropic", "openai", "gemini"]) if (process.env[PROVIDER_ENV[p]]) POOLS[p].push(process.env[PROVIDER_ENV[p]].trim());
+// The server's own keys, restored when the user removes all of theirs for a provider.
+const SYSTEM_POOLS = Object.fromEntries(Object.entries(POOLS).map(([p, keys]) => [p, [...keys]]));
+
 // A model can intermittently emit a tool call Groq rejects; retrying on a fresh key usually works.
 export const AGENT_TOOLCALL_RETRIES = Number(process.env.AGENT_TOOLCALL_RETRIES) || 2;
 export const RETRIABLE_TURN_ERROR = /tool call validation|tool choice is none|not in request\.tools|malformed|failed to call a function|failed_generation|adjust your prompt|could not parse|invalid (?:tool|function)|Connection error|rate limit|\b429\b|temporarily|ECONNRESET|fetch failed/i;
@@ -72,12 +90,14 @@ const REJECTED_KEY = /\b401\b|invalid api key|incorrect api key/i;
 
 // A key the provider rejects leaves the pool for the rest of the process, so one stale .env line cannot fail every other turn.
 export function dropRejectedKey(model, error) {
-  if (!model || !model.startsWith("groq:") || !REJECTED_KEY.test(String(error || ""))) return false;
-  const i = GROQ_KEYS.indexOf(process.env.GROQ_API_KEY);
-  if (i < 0 || GROQ_KEYS.length < 2) return false;
-  GROQ_KEYS.splice(i, 1);
-  process.env.GROQ_API_KEY = GROQ_KEYS[0];
-  console.error(`[agent] dropped a Groq key the provider rejected (401) · ${GROQ_KEYS.length} left`);
+  const p = providerOfModel(model);
+  const pool = POOLS[p];
+  if (!pool || !REJECTED_KEY.test(String(error || ""))) return false;
+  const i = pool.indexOf(process.env[PROVIDER_ENV[p]]);
+  if (i < 0 || pool.length < 2) return false;
+  pool.splice(i, 1);
+  process.env[PROVIDER_ENV[p]] = pool[0];
+  console.error(`[agent] dropped a ${p} key the provider rejected (401) · ${pool.length} left`);
   return true;
 }
 
@@ -102,12 +122,44 @@ export async function pruneGroqKeys(fetchImpl = fetch) {
   return { kept: GROQ_KEYS.length + (KNOWLEDGE_KEY && !GROQ_KEYS.includes(KNOWLEDGE_KEY) ? 1 : 0), dropped: dead.size };
 }
 
-let groqCursor = 0;
-// Land consecutive requests on different orgs' TPM buckets.
-export function rotateGroqKey(model) {
-  if (!model || !model.startsWith("groq:") || GROQ_KEYS.length < 2) return;
-  process.env.GROQ_API_KEY = GROQ_KEYS[groqCursor % GROQ_KEYS.length];
-  groqCursor++;
+function setPool(p, list) {
+  const keys = [...new Set((Array.isArray(list) ? list : [list]).map((k) => String(k || "").trim()).filter(Boolean))].slice(0, 20);
+  POOLS[p].splice(0, POOLS[p].length, ...keys);
+  if (keys.length) process.env[PROVIDER_ENV[p]] = keys[0];
+  else delete process.env[PROVIDER_ENV[p]];
+}
+
+// Go sends {keys: {provider: [the user's saved keys]}}; an empty list falls back to the server's own. A flat {GROQ_API_KEY: "..."} map also works.
+export function applyKeys(body) {
+  if (!body || typeof body !== "object") return;
+  if (body.keys && typeof body.keys === "object") {
+    for (const p of Object.keys(PROVIDER_ENV)) {
+      const mine = Array.isArray(body.keys[p]) ? body.keys[p].filter(Boolean) : [];
+      setPool(p, mine.length ? mine : SYSTEM_POOLS[p]);
+      if (mine.length) userProviders.add(p); else userProviders.delete(p);
+    }
+    return;
+  }
+  for (const [p, name] of Object.entries(PROVIDER_ENV)) if (name in body) setPool(p, body[name]);
+}
+
+// Go starts this process with the keys Settings holds, already merged over the .env ones.
+try { if (process.env.JR_PROVIDER_KEYS) applyKeys({ keys: JSON.parse(process.env.JR_PROVIDER_KEYS) }); } catch { console.error("[agent] JR_PROVIDER_KEYS is not valid JSON; using the .env keys"); }
+
+const cursors = {};
+// Consecutive requests land on different keys, which for Groq means different orgs' TPM buckets.
+export function rotateKey(model) {
+  const p = providerOfModel(model);
+  const pool = POOLS[p];
+  if (!pool || pool.length < 2) return;
+  cursors[p] = (cursors[p] || 0) + 1;
+  process.env[PROVIDER_ENV[p]] = pool[cursors[p] % pool.length];
+}
+export const rotateGroqKey = rotateKey;
+
+// Groq's TPM cap needs a small output reservation; hosted reasoning models spend thinking from the same budget, so they get more room.
+export function outputCap(model, wanted = AGENT_MAX_OUTPUT_TOKENS) {
+  return providerOfModel(model) === "groq" ? wanted : Math.max(wanted, Number(process.env.AGENT_MAX_OUTPUT_TOKENS_HOSTED) || 16000);
 }
 
 // Groq's 12k TPM counts input PLUS reserved output, so pi-ai's 32000 default bills a small prompt as ~34k and 413s.
@@ -125,22 +177,22 @@ try {
   console.error("[agent] could not cap Groq output reservation:", e.message);
 }
 
-// First configured provider, preferring Groq (the free-tier default).
-export function firstAvailableProvider() {
-  return ["groq", "anthropic", "openai", "gemini"].find(providerHasKey) || null;
+// Providers in the order a request should try them.
+export function providerOrder() {
+  const user = USER_ORDER.filter((p) => userProviders.has(p) && providerHasKey(p));
+  return [...user, ...SYSTEM_ORDER.filter((p) => !user.includes(p) && providerHasKey(p))];
 }
 
-// Never returns a keyless provider's model.
-export function modelFor(uiProvider) {
+export function firstAvailableProvider() {
+  return providerOrder()[0] || null;
+}
+
+// Never returns a keyless provider's model; no provider (or "auto") means the best one available.
+export function modelFor(uiProvider, tier = "code") {
   const explicit = (process.env.GITCLAW_MODEL || "").trim();
-  if (explicit && providerHasKey(explicit.split(":")[0])) return explicit;
-
-  if (uiProvider && providerHasKey(uiProvider) && PROVIDER_MODELS[uiProvider]) {
-    return PROVIDER_MODELS[uiProvider];
-  }
-
-  const avail = firstAvailableProvider();
-  return avail ? PROVIDER_MODELS[avail] : PROVIDER_MODELS.groq;
+  if (explicit && providerHasKey(providerOfModel(explicit))) return explicit;
+  const p = uiProvider && uiProvider !== "auto" && MODEL_TIERS[uiProvider] && providerHasKey(uiProvider) ? uiProvider : firstAvailableProvider() || "groq";
+  return MODEL_TIERS[p][tier] || MODEL_TIERS[p].code;
 }
 
 // gitclaw hard-reads <dir>/agent.yaml, so a turn against an unscaffolded repo dies with ENOENT.
@@ -185,7 +237,7 @@ export async function collectTurn(queryOptions, model) {
 // Provider errors in words a person can act on; the raw text stays at the end for debugging.
 export function friendlyModelError(raw) {
   const msg = String(raw || "the model returned nothing");
-  if (/\b401\b|invalid api key|incorrect api key|unauthori[sz]ed/i.test(msg)) return `The AI provider rejected this server's API key. Put a valid key in .env (for example GROQ_API_KEY) and restart. (${msg.slice(0, 80)})`;
+  if (/\b401\b|invalid api key|incorrect api key|unauthori[sz]ed/i.test(msg)) return `The AI provider rejected this server's API key. Paste a valid one in Settings, or fix it in .env and restart. (${msg.slice(0, 80)})`;
   if (/\b429\b|rate limit|too many requests|tokens per minute/i.test(msg)) return "The AI provider is rate-limiting this server. Wait a minute and try again.";
   if (/\b413\b|too large|context length|maximum context/i.test(msg)) return "The request was too large for the model. Shorten the instructions, knowledge or input and try again.";
   if (/\b404\b|model .*not (found|exist)|does not exist/i.test(msg)) return `That model is not available with this server's key. Pick another model in the Model section. (${msg.slice(0, 80)})`;
