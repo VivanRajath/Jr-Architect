@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"sandbox/internal/core"
@@ -100,6 +101,11 @@ func detectFromInstructions(path string) (RuntimeConfig, bool) {
 	case strings.Contains(allLower, "cargo"):
 		image = "sandbox-rust"
 		port = 8080
+
+	// The node image has no bun binary; matched as a word so "bundle install" is not caught.
+	case bunCommand.MatchString(allLower):
+		image = "sandbox-bun"
+		port = 3000
 
 	default:
 		// Node / React / Next / Vite / Bun
@@ -514,3 +520,5 @@ func FrameworkFromImage(image string) string {
 }
 
 var errNoRuntime = errors.New("unable to detect runtime")
+
+var bunCommand = regexp.MustCompile(`\bbunx?\b`)

@@ -3,6 +3,7 @@ package builder
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseGeneratedFiles(t *testing.T) {
@@ -69,11 +70,11 @@ func TestGroqPoolReserveRotatesAndThrottles(t *testing.T) {
 		headroom: 1.0,
 	}
 	// Two reservations of 6000 must land on different keys (neither key fits two).
-	k1, err := p.reserve(6000)
+	k1, err := p.reserveFor(6000, 0)
 	if err != nil {
 		t.Fatalf("reserve 1: %v", err)
 	}
-	k2, err := p.reserve(6000)
+	k2, err := p.reserveFor(6000, 0)
 	if err != nil {
 		t.Fatalf("reserve 2: %v", err)
 	}
@@ -135,5 +136,23 @@ func TestPostProcessNormalizesBrokenCardImport(t *testing.T) {
 	out := postProcessCode(in, "components/app/X.tsx")
 	if !strings.Contains(out, `import { Card } from '@/components/ui/card';`) {
 		t.Errorf("broken Card import was not normalized:\n%s", out)
+	}
+}
+
+func TestPoolFailsFastWhenEveryKeyIsOutForTheDay(t *testing.T) {
+	p := &groqPool{keys: []*groqKey{{key: "a", label: "a"}, {key: "b", label: "b"}}, tpm: 12000, headroom: 0.85}
+	for _, k := range p.keys {
+		k.dailyOut = true
+		k.penalize(30 * time.Minute)
+	}
+	start := time.Now()
+	_, err := p.reserveFor(1000, 0)
+	if err == nil || !strings.Contains(err.Error(), "quota") || time.Since(start) > time.Second {
+		t.Fatalf("err %v after %s", err, time.Since(start))
+	}
+	p.keys[1].dailyOut = false
+	p.keys[1].cooldownUntil = time.Time{}
+	if k, err := p.reserveFor(1000, 0); err != nil || k.key != "b" {
+		t.Fatalf("the key with quota left was not used: %v", err)
 	}
 }

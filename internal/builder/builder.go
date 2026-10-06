@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sandbox/internal/core"
@@ -31,6 +32,35 @@ type BuildRecord struct {
 	Status    string    `json:"status"` // "building" | "ready" | "error"
 	CreatedAt time.Time `json:"createdAt"`
 	Owner     string    `json:"-"`
+	// Where the finished app was pushed: GitHubStatus is "pushing", "pushed" or "failed".
+	GitHub       string          `json:"github,omitempty"`
+	GitHubStatus string          `json:"githubStatus,omitempty"`
+	GitHubError  string          `json:"githubError,omitempty"`
+	Flows        []BuiltWorkflow `json:"-"`
+}
+
+// Set by the server: runs once a build's files are in place, to push the app to the owner's GitHub.
+var OnReady func(owner, container, buildID string, prd *PRD, flows []BuiltWorkflow)
+
+func SetBuildGitHub(buildID, status, url, errMsg string) {
+	updateBuildRecord(buildID, func(r *BuildRecord) {
+		r.GitHubStatus, r.GitHubError = status, errMsg
+		if url != "" {
+			r.GitHub = url
+		}
+	})
+}
+
+// The build that produced a container, so publishing it later can still use its PRD and workflows.
+func RecordForContainer(container string) (BuildRecord, bool) {
+	buildHistMu.Lock()
+	defer buildHistMu.Unlock()
+	for _, r := range buildHistory {
+		if r.Container == container {
+			return r, true
+		}
+	}
+	return BuildRecord{}, false
 }
 
 var (
@@ -101,6 +131,10 @@ type groqKey struct {
 	windowStart   time.Time
 	used          int       // tokens charged in the current 60s window
 	cooldownUntil time.Time // set when this org returns 429
+	// The org's per-request token cap, learned from a "Request too large" reply; orgs on different tiers differ.
+	limit int
+	// Set when Groq refused the key for its daily token quota.
+	dailyOut bool
 }
 
 type groqPool struct {
@@ -111,33 +145,29 @@ type groqPool struct {
 }
 
 var (
-	groqPoolOnce sync.Once
+	groqPoolMu   sync.Mutex
 	groqPoolInst *groqPool
 )
 
 func getGroqPool() *groqPool {
-	groqPoolOnce.Do(func() { groqPoolInst = buildGroqPool() })
+	groqPoolMu.Lock()
+	defer groqPoolMu.Unlock()
+	if groqPoolInst == nil {
+		groqPoolInst = buildGroqPool()
+	}
 	return groqPoolInst
 }
 
+// Rebuilds the pool from the environment on next use, after a key is saved or removed in Settings.
+func ResetGroqPool() {
+	groqPoolMu.Lock()
+	groqPoolInst = nil
+	groqPoolMu.Unlock()
+}
+
 func buildGroqPool() *groqPool {
-	var raw []string
-	// GROQ_API_KEYS (comma-separated) plus GROQ_API_KEY and GROQ_API_KEY_2..10.
-	if v := strings.TrimSpace(os.Getenv("GROQ_API_KEYS")); v != "" {
-		for _, k := range strings.Split(v, ",") {
-			if k = strings.TrimSpace(k); k != "" {
-				raw = append(raw, k)
-			}
-		}
-	}
-	if v := strings.TrimSpace(os.Getenv("GROQ_API_KEY")); v != "" {
-		raw = append(raw, v)
-	}
-	for i := 2; i <= 10; i++ {
-		if v := strings.TrimSpace(os.Getenv(fmt.Sprintf("GROQ_API_KEY_%d", i))); v != "" {
-			raw = append(raw, v)
-		}
-	}
+	// The user's saved Groq keys if any, else the .env ones.
+	raw := core.ProviderKeys("groq")
 
 	seen := map[string]bool{}
 	var keys []*groqKey
@@ -166,8 +196,8 @@ func buildGroqPool() *groqPool {
 
 func (p *groqPool) budget() int { return int(float64(p.tpm) * p.headroom) }
 
-// reserve picks a key with room in its current window for estTokens and charges it.
-func (p *groqPool) reserve(estTokens int) (*groqKey, error) {
+// Picks a key with room in its current window for estTokens and charges it, skipping keys whose org refuses a request of need tokens.
+func (p *groqPool) reserveFor(estTokens, need int) (*groqKey, error) {
 	if len(p.keys) == 0 {
 		return nil, fmt.Errorf("no Groq API key configured (set GROQ_API_KEY)")
 	}
@@ -189,6 +219,10 @@ func (p *groqPool) reserve(estTokens int) (*groqKey, error) {
 				k.windowStart = now
 				k.used = 0
 			}
+			if need > 0 && k.limit > 0 && k.limit < need {
+				k.mu.Unlock()
+				continue
+			}
 			ready := now.After(k.cooldownUntil)
 			if ready && k.used+estTokens <= budget {
 				k.used += estTokens
@@ -209,6 +243,9 @@ func (p *groqPool) reserve(estTokens int) (*groqKey, error) {
 			wait = 500 * time.Millisecond
 		}
 		if time.Now().Add(wait).After(deadline) {
+			if p.allDailyOut() {
+				return nil, fmt.Errorf("every Groq key has used today's free token quota; add another key in Settings or try again later")
+			}
 			return nil, fmt.Errorf("groq rate-limit: no key with %d-token headroom available within timeout", estTokens)
 		}
 		time.Sleep(wait)
@@ -237,6 +274,37 @@ func (k *groqKey) penalize(retryAfter time.Duration) {
 
 func estimateTokens(s string) int { return len(s)/4 + 8 } // ~4 chars/token
 
+func (p *groqPool) allDailyOut() bool {
+	for _, k := range p.keys {
+		k.mu.Lock()
+		out := k.dailyOut && time.Now().Before(k.cooldownUntil)
+		k.mu.Unlock()
+		if !out {
+			return false
+		}
+	}
+	return len(p.keys) > 0
+}
+
+// The largest request some key can take: 0 when a key's limit is still unknown (it may take anything).
+func (p *groqPool) largestLimit() int {
+	most := 0
+	for _, k := range p.keys {
+		k.mu.Lock()
+		l := k.limit
+		k.mu.Unlock()
+		if l == 0 {
+			return 0
+		}
+		if l > most {
+			most = l
+		}
+	}
+	return most
+}
+
+var groqTooLarge = regexp.MustCompile(`Limit (\d+), Requested (\d+)`)
+
 func parseRetryAfter(h string) time.Duration {
 	if h = strings.TrimSpace(h); h == "" {
 		return 0
@@ -248,30 +316,38 @@ func parseRetryAfter(h string) time.Duration {
 }
 
 func callGroq(systemPrompt, userPrompt string, maxTokens int) (string, error) {
+	return callGroqEffort(systemPrompt, userPrompt, maxTokens, "low")
+}
+
+// Planning calls reason harder; gpt-oss spends that reasoning from maxTokens.
+func callGroqEffort(systemPrompt, userPrompt string, maxTokens int, effort string) (string, error) {
 	pool := getGroqPool()
 	if len(pool.keys) == 0 {
 		return "", fmt.Errorf("GROQ_API_KEY not set in environment")
 	}
 	estTotal := estimateTokens(systemPrompt) + estimateTokens(userPrompt) + maxTokens
-
-	body, err := json.Marshal(groqRequest{
-		Model: groqModel,
-		Messages: []groqMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
-		},
-		Temperature:     0.7,
-		MaxTokens:       maxTokens,
-		ReasoningEffort: "low",
-	})
+	need := 0
+	build := func() ([]byte, error) {
+		return json.Marshal(groqRequest{
+			Model: groqModel,
+			Messages: []groqMessage{
+				{Role: "system", Content: systemPrompt},
+				{Role: "user", Content: userPrompt},
+			},
+			Temperature:     0.7,
+			MaxTokens:       maxTokens,
+			ReasoningEffort: effort,
+		})
+	}
+	body, err := build()
 	if err != nil {
 		return "", err
 	}
 
-	const maxAttempts = 5
+	maxAttempts := 5 + len(pool.keys)
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		key, err := pool.reserve(estTotal)
+		key, err := pool.reserveFor(estTotal, need)
 		if err != nil {
 			return "", err
 		}
@@ -300,9 +376,20 @@ func callGroq(systemPrompt, userPrompt string, maxTokens int) (string, error) {
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
-			key.penalize(parseRetryAfter(resp.Header.Get("Retry-After")))
+			wait := parseRetryAfter(resp.Header.Get("Retry-After"))
 			lastErr = fmt.Errorf("groq rate limited (429) on %s", key.label)
-			continue // reserve() picks another key or waits for a reset
+			// A key out of its daily tokens sits out until Groq says it resets, so no request waits on it again today.
+			if strings.Contains(string(respBody), "per day") {
+				if wait < time.Minute {
+					wait = 30 * time.Minute
+				}
+				key.mu.Lock()
+				key.dailyOut = true
+				key.mu.Unlock()
+				core.Logf("builder", "%s has used its daily Groq tokens; resting it for %s", key.label, wait.Round(time.Minute))
+			}
+			key.penalize(wait)
+			continue // reserveFor picks another key or waits for a reset
 		}
 
 		var gr groqResponse
@@ -312,6 +399,29 @@ func callGroq(systemPrompt, userPrompt string, maxTokens int) (string, error) {
 		}
 		if gr.Error != nil {
 			key.reconcile(estTotal, 0)
+			if m := groqTooLarge.FindStringSubmatch(gr.Error.Message); m != nil {
+				limit, _ := strconv.Atoi(m[1])
+				requested, _ := strconv.Atoi(m[2])
+				key.mu.Lock()
+				key.limit = limit
+				key.mu.Unlock()
+				need = requested
+				lastErr = fmt.Errorf("groq error: %s", gr.Error.Message)
+				// Another org may take the request as it is; if none can, the output reservation shrinks to fit the largest.
+				if most := pool.largestLimit(); most != 0 && most < requested {
+					cut := requested - most + 64
+					if maxTokens-cut < 1000 {
+						return "", lastErr
+					}
+					maxTokens -= cut
+					estTotal -= cut
+					need = most
+					if body, err = build(); err != nil {
+						return "", err
+					}
+				}
+				continue
+			}
 			if strings.Contains(strings.ToLower(gr.Error.Message), "rate limit") {
 				key.penalize(0) // some rate-limit errors arrive as 200 with an error body
 				lastErr = fmt.Errorf("groq error: %s", gr.Error.Message)
@@ -339,171 +449,34 @@ func callGroq(systemPrompt, userPrompt string, maxTokens int) (string, error) {
 type Question struct {
 	ID      string   `json:"id"`
 	Text    string   `json:"text"`
-	Options []string `json:"options,omitempty"` // curated choices shown as chips
-	Multi   bool     `json:"multi,omitempty"`   // allow multiple chip selections
+	Kind    string   `json:"kind,omitempty"` // experience, ai, capability, design or stack
+	Options []string `json:"options,omitempty"`
+	// One sentence per option, at the same index, on what choosing it means for the user.
+	Details     []string `json:"details,omitempty"`
+	Multi       bool     `json:"multi,omitempty"`
+	Recommended []int    `json:"recommended,omitempty"`
 }
 
 type PRD struct {
 	Name        string              `json:"name"`
 	Tagline     string              `json:"tagline"`
+	Vision      string              `json:"vision,omitempty"`
 	TargetUsers string              `json:"target_users"`
+	CoreLoop    string              `json:"core_loop,omitempty"`
 	Features    []string            `json:"features"`
 	Pages       []string            `json:"pages"`
 	UINote      string              `json:"ui_note"`
 	DataModel   map[string][]string `json:"data_model"`
+	EdgeCases   []string            `json:"edge_cases,omitempty"`
 	OutOfScope  []string            `json:"out_of_scope"`
+	Design      *DesignDirection    `json:"design,omitempty"`
+	AI          *AIPlan             `json:"ai,omitempty"`
+	Stack       string              `json:"stack,omitempty"`
 }
 
 type GeneratedFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
-}
-
-// /build/questions
-
-func QuestionsHandler(w http.ResponseWriter, r *http.Request) {
-	core.CORS(w, r)
-	if r.Method == http.MethodOptions {
-		return
-	}
-
-	var req struct {
-		Prompt string `json:"prompt"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Prompt) == "" {
-		core.JSONError(w, "prompt is required", 400)
-		return
-	}
-
-	system := `You are a product discovery assistant for a no-code app builder called Jr Architect.
-The user is always building a FUNCTIONAL, INTERACTIVE WEB APPLICATION (a tool they actively use), never a marketing site or landing page. Your questions must clarify how the TOOL works — its inputs, actions, data, and screens — not marketing concerns like branding funnels, pricing, or "getting started" flows.
-The app is 100% LOCAL and self-contained: it runs entirely in the browser, saves data in the browser (localStorage), and connects to NO third-party services — no Gmail, Google, sign-in/OAuth providers, Stripe/payments, email/SMS, cloud storage, or external APIs. Do NOT ask about integrations, authentication, payments, sending email, or connecting external accounts. Focus every question on the tool's own inputs, actions, screens, and the data the user enters and saves locally.
-Given a user's app idea, generate exactly 7 short, friendly clarifying questions to understand their needs better.
-Return ONLY a valid JSON array of objects with these fields:
-  - "id": snake_case identifier
-  - "text": the question string (concise, friendly)
-  - "options": an array of 3-5 curated, specific answer choices tailored to the question (NOT generic options like Yes/No unless truly binary)
-  - "multi": true if the user might reasonably select multiple options, false for single-select
-No preamble, no explanation, no markdown fences — raw JSON array only.
-Example:
-[{
-  "id": "users",
-  "text": "Who are the primary users of this app?",
-  "options": ["Developers & teams", "Small business owners", "Students", "General consumers"],
-  "multi": false
-}]`
-
-	userMsg := fmt.Sprintf("App idea: %s\n\nGenerate 7 clarifying questions.", req.Prompt)
-
-	raw, err := callGroq(system, userMsg, 800)
-	if err != nil {
-		core.JSONError(w, "AI call failed: "+err.Error(), 502)
-		return
-	}
-
-	// Strip potential markdown fences
-	raw = strings.TrimSpace(raw)
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	raw = strings.TrimSpace(raw)
-
-	var questions []Question
-	if err := json.Unmarshal([]byte(raw), &questions); err != nil {
-		// Fallback: return default questions
-		questions = defaultQuestions()
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"questions": questions})
-}
-
-func defaultQuestions() []Question {
-	return []Question{
-		{ID: "users", Text: "Who are the primary users of this app?"},
-		{ID: "auth", Text: "Should users need to sign in?"},
-		{ID: "name", Text: "What should the app be called?"},
-		{ID: "pages", Text: "What are the main pages or views you need?"},
-		{ID: "brand", Text: "Any color scheme or visual style preferences?"},
-		{ID: "mobile", Text: "Does it need to be mobile-friendly?"},
-		{ID: "data", Text: "Real database, or mock data to start with?"},
-	}
-}
-
-// /build/prd
-
-func PRDHandler(w http.ResponseWriter, r *http.Request) {
-	core.CORS(w, r)
-	if r.Method == http.MethodOptions {
-		return
-	}
-
-	var req struct {
-		Prompt  string            `json:"prompt"`
-		Answers map[string]string `json:"answers"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		core.JSONError(w, "invalid request", 400)
-		return
-	}
-
-	answersText := ""
-	for k, v := range req.Answers {
-		if strings.TrimSpace(v) != "" {
-			answersText += fmt.Sprintf("- %s: %s\n", k, v)
-		}
-	}
-
-	system := `You are a senior product manager at a top-tier tech company.
-You are always specifying a FUNCTIONAL, INTERACTIVE WEB APPLICATION — a tool the user actively operates — NOT a marketing site, landing page, or brochure.
-Generate a concise, structured Product Requirements Document (PRD) as a JSON object.
-Return ONLY valid JSON — no markdown fences, no preamble, no explanation.
-The JSON must exactly match this schema:
-{
-  "name": "App name",
-  "tagline": "One-sentence value proposition",
-  "target_users": "Who uses this app",
-  "features": ["Feature 1 as a user story", "Feature 2..."],
-  "pages": ["/route - Page Name", "/other - Other Page"],
-  "ui_note": "Color palette, visual style, tone notes",
-  "data_model": {
-    "EntityName": ["field1", "field2", "field3"]
-  },
-  "out_of_scope": ["Thing not in v1", "Another excluded thing"]
-}
-FRAMING RULES (critical):
-- The FIRST page MUST be the core working tool at route "/", e.g. "/ - Email Generator" — never "/ - Landing" or "/ - Home splash". The user lands directly in the usable app.
-- Features must be functional user stories about USING the tool ("User types a topic and generates a draft email"), NOT marketing actions ("User clicks Get Started" or "User views pricing").
-- Do NOT include marketing pages: no landing/hero, pricing, about, testimonials, sign-up funnels, or "Get Started" flows.
-- The data_model describes the real entities the tool creates or manipulates.
-LOCAL-ONLY RULES (critical — this app never talks to a server):
-- The app is FULLY LOCAL and self-contained: it runs entirely in the browser, saves the user's data in the browser (localStorage), and connects to NO third-party services. Never specify a feature that needs Gmail, Google, OAuth/sign-in providers, Stripe/payments, email/SMS sending, cloud storage, analytics, or any external API.
-- If the idea implies such an integration, reinterpret it as a LOCAL action instead. Examples: "email my resume" -> "download/export the resume as a PDF/file"; "sign in" -> "a local profile saved in the browser"; "sync to the cloud" -> "save locally and export/import a JSON file".
-- ALWAYS include these exact entries in out_of_scope (in addition to any others): "User accounts & third-party sign-in", "Sending email or SMS", "Payment processing", "Any external API, cloud sync, or server backend".
-Keep features as user stories (max 8). Keep data_model to 2-4 entities. Keep it concise but complete.`
-
-	userMsg := fmt.Sprintf("App idea: %s\n\nUser's answers:\n%s\n\nGenerate the PRD for a functional web app (the user lands directly in the working tool, not a landing page).", req.Prompt, answersText)
-
-	raw, err := callGroq(system, userMsg, 2000)
-	if err != nil {
-		core.JSONError(w, "AI call failed: "+err.Error(), 502)
-		return
-	}
-
-	raw = strings.TrimSpace(raw)
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	raw = strings.TrimSpace(raw)
-
-	var prd PRD
-	if err := json.Unmarshal([]byte(raw), &prd); err != nil {
-		core.JSONError(w, "Failed to parse PRD from AI response: "+err.Error(), 500)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"prd": prd})
 }
 
 // /build/scaffold
@@ -518,14 +491,24 @@ func ScaffoldHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		PRD *PRD `json:"prd"`
+		PRD       *PRD            `json:"prd"`
+		Workflows []BuiltWorkflow `json:"workflows"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.PRD == nil {
 		core.JSONError(w, "prd is required", 400)
 		return
 	}
+	if err := validateBuiltWorkflows(req.Workflows); err != nil {
+		core.JSONError(w, err.Error(), 400)
+		return
+	}
 
 	prd := req.PRD
+	flows := req.Workflows
+	if stack, ok := StackByID(prd.Stack); ok && stack.ID != "nextjs" {
+		scaffoldStack(w, r, prd, flows, stack)
+		return
+	}
 
 	port, err := core.FreePort()
 	if err != nil {
@@ -547,6 +530,9 @@ func ScaffoldHandler(w http.ResponseWriter, r *http.Request) {
 		Repo:      "generated:" + prd.Name,
 		Workdir:   workdir,
 		Owner:     core.UserOf(r),
+		// Building until the container runs, so the status check never asks Docker about a container that does not exist yet.
+		Status: core.StatusBuilding,
+		Stage:  "generating",
 		Services: []core.Service{{Name: "app", Stack: "builder", Framework: "nextjs",
 			ContainerPort: builderPort, HostPort: port, Primary: true, Enabled: true}},
 	}
@@ -577,7 +563,7 @@ func ScaffoldHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Async: copy template, generate code, start container
 	go func() {
-		if err := scaffoldAndRun(workdir, container, port, prd, buildID); err != nil {
+		if err := scaffoldAndRun(workdir, container, port, prd, flows, buildID); err != nil {
 			fmt.Printf("Scaffold error for %s: %v\n", buildID, err)
 			updateBuildRecord(buildID, func(r *BuildRecord) {
 				r.Status = "error"
@@ -597,51 +583,79 @@ func previewURLOf(container string) string {
 	return core.PrimaryPreviewURL(sb)
 }
 
-func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID string) error {
+func scaffoldAndRun(workdir, container string, port int, prd *PRD, flows []BuiltWorkflow, buildID string) error {
 	core.AddLog(container, "Copying Next.js template...")
 
 	// Copy embedded builder-template to workdir
 	if err := Materialise(workdir, "nextjs"); err != nil {
 		return fmt.Errorf("template copy failed: %w", err)
 	}
-	core.AddLog(container, "Template copied.")
+	if err := writeNextShell(workdir, prd); err != nil {
+		return fmt.Errorf("writing the app shell failed: %w", err)
+	}
+	core.AddLog(container, "Template copied and the app shell laid out.")
+
+	if len(flows) > 0 {
+		if err := writeWorkflowClient(workdir, flows); err != nil {
+			return fmt.Errorf("writing the workflow client failed: %w", err)
+		}
+		core.AddLog(container, fmt.Sprintf("Connected %d Agent Hub workflow(s) through app/api/workflows.", len(flows)))
+	}
 
 	// Generate code from PRD via Groq
 	core.AddLog(container, "Generating app code with Groq AI...")
-	files, err := generateCode(prd)
+	files, err := generateCode(prd, flows)
 	if err != nil {
 		return fmt.Errorf("code generation failed: %w", err)
 	}
 	core.AddLog(container, fmt.Sprintf("Generated %d files.", len(files)))
 
-	// Write generated files (only allowed paths)
+	// Write generated files (only allowed paths), then repair syntax slips and broken imports before the container starts.
 	allowedDirs := []string{"app/", "components/app/", "lib/", "public/"}
-	for _, f := range files {
+	write := func(f GeneratedFile) (string, bool) {
+		if reservedPath(f.Path) {
+			core.AddLog(container, "Keeping the template's file, skipping: "+f.Path)
+			return "", false
+		}
 		if !isAllowedPath(f.Path, allowedDirs) {
 			core.AddLog(container, fmt.Sprintf("Skipping disallowed path: %s", f.Path))
-			continue
+			return "", false
 		}
 		absPath := filepath.Join(workdir, filepath.FromSlash(f.Path))
 		if err := os.MkdirAll(filepath.Dir(absPath), fs.ModePerm); err != nil {
 			core.AddLog(container, "mkdir error: "+err.Error())
-			continue
+			return "", false
 		}
 		processedContent := postProcessCode(f.Content, f.Path)
-		if refs := thirdPartyRefs(processedContent); len(refs) > 0 {
-			core.AddLog(container, fmt.Sprintf("WARNING: %s references non-local dependencies (%s) — the app is meant to be fully local; this may break the build.", f.Path, strings.Join(refs, ", ")))
+		if strings.HasSuffix(f.Path, ".tsx") || strings.HasSuffix(f.Path, ".jsx") {
+			var fixed []string
+			if processedContent, fixed = fixIconImports(processedContent); len(fixed) > 0 {
+				core.AddLog(container, "Replaced icons lucide-react does not have in "+f.Path+": "+strings.Join(fixed, ", "))
+			}
 		}
 		if err := os.WriteFile(absPath, []byte(processedContent), 0644); err != nil {
 			core.AddLog(container, "write error for "+f.Path+": "+err.Error())
-		} else {
-			core.AddLog(container, "Wrote: "+f.Path)
+			return "", false
+		}
+		core.AddLog(container, "Wrote: "+f.Path)
+		return f.Path, true
+	}
+	var written []string
+	for _, f := range files {
+		if rel, ok := write(f); ok {
+			written = append(written, rel)
 		}
 	}
+	nextPackages := map[string]bool{"next": true}
+	for k := range allowedImportModules {
+		nextPackages[k] = true
+	}
+	rules := &importRules{packages: nextPackages}
+	written = checkAndRepair(container, workdir, groqCodeGenSystemPrompt, written, true, rules, write)
+	shimMissingUI(container, workdir, written, rules)
 
-	// Fix 3: Ensure @tailwind directives are present in globals.css
-	ensureTailwindDirectives(workdir)
-	// Guarantee the :root design tokens exist so styled components keep their colors even if the model dropped them when regenerating globals.css.
-	ensureDesignTokens(workdir)
-	core.AddLog(container, "Tailwind directives and design tokens verified in globals.css.")
+	appendTheme(filepath.Join(workdir, "app", "globals.css"), prd)
+	core.AddLog(container, "shadcn/ui theme applied.")
 
 	// Update app name in layout.tsx metadata
 	updateAppMetadata(workdir, prd)
@@ -649,8 +663,8 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 	// Fix 1: Use the preheated sandbox-builder image instead of sandbox-react.
 	core.AddLog(container, "Starting Docker sandbox (preheated builder image)...")
 	const builderImage = "sandbox-builder"
-	// The startup command copies pre-installed node_modules then launches Next.js dev server.
-	const builderStartCmd = "(cp -r /opt/builder-deps/node_modules/. ./node_modules/ 2>/dev/null || npm install --no-audit --no-fund) && npm run dev -- -H 0.0.0.0"
+	// node_modules lives in one shared volume, filled from the image once per dependency version instead of copying 380 MB on every build.
+	const builderStartCmd = `flock /workspace/node_modules/.jr-lock sh -c '[ "$(cat node_modules/.jr-deps 2>/dev/null)" = "` + builderDepsVersion + `" ] || { find node_modules -mindepth 1 -maxdepth 1 ! -name .jr-lock -exec rm -rf {} + ; cp -r /opt/builder-deps/node_modules/. ./node_modules/ && echo ` + builderDepsVersion + ` > node_modules/.jr-deps; }' && npm run dev -- -H 0.0.0.0`
 
 	stack := core.ImageToStack(builderImage)
 	if specErr := gitagent.GenerateAgentSpec(workdir, stack); specErr != nil {
@@ -670,10 +684,13 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 	}
 	env = append(env, core.WatcherEnv()...)
 	env = append(env, core.HeadlessEnv...)
-	// The anonymous volume at /workspace/node_modules keeps node_modules on a fast native Docker volume instead of the bind-mounted /workspace.
+	// A named volume shared by every builder keeps node_modules on fast native storage and fills it only once.
 	mounts := []string{
 		"-v", "/root/.npm",
-		"-v", "/workspace/node_modules",
+		"-v", builderModulesVolume + ":/workspace/node_modules",
+	}
+	if len(flows) > 0 {
+		mounts = append(mounts, hostGatewayArgs()...)
 	}
 	args := core.RunArgs(container, "1536m", "1.5", 200, []core.PortMap{{Host: port, Container: builderPort}}, workdir, env, mounts, builderImage, builderStartCmd)
 
@@ -690,8 +707,12 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 	core.UpdateSandbox(container, func(s *core.Sandbox) { s.Stage = "container" })
 	core.OpenPreviews(container)
 
-	if !core.WaitForServer(port) {
-		core.AddLog(container, "Warning: server not ready yet — check logs")
+	// Once the dev server answers, every page is opened and any that errors is repaired from its real error.
+	if waitForAnswer(port, 3*time.Minute) {
+		healPages(container, workdir, port, prd, groqCodeGenSystemPrompt, rules, write)
+	}
+	if !waitForHome(port, 2*time.Minute) {
+		core.AddLog(container, "The app is up but its home page still shows an error; open the IDE to see it and fix it with the coding agent.")
 	} else {
 		core.AddLog(container, "App is ready. Open the preview to see it.")
 	}
@@ -700,7 +721,15 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 		r.Status = "ready"
 		r.Container = container
 		r.URL = previewURLOf(container)
+		r.Flows = flows
 	})
+	if OnReady != nil {
+		owner := ""
+		if sb, ok := core.GetSandbox(container); ok {
+			owner = sb.Owner
+		}
+		go OnReady(owner, container, buildID, prd, flows)
+	}
 	core.UpdateSandbox(container, func(s *core.Sandbox) {
 		s.Status = core.StatusRunning
 		s.LastActive = time.Now()
@@ -709,9 +738,15 @@ func scaffoldAndRun(workdir, container string, port int, prd *PRD, buildID strin
 	return nil
 }
 
+// The shared node_modules volume for builder containers; bump the version whenever sandbox-images/builder/package.json changes.
+const (
+	builderModulesVolume = "jr-builder-node-modules"
+	builderDepsVersion   = "next-14.2.3-1"
+)
+
 // Code generation via Groq
 
-const groqCodeGenSystemPrompt = `You are an expert Next.js 14 developer using the App Router, TypeScript, and Tailwind CSS.
+var groqCodeGenSystemPrompt = `You are an expert Next.js 14 developer using the App Router, TypeScript, and Tailwind CSS.
 Given a PRD, generate production-quality Next.js application files.
 
 RULES:
@@ -719,41 +754,28 @@ RULES:
 2. No markdown fences, no preamble, no explanation — raw JSON array only
 3. Only generate files in these directories: app/, components/app/, lib/
 4. Use Tailwind CSS classes only — no inline styles (except for CSS variables)
-5. Base UI components are pre-built and MUST be imported EXACTLY as shown (named imports, lowercase paths):
-     import { Button } from "@/components/ui/button"
-     import { Input } from "@/components/ui/input"
-     import { Textarea } from "@/components/ui/textarea"
-     import { Badge } from "@/components/ui/badge"
-     import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card"
-   NEVER use default imports for these (no "import Button from ..."). NEVER capitalize the file path (it is "button", not "Button"). These are the ONLY files in @/components/ui/* — do not import any other ui component.
+5. Use the pre-built shadcn/ui components listed below; never write your own button, card, input, dialog or tabs.
 6. Import shared data/types from @/lib/data
 7. Keep each file under 250 lines
 8. Use "use client" directive only for components with interactivity
-9. Make the UI beautiful, modern, and responsive
+9. Follow the DESIGN rules and the app's DESIGN DIRECTION; the result must look made for this app's subject and work at 375px wide
 10. The app is 100% CLIENT-SIDE and LOCAL. Make ZERO network calls of any kind — no fetch, axios, or XMLHttpRequest; no external APIs; no third-party services (Gmail, Google, Stripe/payments, sign-in/OAuth providers, email/SMS, analytics, remote fonts or CDNs). The ONLY packages you may import are: react, react-dom, next (including next/link, next/image, next/navigation), lucide-react, clsx, class-variance-authority, tailwind-merge, and local "@/..." imports. Importing ANY other package breaks the build — never do it.
-10b. PERSIST the user's data LOCALLY with window.localStorage so their work survives a page reload (this is what makes the tool genuinely useful, e.g. a resume builder that keeps the resume). Seed initial state from @/lib/data on first load, then read/write localStorage. Guard every localStorage access for SSR safety: read inside a useEffect (or check typeof window !== "undefined"), and write in an effect that depends on the state. Any component using localStorage/hooks must be a client component ("use client" at line 1).
+10b. PERSIST the user's data with useStored from @/lib/use-stored (already exists, never write it): const [recipes, setRecipes] = useStored("recipes", seedRecipes), where the initial value is the matching seed export of @/lib/data, so every screen starts full and the user's changes survive a reload. Never start a list from an empty array and never touch localStorage yourself. Components using hooks are client components ("use client" at line 1).
 11. Always replace app/page.tsx and lib/data.ts
 12. Generate components/app/ files for complex UI pieces
-13. Apply brand colors via Tailwind classes: bg-[var(--brand-600)], text-[var(--brand-500)], etc.
-14. Ensure all pages are valid Next.js App Router pages (default export as async/sync React component)
-15. CRITICAL: app/globals.css MUST start with exactly these three lines before any other content:
-    @tailwind base;
-    @tailwind components;
-    @tailwind utilities;
-    Without these lines, NO Tailwind classes will work. Always include them.
-16. Update app/globals.css :root section after the @tailwind directives to set brand color palette CSS variables
+13. Colours come only from the theme classes (bg-background, bg-card, bg-muted, text-muted-foreground, bg-primary, border...). The theme is already set; never write app/globals.css or app/layout.tsx.
+14. Ensure all pages are valid Next.js App Router pages (default export as async/sync React component). A page.tsx exports nothing but its default component; any other component goes in components/app/
 17. NEVER import page components (e.g. app/some-route/page.tsx) directly into other files. If you need a reusable component (like a list, form, card, or dashboard section), ALWAYS create it as a separate file inside components/app/ (e.g. components/app/JournalEntries.tsx) and import it from there. Files in app/ should only contain page layouts and route entry points.
 18. Always use path alias imports starting with @/ to refer to project files (e.g. @/components/app/JournalEntries, @/lib/data, @/components/ui/button). Avoid using relative imports (like ./journal-entries or ../components/...) which easily break when paths change.
 19. Never import useClient from 'react' or call useClient(). To make a component a client component, simply place the "use client"; directive at the very top of the file (on line 1) before any imports.
-20. app/globals.css MUST KEEP the full :root design-token block. Never remove these variables (only add or recolor them): --brand-50 through --brand-900, --bg, --surface, --surface2, --border, --text, --text2, --text3, --radius. Every component depends on them; removing them makes the whole app render uncolored.
 
 QUALITY BAR — the app must be the WORKING TOOL, not a marketing page:
 - app/page.tsx (the home page "/") MUST BE the actual functional application, usable immediately. Do NOT build a marketing/landing splash with a "Get Started" hero. For an email-generating app, the home page itself shows the form (inputs + generate button) and the generated result — no extra click to "get started".
 - EVERY button must DO something. A button must either (a) have an onClick wired to React state that visibly changes the UI, or (b) be a real navigation link using next/link, e.g. <Link href="/dashboard"><Button>Open</Button></Link> pointing at a route you actually generate. NEVER render a <Button> with no onClick and no surrounding <Link> — a dead button is a bug.
 - Implement the primary action fully client-side: mark the file "use client", hold form state with useState, and on submit compute and render a plausible mock result immediately (no API calls). The user must see something happen on click.
-- Give every page real structure: a header/nav bar, a page title, and content in Tailwind grid/flex with generous spacing (p-6/gap-6), rounded cards, and shadows. Never output a bare centered <h1> on an empty page.
-- Use the brand palette richly: bg-[var(--brand-600)] buttons, colored badges, var(--surface) cards on a var(--bg) page, var(--text)/var(--text2) for hierarchy.
-- Populate the UI with plausible mock data from @/lib/data so screens look full and alive.`
+- app/layout.tsx already puts every page inside the app shell with its navigation: never import or render AppShell. A page returns <Page title description actions={header buttons}>...</Page> built from the LAYOUT BLOCKS below, following its SCREEN PLAN. Never output a bare centered <h1> on an empty page.
+- Run AI workflows only from a user action (a button, a form submit, sending a message). Never call runWorkflow in useEffect, on render, on every keystroke or on a timer.
+- Populate the UI with plausible mock data from @/lib/data so screens look full and alive.` + designRules + blocksReference + shadcnReference("TSX", "@/")
 
 // genChunkTokens caps each generation call's output.
 func genChunkTokens() int {
@@ -766,16 +788,19 @@ func genChunkTokens() int {
 }
 
 // generateCode builds the app in several small Groq calls instead of one giant request.
-func generateCode(prd *PRD) ([]GeneratedFile, error) {
-	prdJSON, err := json.MarshalIndent(prd, "", "  ")
+func generateCode(prd *PRD, flows []BuiltWorkflow) ([]GeneratedFile, error) {
+	prdJSON, err := codePRDJSON(prd)
 	if err != nil {
 		return nil, err
 	}
 
 	maxTok := genChunkTokens()
+	var mu sync.Mutex
 	byPath := map[string]GeneratedFile{}
 	var order []string
 	add := func(files []GeneratedFile) {
+		mu.Lock()
+		defer mu.Unlock()
 		for _, f := range files {
 			if strings.TrimSpace(f.Path) == "" {
 				continue
@@ -787,70 +812,142 @@ func generateCode(prd *PRD) ([]GeneratedFile, error) {
 		}
 	}
 
-	// Call 1 — foundation: shared data, global styles, home page (+ its components).
+	// Call 1: the data on its own, so the seed is rich and every later call can see its real shape.
+	dataMsg := fmt.Sprintf(`PRD:
+%s
+
+Generate ONLY lib/data.ts now (return a JSON array with that one file):
+- An exported TypeScript interface for every entity, with every field the features show or filter by (for a recipe: cook time, servings, difficulty, cuisine, tags, ingredients with amounts, numbered steps).
+- Exported seed arrays with 6-8 rich, specific, realistic records each (real names, real amounts, varied values), plus exported defaults for settings or the current session if the features need them.
+- Export every collection the pages will need; nothing else in the file.`, prdJSON)
+	if raw, err := callGroq(groqCodeGenSystemPrompt, dataMsg, maxTok); err == nil {
+		add(parseGeneratedFiles(cleanJSONArray(raw)))
+	}
+	dataNote := ""
+	if f, ok := byPath["lib/data.ts"]; ok {
+		dataNote = "\n\nlib/data.ts already exists; import from it and use these exact names and fields (add new data inside your own files, never import a name it does not export):\n" + dataShape(f.Content)
+	}
+	shellNote := "\n\nThe app shell and its navigation are already around every page (app/layout.tsx): never import or render AppShell. The navigation links to: " + routeList(prd) + "; link only to these routes."
+
+	// Call 2: the home page and its components, which set the visual language the other pages follow.
 	foundationMsg := fmt.Sprintf(`PRD:
 %s
 
-Generate ONLY these foundation files now (return a JSON array):
-- lib/data.ts — all mock data and TypeScript types matching the data_model, exported for reuse
-- app/globals.css — the three @tailwind directives first, then :root brand colors from ui_note
-- app/page.tsx — the home page ("/"). This IS the working app: it must contain the primary tool (inputs + a wired primary button + client-side useState that shows a mock result on click). Do NOT make it a "Get Started" landing splash. Add "use client" at line 1.
-- any components/app/* used by the home page
-
-Every button must have a working onClick (state change) or be wrapped in a next/link <Link> to a real route — no dead buttons. Do NOT generate other route pages yet. Make it visually stunning with mock data.`, string(prdJSON))
-
+Generate ONLY these files now (return a JSON array):
+- app/page.tsx: the home page ("/"). It IS the working app and the most useful screen. "use client" at line 1; export only the default component.
+- any components/app/* it needs.
+Every button must have a working onClick (state change) or be wrapped in a next/link <Link> to one of the routes above. Do NOT generate other route pages yet.%s%s%s%s%s`, prdJSON, screenPlan(prd, "/"), shellNote, dataNote, designBrief(prd.Design), workflowContract(flows))
 	raw, err := callGroq(groqCodeGenSystemPrompt, foundationMsg, maxTok)
 	if err != nil {
 		return nil, err
 	}
 	add(parseGeneratedFiles(cleanJSONArray(raw)))
+	mu.Lock()
+	done := append([]string(nil), order...)
+	mu.Unlock()
 
-	// Subsequent calls — remaining route pages in small batches so each call stays under one org's per-minute budget.
-	var otherRoutes []prdRoute
+	// Then every other page in its own call, three at a time.
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 3)
 	for _, rt := range parsePRDRoutes(prd) {
 		if rt.file == "app/page.tsx" {
-			continue // home page already generated in the foundation call
-		}
-		otherRoutes = append(otherRoutes, rt)
-	}
-
-	const batchSize = 2
-	for i := 0; i < len(otherRoutes); i += batchSize {
-		end := i + batchSize
-		if end > len(otherRoutes) {
-			end = len(otherRoutes)
-		}
-		var lines []string
-		for _, rt := range otherRoutes[i:end] {
-			lines = append(lines, fmt.Sprintf("- %s (route %s — %s)", rt.file, rt.route, rt.name))
-		}
-		pageMsg := fmt.Sprintf(`PRD:
-%s
-
-Already generated — import from these, do NOT redefine them: %s
-
-Generate ONLY these route pages now, plus any components/app/* they need (return a JSON array):
-%s
-
-Reuse types and mock data by importing from @/lib/data. Match the styling already set in app/globals.css.`, string(prdJSON), strings.Join(order, ", "), strings.Join(lines, "\n"))
-
-		raw, err := callGroq(groqCodeGenSystemPrompt, pageMsg, maxTok)
-		if err != nil {
-			// A failed batch must not kill the whole app — keep what we have and let the route render 404 rather than aborting the build.
 			continue
 		}
-		add(parseGeneratedFiles(cleanJSONArray(raw)))
+		wg.Add(1)
+		go func(rt prdRoute) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			name, desc, _ := strings.Cut(rt.name, ":")
+			brief := viewBrief(prd, viewSpec{Route: rt.route, Name: strings.TrimSpace(name), Desc: strings.TrimSpace(desc)})
+			pageMsg := fmt.Sprintf(`App brief:
+%s
+
+Already generated (import from these, never redefine them): %s
+
+Generate ONLY %s (route %s: %s), plus any components/app/* it needs, named after this page (return a JSON array). "use client" at line 1 if it uses state; export only the default component. Match the home page's visual language.%s%s%s%s%s`,
+				brief, strings.Join(done, ", "), rt.file, rt.route, rt.name, screenPlan(prd, rt.route), shellNote, dataNote, designBrief(prd.Design), workflowContract(flows))
+			// One retry; a page that still fails gets a placeholder, so its navigation link never leads to a 404.
+			files, err := generateFiles(groqCodeGenSystemPrompt, pageMsg, "page.tsx")
+			if err != nil {
+				files = []GeneratedFile{placeholderPage(rt, err)}
+			}
+			add(files)
+		}(rt)
 	}
+	wg.Wait()
 
 	if len(byPath) == 0 {
 		return nil, fmt.Errorf("no valid files parsed from AI response")
 	}
-
 	files := make([]GeneratedFile, 0, len(order))
 	for _, p := range order {
 		files = append(files, byPath[p])
 	}
 	return files, nil
+}
+
+var exportLineRegex = regexp.MustCompile(`(?m)^export\s+(?:const|let|function|type|interface|enum)\s+[A-Za-z_$][\w$]*[^\n]*`)
+
+// The data file's types in full and its other exports as one line each: enough to use it correctly at a fraction of its size.
+func dataShape(src string) string {
+	var out []string
+	lines := strings.Split(src, "\n")
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		if strings.HasPrefix(l, "export interface") || strings.HasPrefix(l, "export type") && strings.HasSuffix(strings.TrimSpace(l), "{") {
+			block := []string{l}
+			for i+1 < len(lines) && !strings.HasPrefix(lines[i], "}") {
+				i++
+				block = append(block, lines[i])
+			}
+			out = append(out, strings.Join(block, "\n"))
+			continue
+		}
+		if exportLineRegex.MatchString(l) {
+			if j := strings.Index(l, "="); j > 0 {
+				l = strings.TrimSpace(l[:j]) + " = ..."
+			}
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// A page that could not be generated: it says so in the app and points at the IDE instead of breaking the navigation.
+func placeholderPage(rt prdRoute, cause error) GeneratedFile {
+	name, _, _ := strings.Cut(rt.name, ":")
+	why := "The AI could not write this page during the build."
+	if strings.Contains(cause.Error(), "quota") || strings.Contains(cause.Error(), "rate") {
+		why = "The AI ran out of tokens while writing this page."
+	}
+	return GeneratedFile{Path: rt.file, Content: fmt.Sprintf(`"use client";
+
+import { Construction } from "lucide-react";
+import { Page } from "@/components/blocks";
+import { EmptyState } from "@/components/ui/empty-state";
+
+export default function PlaceholderPage() {
+  return (
+    <Page title={%s}>
+      <EmptyState icon={<Construction />} title="This page is not built yet" description={%s} />
+    </Page>
+  );
+}
+`, jsQuote(strings.TrimSpace(name)), jsQuote(why+" Open the IDE and ask the coding agent to build it."))}
+}
+
+// The PRD's routes as "/path (Name)" for the shell's navigation.
+func routeList(prd *PRD) string {
+	var out []string
+	for _, rt := range parsePRDRoutes(prd) {
+		name, _, _ := strings.Cut(rt.name, ":")
+		out = append(out, fmt.Sprintf("%s (%s)", rt.route, strings.TrimSpace(name)))
+	}
+	if len(out) == 0 {
+		return "/ (Home)"
+	}
+	return strings.Join(out, ", ")
 }
 
 // prdRoute is a route parsed from a PRD "pages" entry like "/dashboard - Dashboard".
@@ -873,10 +970,7 @@ func parsePRDRoutes(prd *PRD) []prdRoute {
 		if !strings.HasPrefix(route, "/") {
 			continue // not a route spec — the home page covers it
 		}
-		route = strings.TrimRight(route, "/")
-		if route == "" {
-			route = "/"
-		}
+		route = staticRoute(route)
 		if seen[route] {
 			continue
 		}
@@ -884,6 +978,17 @@ func parsePRDRoutes(prd *PRD) []prdRoute {
 		routes = append(routes, prdRoute{route: route, name: name, file: routeToFile(route)})
 	}
 	return routes
+}
+
+// Generated pages are static files, so parameter segments like :id, [id] or {id} are dropped.
+func staticRoute(route string) string {
+	var parts []string
+	for _, seg := range strings.Split(route, "/") {
+		if seg != "" && !strings.ContainsAny(seg[:1], ":[{*") {
+			parts = append(parts, seg)
+		}
+	}
+	return "/" + strings.Join(parts, "/")
 }
 
 func routeToFile(route string) string {
@@ -951,6 +1056,8 @@ func Materialise(destDir, template string) error {
 
 		rel := strings.TrimPrefix(path, root)
 		rel = strings.TrimPrefix(rel, "/")
+		// Go sources and go.mod would join this module (or split it) if stored under their real names.
+		rel = strings.TrimSuffix(rel, ".jrtmpl")
 		if rel == "" {
 			return nil // skip root dir itself
 		}
@@ -980,11 +1087,6 @@ var allowedImportModules = map[string]bool{
 	"class-variance-authority": true, "tailwind-merge": true,
 }
 
-var (
-	importFromRegex    = regexp.MustCompile(`(?m)\bfrom\s+['"]([^'"]+)['"]`)
-	externalFetchRegex = regexp.MustCompile(`(?i)\bfetch\s*\(\s*['"` + "`" + `]https?://`)
-)
-
 // moduleRoot reduces an import specifier to its package root so that "next/link" -> "next" and "@scope/pkg/sub" -> "@scope/pkg".
 func moduleRoot(spec string) string {
 	if strings.HasPrefix(spec, "@") {
@@ -997,30 +1099,6 @@ func moduleRoot(spec string) string {
 		return spec[:i]
 	}
 	return spec
-}
-
-// thirdPartyRefs returns any evidence that a generated file reaches outside the local, self-contained app.
-func thirdPartyRefs(content string) []string {
-	var found []string
-	seen := map[string]bool{}
-	for _, m := range importFromRegex.FindAllStringSubmatch(content, -1) {
-		spec := m[1]
-		if strings.HasPrefix(spec, "@/") || strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../") {
-			continue
-		}
-		if allowedImportModules[moduleRoot(spec)] {
-			continue
-		}
-		if !seen["import "+spec] {
-			seen["import "+spec] = true
-			found = append(found, "import '"+spec+"'")
-		}
-	}
-	if externalFetchRegex.MatchString(content) && !seen["fetch"] {
-		seen["fetch"] = true
-		found = append(found, "fetch() to an external URL")
-	}
-	return found
 }
 
 func isAllowedPath(p string, allowedDirs []string) bool {
@@ -1056,59 +1134,6 @@ func updateAppMetadata(workdir string, prd *PRD) {
 	os.WriteFile(layoutPath, []byte(updated), 0644)
 }
 
-// ensureTailwindDirectives guarantees that app/globals.css always begins with the three @tailwind directives required for Tailwind CSS to work.
-func ensureTailwindDirectives(workdir string) {
-	path := filepath.Join(workdir, "app", "globals.css")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return // file may not exist yet, that's fine
-	}
-	content := string(data)
-	if strings.Contains(content, "@tailwind base") {
-		return // already present
-	}
-	header := "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n"
-	os.WriteFile(path, []byte(header+content), 0644)
-}
-
-// baseDesignTokens is the fallback palette/typography every styled component in the template depends on (var(--brand-*), var(--surface), var(--text), …).
-const baseDesignTokens = `/* jr-architect base tokens — fallbacks; any :root the app adds later overrides these */
-:root {
-  --brand-50:#f0f9ff;--brand-100:#e0f2fe;--brand-200:#bae6fd;--brand-300:#7dd3fc;--brand-400:#38bdf8;--brand-500:#0ea5e9;--brand-600:#0284c7;--brand-700:#0369a1;--brand-800:#075985;--brand-900:#0c4a6e;
-  --radius:0.625rem;
-  --bg:#f8fafc;--surface:#ffffff;--surface2:#f1f5f9;--border:#e2e8f0;
-  --text:#0f172a;--text2:#475569;--text3:#94a3b8;
-  --font-inter:'Inter',system-ui,sans-serif;--font-mono:'JetBrains Mono','Fira Code',monospace;
-}
-`
-
-// ensureDesignTokens guarantees the CSS design tokens exist in globals.css.
-func ensureDesignTokens(workdir string) {
-	path := filepath.Join(workdir, "app", "globals.css")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	content := string(data)
-	if strings.Contains(content, "jr-architect base tokens") {
-		return // already injected
-	}
-	// If the essential tokens the components depend on are all present, leave it.
-	if strings.Contains(content, "--surface:") &&
-		strings.Contains(content, "--brand-600:") &&
-		strings.Contains(content, "--text:") {
-		return
-	}
-	marker := "@tailwind utilities;"
-	if idx := strings.Index(content, marker); idx >= 0 {
-		at := idx + len(marker)
-		content = content[:at] + "\n\n" + baseDesignTokens + content[at:]
-	} else {
-		content = baseDesignTokens + "\n" + content
-	}
-	os.WriteFile(path, []byte(content), 0644)
-}
-
 // normalizeUIImports rewrites @/components/ui/* imports to the exact form the template exposes: lowercase (case-sensitive) file paths and named imports.
 func normalizeUIImports(content string) string {
 	content = uiImportPathRegex.ReplaceAllStringFunc(content, func(m string) string {
@@ -1137,6 +1162,11 @@ var (
 	bareUseClientRegex = regexp.MustCompile(`(?mi)^[ \t]*use[ \t]+client[ \t]*;?[ \t]*\r?$`)
 )
 
+var (
+	pageNamedExport    = regexp.MustCompile(`(?m)^export\s+((?:async\s+)?function|const|let|class)\s+([A-Za-z_$][\w$]*)`)
+	pageExportsAllowed = map[string]bool{"metadata": true, "generateMetadata": true, "viewport": true, "dynamic": true, "revalidate": true, "generateStaticParams": true, "runtime": true}
+)
+
 func postProcessCode(content string, filename string) string {
 	// A. Clean up hallucinated useClient calls & imports, and the bare `use client;` directive (unquoted, often placed after imports).
 	hasUseClientHallucination := false
@@ -1157,8 +1187,18 @@ func postProcessCode(content string, filename string) string {
 	// 1b. Normalize @/components/ui/* imports.
 	content = normalizeUIImports(content)
 
-	// 2. Convert export default function/class to named + default, so components import either way.
-	if defaultExportRegex.MatchString(content) {
+	// 2. Convert export default function/class to named + default, so components import either way; a Next.js page may export only its default.
+	isPage := strings.HasPrefix(filename, "app/") && (path.Base(filename) == "page.tsx" || path.Base(filename) == "page.jsx")
+	if isPage {
+		content = pageNamedExport.ReplaceAllStringFunc(content, func(m string) string {
+			name := pageNamedExport.FindStringSubmatch(m)[2]
+			if pageExportsAllowed[name] {
+				return m
+			}
+			return strings.TrimPrefix(m, "export ")
+		})
+	}
+	if !isPage && defaultExportRegex.MatchString(content) {
 		matches := defaultExportRegex.FindStringSubmatch(content)
 		if len(matches) >= 3 {
 			kind := matches[1]
