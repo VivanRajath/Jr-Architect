@@ -1,4 +1,5 @@
 // gitclaw runs hooks/ and tools/ scripts from its agent dir on the host, so it never gets a workspace as that dir.
+import "./models.js";
 import { query } from "gitclaw";
 import yaml from "js-yaml";
 import * as fs from "node:fs";

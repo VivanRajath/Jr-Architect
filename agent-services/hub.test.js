@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 process.env.AGENT_NO_LISTEN = "1";
 process.env.JR_HUB_DIR = mkdtempSync(join(tmpdir(), "jr-hub-test-"));
-process.env.GROQ_API_KEY = process.env.GROQ_API_KEY || "gsk_test_placeholder_not_real";
+process.env.GROQ_API_KEY = process.env.GROQ_API_KEY || "test-groq-test_placeholder_not_real";
 process.env.GITAGENT_REGISTRY_INDEX = "http://127.0.0.1:1/index.json";
 
 const def = await import("./hub/definition.js");
@@ -131,6 +131,15 @@ test("only the agent's own tools are offered, and a bad answer is repaired once"
   assert.ok(run.steps.some((s) => s.kind === "repair"));
 });
 
+test("a model that invents a tool is told which ones exist and recovers", async () => {
+  const invented = { error: "Tool call validation failed: attempted to call tool 'memory.load' which was not in request.tools" };
+  const seen = scriptSegments([[invented], [invented], [answer({ category: "bug", reply: "ok" })]]);
+  const run = await rt.startRun(sample(), { email: "bug" }, { user: "u-rt" });
+  assert.strictEqual(run.status, "completed", JSON.stringify(run.error));
+  assert.ok(!seen[0].prompt.includes("does not exist"));
+  assert.match(seen[1].prompt, /called "memory\.load", which does not exist\. The only functions you can call are: repo_read, submit_answer/);
+});
+
 test("a tool call runs through the runtime and its result reaches the model", async () => {
   const seen = scriptSegments([[{ fn: "repo_read", args: { repo: "acme/app" } }, { fn: "repo_read", args: { repo: "evil/other" } }, answer({ category: "bug", reply: "ok" })]]);
   const run = await rt.startRun(sample(), { email: "bug" }, { user: "u-rt" });
@@ -157,7 +166,8 @@ test("a text answer counts, and a stray function-call error is retried", async (
 
 test("runtime rejects bad input before any model call", async () => {
   const seen = scriptSegments([]);
-  const run = await rt.startRun(sample(), { email: 42 }, { user: "u-rt" });
+  // A missing required field is rejected; a number where text is expected is converted, not rejected.
+  const run = await rt.startRun(sample(), { subject: "hi" }, { user: "u-rt" });
   assert.strictEqual(run.status, "rejected");
   assert.strictEqual(seen.length, 0);
   const blocked = await rt.startRun(sample(), { email: "see internal-only doc" }, { user: "u-rt" });
@@ -188,7 +198,7 @@ test("output approval holds the answer until a person approves it", async () => 
 });
 
 test("a secret in the output is blocked", async () => {
-  scriptSegments([[answer({ category: "bug", reply: "use key gsk_abcdefghijklmnopqrstuvwxyz123" })]]);
+  scriptSegments([[answer({ category: "bug", reply: "use key AKIAIOSFODNN7EXAMPLE" })]]);
   const run = await rt.startRun(sample(), { email: "x" }, { user: "u-rt" });
   assert.strictEqual(run.status, "blocked");
 });
@@ -283,4 +293,213 @@ test("provider errors are explained in plain words", async () => {
   assert.match(friendlyModelError("401 Invalid API Key"), /rejected this server's API key/);
   assert.match(friendlyModelError("429 Rate limit reached"), /rate-limiting/);
   assert.strictEqual(friendlyModelError("something odd"), "something odd");
+});
+
+test("a Build mode blueprint creates agents, a wired workflow and a token that runs it", async () => {
+  await withServer(async (call) => {
+    const carol = { "X-Jr-User": "u-carol" };
+    const plan = {
+      app: "Note Helper",
+      agents: [
+        { key: "summarizer", name: "Note Summarizer", purpose: "Summarize a note.", input: { note: "The note" }, output: { summary: "Short summary" } },
+        { key: "tagger", name: "Note Tagger", purpose: "Tag a summary.", input: { summary: "A summary", note: "The note", style: "Tag style" }, output: { tags: "Comma separated tags" } },
+        { key: "unused", name: "Unused", purpose: "Never wired.", input: { x: "" }, output: { y: "" } },
+        { key: "Bad Key!", name: "Dropped" },
+      ],
+      workflows: [{ key: "summarize_and_tag", name: "Summarize and tag", agents: ["summarizer", "tagger", "missing"] }, { key: "empty", agents: ["nope"] }],
+    };
+    const out = await call("POST", "/agent/hub/blueprint", plan, carol);
+    assert.strictEqual(out.status, 201);
+    assert.deepStrictEqual(out.body.agents.map((a) => a.key), ["summarizer", "tagger"], "only agents a workflow uses are created");
+    assert.strictEqual(out.body.workflows.length, 1);
+    const flow = out.body.workflows[0];
+    assert.deepStrictEqual(Object.keys(flow.input), ["note", "style"], "a field no agent produces becomes workflow input");
+    assert.deepStrictEqual(Object.keys(flow.output), ["summary", "tags"], "the app gets every field produced on the way");
+    assert.match(flow.token, /_/);
+
+    const saved = (await call("GET", `/agent/hub/workflows/${flow.id}`, undefined, carol)).body.workflow;
+    assert.ok(saved.validation.ok, JSON.stringify(saved.validation.errors));
+    const tagger = saved.nodes.find((n) => n.name === "Note Tagger");
+    assert.deepStrictEqual(tagger.config.input, { summary: "{{ $json.summary }}", note: '{{ $node["Start"].json.note }}', style: '{{ $node["Start"].json.style }}' });
+
+    scriptSegments([[answer({ summary: "Buy milk" })], [answer({ tags: "errands" })]]);
+    const ran = await call("POST", `/agent/hub/hook-wf/${flow.id}/run`, { input: { note: "remember to buy milk", style: "short" } }, { "X-Jr-User": "hook", Authorization: `Bearer ${flow.token}` });
+    assert.strictEqual(ran.status, 200, JSON.stringify(ran.body));
+    assert.strictEqual(ran.body.status, "completed");
+    assert.strictEqual(ran.body.output.tags, "errands");
+    assert.strictEqual(ran.body.output.summary, "Buy milk");
+
+    assert.strictEqual((await call("POST", "/agent/hub/blueprint", { agents: [], workflows: [] }, carol)).status, 400);
+  });
+});
+
+test("a blueprint workflow can branch on a field an agent produced", async () => {
+  await withServer(async (call) => {
+    const erin = { "X-Jr-User": "u-erin" };
+    const plan = {
+      app: "Tutor",
+      agents: [
+        { key: "grader", name: "Grader", purpose: "Grade code.", input: { code: "Code", task: "Task" }, output: { passed: { type: "yes/no" }, feedback: "Feedback" } },
+        { key: "next_lesson", name: "Next Lesson", purpose: "Pick the next lesson.", input: { feedback: "Feedback" }, output: { lesson: "Lesson" } },
+        { key: "hinter", name: "Hint Giver", purpose: "Give a hint.", input: { feedback: "Feedback", task: "Task" }, output: { hint: "Hint" } },
+      ],
+      workflows: [{ key: "check_answer", name: "Check answer", agents: ["grader"], branch: { field: "passed", op: "is_true", then: ["next_lesson"], else: ["hinter", "grader"] } }],
+    };
+    const out = await call("POST", "/agent/hub/blueprint", plan, erin);
+    assert.strictEqual(out.status, 201, JSON.stringify(out.body));
+    const flow = out.body.workflows[0];
+    assert.deepStrictEqual(Object.keys(flow.input).sort(), ["code", "task"]);
+    assert.deepStrictEqual(Object.keys(flow.output).sort(), ["feedback", "hint", "lesson", "passed"]);
+    assert.strictEqual(flow.outputTypes.passed, "boolean");
+    const saved = (await call("GET", `/agent/hub/workflows/${flow.id}`, undefined, erin)).body.workflow;
+    assert.ok(saved.validation.ok, JSON.stringify(saved.validation.errors));
+    assert.strictEqual(saved.nodes.filter((n) => n.type === "agent").length, 3, "an agent already on the path is not repeated");
+    const hinter = saved.nodes.find((n) => n.name === "Hint Giver");
+    assert.strictEqual(hinter.config.input.task, '{{ $node["Start"].json.task }}');
+
+    scriptSegments([[answer({ passed: false, feedback: "Off by one" })], [answer({ hint: "Check the loop bound" })]]);
+    const ran = await call("POST", `/agent/hub/hook-wf/${flow.id}/run`, { input: { code: "for i in range(10)", task: "Print 1 to 10" } }, { "X-Jr-User": "hook", Authorization: `Bearer ${flow.token}` });
+    assert.strictEqual(ran.body.status, "completed", JSON.stringify(ran.body));
+    assert.strictEqual(ran.body.output.hint, "Check the loop bound");
+    assert.strictEqual(ran.body.output.feedback, "Off by one");
+    assert.ok(!ran.body.output.lesson, "the other branch never ran");
+  });
+});
+
+test("blueprint keeps list fields as arrays, so a recipe's ingredients come back as a list", async () => {
+  await withServer(async (call) => {
+    const dana = { "X-Jr-User": "u-dana" };
+    const plan = {
+      app: "Cookbook",
+      agents: [{ key: "chef", name: "Recipe Writer", purpose: "Write a recipe.", input: { dish: "Dish name" },
+        output: { title: { type: "text", description: "Recipe name" }, ingredients: "Array of strings", steps: { type: "list", description: "One step per item" }, minutes: { type: "number" } } }],
+      workflows: [{ key: "write_recipe", name: "Write recipe", agents: ["chef"] }],
+    };
+    const out = await call("POST", "/agent/hub/blueprint", plan, dana);
+    assert.strictEqual(out.status, 201, JSON.stringify(out.body));
+    const flow = out.body.workflows[0];
+    assert.deepStrictEqual(flow.outputTypes, { title: "string", ingredients: "list", steps: "list", minutes: "number" });
+    const agent = (await call("GET", `/agent/hub/agents/${out.body.agents[0].id}`, undefined, dana)).body.definition;
+    assert.strictEqual(agent.outputSchema.properties.ingredients.type, "array");
+    assert.strictEqual(agent.outputSchema.properties.minutes.type, "number");
+
+    scriptSegments([[answer({ title: "Sambar", ingredients: ["toor dal", "tamarind"], steps: ["Cook dal", "Add tamarind"], minutes: 40 })]]);
+    const ran = await call("POST", `/agent/hub/hook-wf/${flow.id}/run`, { input: { dish: "sambar" } }, { "X-Jr-User": "hook", Authorization: `Bearer ${flow.token}` });
+    assert.strictEqual(ran.body.status, "completed", JSON.stringify(ran.body));
+    assert.deepStrictEqual(ran.body.output.ingredients, ["toor dal", "tamarind"]);
+  });
+});
+
+test("the workflow playground explains itself, answers greetings and keeps its chat", async () => {
+  await withServer(async (call) => {
+    const fay = { "X-Jr-User": "u-fay" };
+    const node = (id, type, name, config) => ({ id, type, name, position: { x: 0, y: 0 }, config });
+    const echo = await call("POST", "/agent/hub/workflows", { workflow: { name: "Echo planner", description: "Plans a dinner", nodes: [
+      node("trigger", "trigger", "Start", { mode: "webhook", sample: { message: "Plan a dinner", servings: "4" } }),
+      node("set", "set", "Plan", { value: { reply: "Plan for {{ $json.message }}", steps: ["Shop", "Cook"] } }),
+      node("output", "output", "Result", { value: "{{ $json }}" }),
+    ], edges: [{ from: "trigger", port: "main", to: "set" }, { from: "set", port: "main", to: "output" }] } }, fay);
+    const id = echo.body.workflow.id;
+
+    const open = await call("GET", `/agent/hub/workflows/${id}/playground`, undefined, fay);
+    assert.strictEqual(open.body.info.name, "Echo planner");
+    assert.strictEqual(open.body.info.mainField, "message");
+    assert.deepStrictEqual(open.body.info.inputs.map((i) => i.name), ["message", "servings"]);
+    assert.deepStrictEqual(open.body.messages, []);
+
+    const hi = await call("POST", `/agent/hub/workflows/${id}/playground`, { text: "hii", input: { message: "hii", servings: "4" } }, fay);
+    assert.strictEqual(hi.status, 200, JSON.stringify(hi.body));
+    assert.deepStrictEqual(hi.body.messages.map((m) => m.role), ["user", "system"]);
+    assert.match(hi.body.messages[1].text, /playground for "Echo planner"\. Plans a dinner/);
+    assert.match(hi.body.messages[1].text, /servings/);
+    assert.strictEqual((await call("GET", `/agent/hub/workflows/${id}/runs`, undefined, fay)).body.runs.length, 0, "a greeting does not run the workflow");
+
+    const ran = await call("POST", `/agent/hub/workflows/${id}/playground`, { text: "Diwali dinner", input: { message: "Diwali dinner", servings: "4" } }, fay);
+    const reply = ran.body.messages[1];
+    assert.strictEqual(reply.role, "run");
+    assert.strictEqual(reply.run.status, "completed");
+    assert.deepStrictEqual(reply.run.output, { reply: "Plan for Diwali dinner", steps: ["Shop", "Cook"] });
+
+    const again = await call("GET", `/agent/hub/workflows/${id}/playground`, undefined, fay);
+    assert.strictEqual(again.body.messages.length, 4, "the chat is kept on the server");
+    assert.strictEqual((await call("GET", `/agent/hub/workflows/${id}/playground`, undefined, { "X-Jr-User": "u-other" })).status, 404, "another user cannot open it");
+
+    const gate = await call("POST", "/agent/hub/workflows", { workflow: { name: "Publish", nodes: [
+      node("trigger", "trigger", "Start", { mode: "webhook", sample: { text: "Hello" } }),
+      node("approval", "approval", "Approve", { message: "Publish this?" }),
+      node("output", "output", "Result", { value: { published: "{{ $json.text }}" } }),
+    ], edges: [{ from: "trigger", port: "main", to: "approval" }, { from: "approval", port: "approved", to: "output" }] } }, fay);
+    const gid = gate.body.workflow.id;
+    const info = (await call("GET", `/agent/hub/workflows/${gid}/playground`, undefined, fay)).body.info;
+    assert.ok(info.approval && info.steps.includes("A person approves the result"));
+    const paused = (await call("POST", `/agent/hub/workflows/${gid}/playground`, { text: "Spring menu", input: { text: "Spring menu" } }, fay)).body.messages[1];
+    assert.strictEqual(paused.run.status, "awaiting_approval");
+    assert.strictEqual(paused.run.pending.message, "Publish this?");
+    const decided = await call("POST", `/agent/hub/workflows/${gid}/playground/decision`, { messageId: paused.id, approved: true }, fay);
+    assert.strictEqual(decided.body.message.run.status, "completed", JSON.stringify(decided.body));
+    assert.deepStrictEqual(decided.body.message.run.output, { published: "Spring menu" });
+    const thread = (await call("GET", `/agent/hub/workflows/${gid}/playground`, undefined, fay)).body.messages;
+    assert.strictEqual(thread.find((m) => m.id === paused.id).decided, "approved");
+
+    assert.strictEqual((await call("DELETE", `/agent/hub/workflows/${gid}/playground`, undefined, fay)).status, 200);
+    assert.deepStrictEqual((await call("GET", `/agent/hub/workflows/${gid}/playground`, undefined, fay)).body.messages, []);
+  });
+});
+
+test("the playground reads a branching workflow back as steps", async () => {
+  const { describeWorkflow, greetingReply, isGreeting } = await import("./hub/playground.js");
+  const n = (id, type, name, config = {}) => ({ id, type, name, config });
+  const w = { id: "check", name: "Check answer", description: "", nodes: [
+    n("t", "trigger", "Start", { sample: { code: "print(1)", task: "Print one" } }), n("g", "agent", "Grader"), n("b", "if", "Passed?"),
+    n("x", "agent", "Next Lesson"), n("h", "agent", "Hint Giver"), n("o1", "output", "Result"), n("o2", "output", "Result 2"),
+  ], edges: [{ from: "t", port: "main", to: "g" }, { from: "g", port: "main", to: "b" }, { from: "b", port: "true", to: "x" }, { from: "b", port: "false", to: "h" },
+    { from: "x", port: "main", to: "o1" }, { from: "h", port: "main", to: "o2" }] };
+  const info = describeWorkflow("u-desc", w);
+  assert.deepStrictEqual(info.steps, ["Grader", "Passed?: if yes, Next Lesson; if no, Hint Giver"]);
+  assert.deepStrictEqual(info.agents.map((a) => a.name), ["Grader", "Next Lesson", "Hint Giver"]);
+  assert.strictEqual(info.mainField, "task", "a message-like field is the main one even when it is not first");
+  assert.match(greetingReply(info), /Grader → Passed\?: if yes, Next Lesson; if no, Hint Giver/);
+  for (const g of ["hi", "Hii!", "hello", "hey there".slice(0, 3), "Good morning", "what can you do?", "help"]) assert.ok(isGreeting(g), g);
+  for (const g of ["hi, plan a dinner for 4", "hello world app idea", "print('hi')"]) assert.ok(!isGreeting(g), g);
+});
+
+test("values from an earlier agent are converted to what the next agent declares", async () => {
+  const { coerceToSchema } = await import("./hub/definition.js");
+  const schema = { type: "object", properties: {
+    can_adapt: { type: "string" }, servings: { type: "number" }, ok: { type: "boolean" }, steps: { type: "array", items: { type: "string" } }, notes: { type: "string" },
+  } };
+  assert.deepStrictEqual(coerceToSchema({ can_adapt: true, servings: "4", ok: "yes", steps: "- Chop\n- Fry", notes: ["a", "b"] }, schema),
+    { can_adapt: "true", servings: 4, ok: true, steps: ["Chop", "Fry"], notes: "a\nb" });
+  assert.deepStrictEqual(coerceToSchema({ servings: "lots", ok: "maybe" }, schema), { servings: "lots", ok: "maybe" }, "an ambiguous value is left for the check to reject");
+
+  await withServer(async (call) => {
+    const gus = { "X-Jr-User": "u-gus" };
+    const plan = {
+      app: "Kitchen",
+      agents: [
+        { key: "assessor", name: "Adaptation Assessor", purpose: "Decide.", input: { issue: "Issue" }, output: { can_adapt: { type: "yes/no" }, reason: "Why" } },
+        { key: "explainer", name: "Explanation Explainer", purpose: "Explain.", input: { can_adapt: "Whether it adapts", reason: "Why" }, output: { explanation: "Text" } },
+      ],
+      workflows: [{ key: "adapt", name: "Adapt", agents: ["assessor", "explainer"] }],
+    };
+    const out = await call("POST", "/agent/hub/blueprint", plan, gus);
+    assert.strictEqual(out.status, 201, JSON.stringify(out.body));
+    const explainer = (await call("GET", `/agent/hub/agents/${out.body.agents[1].id}`, undefined, gus)).body.definition;
+    assert.strictEqual(explainer.inputSchema.properties.can_adapt.type, "boolean", "a new app's input takes the producer's type");
+
+    // An agent built before this fix declares text; the boolean an earlier agent sends must still get through.
+    explainer.inputSchema.properties.can_adapt = { type: "string", description: "Whether it adapts" };
+    assert.strictEqual((await call("PUT", `/agent/hub/agents/${explainer.id}`, { definition: explainer }, gus)).status, 200);
+    scriptSegments([[answer({ can_adapt: true, reason: "No dairy" })], [answer({ explanation: "Use oat milk" })]]);
+    const flow = out.body.workflows[0];
+    const ran = await call("POST", `/agent/hub/hook-wf/${flow.id}/run`, { input: { issue: "Lactose" } }, { "X-Jr-User": "hook", Authorization: `Bearer ${flow.token}` });
+    assert.strictEqual(ran.body.status, "completed", JSON.stringify(ran.body));
+    assert.strictEqual(ran.body.output.explanation, "Use oat milk");
+  });
+});
+
+test("Build mode's placeholder samples are not offered as examples", async () => {
+  const { describeWorkflow } = await import("./hub/playground.js");
+  const w = { id: "x", name: "X", nodes: [{ id: "t", type: "trigger", name: "Start", config: { sample: { user_input: "Example user_input", servings: "4" } } }], edges: [] };
+  assert.deepStrictEqual(describeWorkflow("u-x", w).inputs, [{ name: "user_input", example: "" }, { name: "servings", example: "4" }]);
 });

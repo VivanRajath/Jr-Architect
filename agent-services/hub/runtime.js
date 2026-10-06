@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { safeQuery as query } from "../agent-home.js";
 import {
-  parseJsonLoose, PROVIDER_MODELS, providerHasKey, rotateGroqKey, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR, friendlyModelError, dropRejectedKey,
+  parseJsonLoose, PROVIDER_MODELS, providerHasKey, rotateKey, modelFor, outputCap, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR, friendlyModelError, dropRejectedKey,
 } from "../llm.js";
 import { GUARD_SECRET } from "../guardrails.js";
 import {
-  normalizeDefinition, buildSystemPrompt, validateAgainstSchema, validateDefinition, TOOL_CATALOG,
+  normalizeDefinition, buildSystemPrompt, validateAgainstSchema, validateDefinition, TOOL_CATALOG, coerceToSchema,
 } from "./definition.js";
 import { readMemory, appendMemory, saveRun, newRunId } from "./store.js";
 
@@ -36,7 +36,7 @@ async function realSegment(prompt, model, maxTokens, tools, control) {
   try {
     for await (const msg of query({
       prompt, dir: hubAgentHome(), model, replaceBuiltinTools: true, tools,
-      allowedTools: tools.map((t) => t.name), constraints: { maxTokens }, abortController: ac,
+      allowedTools: tools.map((t) => t.name), constraints: { maxTokens: outputCap(model, maxTokens) }, abortController: ac,
     })) {
       if (msg.type === "delta" && msg.deltaType !== "thinking") text += msg.content;
       else if (msg.type === "system" && msg.subtype === "error") error = msg.content || error;
@@ -58,6 +58,7 @@ export function _setFetchForTests(fn) { fetchImpl = fn; }
 
 export function modelIdFor(def) {
   const p = def.model.provider;
+  if (p === "auto") return modelFor();
   if (def.model.name) return def.model.name.includes(":") ? def.model.name : `${p === "gemini" ? "google" : p}:${def.model.name}`;
   return PROVIDER_MODELS[p];
 }
@@ -343,14 +344,17 @@ export async function drive(run, defIn, ctx) {
   // One budget for the whole call, retries included, so n8n never waits past the configured timeout.
   const deadline = Date.now() + def.runtime.timeoutSeconds * 1000;
 
+  let inventedTool = "";
   for (let attempt = 0; ; attempt++) {
     // Rebuilt each attempt, so a retry resumes from the tool results already recorded instead of calling them again.
     const resume = run.transcript.length > 1 ? "\n\nContinue from here: use the results above instead of calling those functions again." : "";
-    const prompt = `${protocolPrompt(def, notes)}\n\n## Conversation so far\n${transcriptText(run)}${resume}`;
+    // A model that invented a function repeats it unless told plainly which ones exist.
+    const correction = inventedTool ? `\n\nYour last attempt called "${inventedTool}", which does not exist. The only functions you can call are: ${[...def.tools.map((t) => fnName(t.id)), "submit_answer"].join(", ")}. Call nothing else.` : "";
+    const prompt = `${protocolPrompt(def, notes)}\n\n## Conversation so far\n${transcriptText(run)}${resume}${correction}`;
     const control = { done: false, stop: null };
     const state = { repaired: false, answer: null, pause: null };
     step(run, "model", attempt ? `Retrying the model call (${attempt})` : "Thinking");
-    rotateGroqKey(model);
+    rotateKey(model);
     let timer;
     const timeout = new Promise((r) => { timer = setTimeout(() => r({ timeout: true }), Math.max(1000, deadline - Date.now())); });
     const res = await Promise.race([segment(prompt, model, def.model.maxOutputTokens, segmentTools(run, def, ctx, control, state), control), timeout]);
@@ -371,14 +375,18 @@ export async function drive(run, defIn, ctx) {
     }
     const err = res.error || "the model returned nothing";
     if (res.error && dropRejectedKey(model, res.error)) { attempt--; continue; }
-    if (attempt < AGENT_TOOLCALL_RETRIES && (RETRIABLE_TURN_ERROR.test(err) || !res.error)) continue;
+    const invented = /attempted to call tool '([^']+)'/.exec(err);
+    if (invented) inventedTool = invented[1].slice(0, 60);
+    if (attempt < AGENT_TOOLCALL_RETRIES + (invented ? 1 : 0) && (RETRIABLE_TURN_ERROR.test(err) || !res.error)) continue;
     return finish(run, "failed", { error: friendlyModelError(err) }, ctx);
   }
 }
 
 // Validates and records the run without calling a model, so a caller can hand back its id before it finishes.
-export function prepareRun(defIn, input, ctx) {
+export function prepareRun(defIn, rawInput, ctx) {
   const def = normalizeDefinition(defIn);
+  // A workflow passes values on as earlier agents produced them; yes/no, numbers and lists are converted to what this agent declares.
+  const input = coerceToSchema(rawInput, def.inputSchema);
   const run = newRun(def, input, ctx);
   const v = validateDefinition(def);
   if (!v.ok) return finish(run, "failed", { error: `Finish the agent first: ${v.errors.map((e) => e.message).join(" ")}` }, ctx);

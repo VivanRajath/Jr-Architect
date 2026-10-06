@@ -1,6 +1,6 @@
 // The structured Jr-Architect agent definition: the source of truth; the system prompt and gitagent files are derived from it.
 import yaml from "js-yaml";
-import { providerHasKey, PROVIDER_MODELS, AGENT_MAX_OUTPUT_TOKENS } from "../llm.js";
+import { providerHasKey, PROVIDER_MODELS, AGENT_MAX_OUTPUT_TOKENS, modelFor } from "../llm.js";
 
 export const DEF_API_VERSION = 1;
 export const MAX_DEF_BYTES = 64 * 1024;
@@ -62,7 +62,7 @@ export function defaultDefinition(name = "New agent") {
     purpose: "",
     responsibilities: [],
     instructions: "",
-    model: { provider: "groq", name: "", maxOutputTokens: 1500 },
+    model: { provider: "auto", name: "", maxOutputTokens: 1500 },
     tools: [],
     context: { knowledge: "", examples: [] },
     memory: { mode: "none", maxNotes: 30 },
@@ -129,7 +129,7 @@ export function normalizeDefinition(input) {
     responsibilities: strList(d.responsibilities, 20, 300),
     instructions: str(d.instructions, 8000),
     model: {
-      provider: PROVIDER_MODELS[provider] ? provider : base.model.provider,
+      provider: PROVIDER_MODELS[provider] || provider === "auto" ? provider : base.model.provider,
       name: str(model.name, 100),
       maxOutputTokens: int(model.maxOutputTokens, base.model.maxOutputTokens, 200, AGENT_MAX_OUTPUT_TOKENS),
     },
@@ -178,7 +178,7 @@ export function validateDefinition(def) {
   if (!d.purpose) errors.push({ section: "purpose", message: "Fill in \"What should the agent do?\"." });
   if (d.purpose && !d.instructions && !d.responsibilities.length) warnings.push({ section: "instructions", message: "Optional: a few steps under \"How should it do it?\" make answers more consistent. Improve can write them for you." });
   if (!providerHasKey(d.model.provider)) {
-    errors.push({ section: "model", message: `This server has no API key for ${d.model.provider}. Pick another provider under Advanced, or add the key to .env.` });
+    errors.push({ section: "model", message: `${d.model.provider === "auto" ? "No AI provider key is configured. Add one in Settings." : `This server has no API key for ${d.model.provider}. Pick Auto or another provider under Advanced, or add a key in Settings.`}` });
   }
   for (const t of d.tools) {
     const need = TOOL_CATALOG[t.id].permission;
@@ -246,7 +246,7 @@ export function renderGitagentFiles(input) {
     name: d.id || slugify(d.identity.name),
     version: d.version,
     description: d.identity.description || d.purpose.slice(0, 200),
-    model: { preferred: d.model.name || PROVIDER_MODELS[d.model.provider] },
+    model: { preferred: d.model.name || PROVIDER_MODELS[d.model.provider] || modelFor() },
     tools: d.tools.map((t) => t.id),
     runtime: { max_turns: d.runtime.maxSteps, timeout: d.runtime.timeoutSeconds },
     tags: d.identity.tags,
@@ -281,7 +281,7 @@ export function definitionFromGitagent(files) {
   const soul = String(files["SOUL.md"] || "").replace(/<!--[\s\S]*?-->/g, "").trim();
   const rules = String(files["RULES.md"] || "").split("\n").filter((l) => /^\s*[-*]\s+/.test(l));
   const preferred = (m.model && (m.model.preferred || m.model.name)) || (typeof m.model === "string" ? m.model : "");
-  const provider = Object.keys(PROVIDER_MODELS).find((p) => String(preferred).toLowerCase().includes(p === "gemini" ? "gemini" : p)) || "groq";
+  const provider = Object.keys(PROVIDER_MODELS).find((p) => String(preferred).toLowerCase().includes(p === "gemini" ? "gemini" : p)) || "auto";
   return normalizeDefinition({
     identity: { name: m.name || "Imported agent", description: m.description || "", tags: m.tags || [] },
     purpose: m.description || soul.split("\n").find((l) => l.trim() && !l.startsWith("#")) || "",
@@ -314,6 +314,33 @@ export function diffDefinitions(beforeIn, afterIn, prefix = "") {
 export function bumpPatch(v) {
   const [a, b, c] = String(v || "0.1.0").split(".").map((x) => Number(x) || 0);
   return `${a}.${b}.${c + 1}`;
+}
+
+// Converts what an earlier step produced into the type this schema expects, when the meaning is unambiguous.
+export function coerceToSchema(value, schema) {
+  if (!schema || value === undefined || value === null) return value;
+  const t = schema.type;
+  if (t === "string") {
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (Array.isArray(value)) return value.map((v) => (typeof v === "object" ? JSON.stringify(v) : String(v))).join("\n");
+    if (typeof value === "object") return JSON.stringify(value);
+    return value;
+  }
+  if ((t === "number" || t === "integer") && typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
+    const n = Number(value);
+    return t === "integer" ? Math.round(n) : n;
+  }
+  if (t === "boolean" && typeof value === "string" && /^(true|false|yes|no)$/i.test(value.trim())) return /^(true|yes)$/i.test(value.trim());
+  if (t === "array") {
+    const list = typeof value === "string" ? value.split(/\r?\n/).map((x) => x.replace(/^\s*(?:[-*\u2022]|\d+[.)])\s+/, "").trim()).filter(Boolean) : value;
+    return Array.isArray(list) ? list.map((v) => coerceToSchema(v, schema.items)) : list;
+  }
+  if (t === "object" && typeof value === "object" && !Array.isArray(value)) {
+    const out = { ...value };
+    for (const [k, s] of Object.entries(schema.properties || {})) if (out[k] !== undefined) out[k] = coerceToSchema(out[k], s);
+    return out;
+  }
+  return value;
 }
 
 // Minimal JSON-schema check for the subset normalizeSchema keeps.

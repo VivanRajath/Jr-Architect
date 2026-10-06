@@ -143,7 +143,7 @@ export async function reviewRange({
     reviewed = await reviewEditBlocks(
       toollessAgentHome(), agents,
       message || `Reviewing the changes in ${base}...${head}`,
-      floor.allowed, modelFor("groq"), step,
+      floor.allowed, modelFor(undefined, "fast"), step,
     );
   }
 

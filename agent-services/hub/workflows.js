@@ -6,7 +6,7 @@ import { git, withLock, readJSON, writeJSON, userDir, readAgent, readRun as read
 import { slugify, bumpPatch } from "./definition.js";
 import { startRun, resolveApproval, checkPublicUrl, privateNetAllowed } from "./runtime.js";
 
-export const MAX_WORKFLOWS_PER_USER = Number(process.env.JR_HUB_MAX_WORKFLOWS) || 25;
+export const MAX_WORKFLOWS_PER_USER = Number(process.env.JR_HUB_MAX_WORKFLOWS) || (process.env.JR_PUBLIC_ORIGIN ? 25 : 500);
 const MAX_NODES = 40;
 const MAX_EDGES = 80;
 const MAX_EXECUTIONS = 50;
@@ -176,6 +176,9 @@ export function resolveTemplate(tpl, ctx, depth = 0) {
   return tpl;
 }
 
+// Agents return yes/no fields as booleans, while plans compare them with "yes" or "no".
+const yesNo = (x) => (typeof x === "boolean" ? String(x) : /^(yes|no)$/i.test(String(x ?? "")) ? String(/^yes$/i.test(String(x))) : String(x ?? ""));
+
 export function testCondition(cfg, ctx) {
   const path = cfg.path.trim();
   const expr = path.startsWith("{{") ? path.replace(/^\{\{|\}\}$/g, "") : path.startsWith("$") ? path : `$json.${path}`;
@@ -184,12 +187,12 @@ export function testCondition(cfg, ctx) {
   switch (cfg.op) {
     case "exists": return v !== undefined && v !== null && v !== "";
     case "not_exists": return v === undefined || v === null || v === "";
-    case "is_true": return v === true || v === "true";
+    case "is_true": return v === true || /^(true|yes)$/i.test(String(v ?? ""));
     case "contains": return Array.isArray(v) ? v.map(String).includes(String(want)) : String(v ?? "").toLowerCase().includes(String(want).toLowerCase());
     case "greater": return Number(v) > Number(want);
     case "less": return Number(v) < Number(want);
-    case "not_equals": return String(v ?? "") !== String(want ?? "");
-    default: return String(v ?? "") === String(want ?? "");
+    case "not_equals": return yesNo(v) !== yesNo(want);
+    default: return yesNo(v) === yesNo(want);
   }
 }
 

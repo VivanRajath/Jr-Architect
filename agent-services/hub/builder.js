@@ -1,11 +1,11 @@
 // Agent Builder and Improve: the model suggests, the user decides; nothing here saves anything.
-import { collectTurn, parseJsonLoose, toollessAgentHome, modelFor, AGENT_MAX_OUTPUT_TOKENS, friendlyModelError } from "../llm.js";
+import { collectTurn, parseJsonLoose, toollessAgentHome, modelFor, outputCap, friendlyModelError } from "../llm.js";
 import {
   normalizeDefinition, diffDefinitions, TOOL_CATALOG, SECTIONS, MEMORY_MODES,
 } from "./definition.js";
 
 let turn = (prompt, model) => collectTurn({
-  prompt, dir: toollessAgentHome(), model, replaceBuiltinTools: true, allowedTools: [], constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+  prompt, dir: toollessAgentHome(), model, replaceBuiltinTools: true, allowedTools: [], constraints: { maxTokens: outputCap(model) },
 }, model);
 export function _setBuilderTurnForTests(fn) { turn = fn; }
 
@@ -83,7 +83,7 @@ export function buildQuestionsPrompt(answers) {
 
 export async function followUpQuestions(answers, provider) {
   const list = (Array.isArray(answers) ? answers : []).filter((a) => a && a.q && a.a).slice(0, 12);
-  const { text } = await turn(buildQuestionsPrompt(list), modelFor(provider));
+  const { text } = await turn(buildQuestionsPrompt(list), modelFor(provider, "fast"));
   const parsed = parseJsonLoose(text);
   const qs = (parsed && Array.isArray(parsed.questions) ? parsed.questions : [])
     .map((x) => ({ q: String((x && x.q) || "").trim().slice(0, 240), options: (Array.isArray(x && x.options) ? x.options : []).map((o) => String(o).trim().slice(0, 100)).filter(Boolean).slice(0, 4) }))

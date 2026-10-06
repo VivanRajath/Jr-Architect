@@ -8,7 +8,8 @@ import {
   normalizeDefinition, renderGitagentFiles, definitionFromGitagent, slugify, bumpPatch,
 } from "./definition.js";
 
-export const MAX_AGENTS_PER_USER = Number(process.env.JR_HUB_MAX_AGENTS) || 25;
+// A public server shares one machine among many people; a local install belongs to one person who builds many apps.
+export const MAX_AGENTS_PER_USER = Number(process.env.JR_HUB_MAX_AGENTS) || (process.env.JR_PUBLIC_ORIGIN ? 25 : 500);
 const MAX_RUNS_KEPT = 40;
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const RUN_RE = /^r-[a-f0-9]{16}$/;

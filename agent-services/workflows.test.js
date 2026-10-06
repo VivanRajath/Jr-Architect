@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 process.env.AGENT_NO_LISTEN = "1";
 process.env.JR_HUB_DIR = mkdtempSync(join(tmpdir(), "jr-wf-test-"));
-process.env.GROQ_API_KEY = process.env.GROQ_API_KEY || "gsk_test_placeholder_not_real";
+process.env.GROQ_API_KEY = process.env.GROQ_API_KEY || "test-groq-test_placeholder_not_real";
 process.env.GITAGENT_REGISTRY_INDEX = "http://127.0.0.1:1/index.json";
 
 const wf = await import("./hub/workflows.js");
@@ -65,6 +65,16 @@ test("expressions read paths and never run code", () => {
   assert.ok(wf.testCondition({ path: "$json.a.b", op: "contains", value: "1" }, ctx));
 });
 
+test("yes/no conditions match the booleans agents return", () => {
+  const ctx = { json: { passed: true, failed: false, word: "yes", label: "beginner" }, nodes: {} };
+  assert.ok(wf.testCondition({ path: "passed", op: "equals", value: "yes" }, ctx));
+  assert.ok(wf.testCondition({ path: "failed", op: "equals", value: "no" }, ctx));
+  assert.ok(wf.testCondition({ path: "passed", op: "not_equals", value: "no" }, ctx));
+  assert.ok(wf.testCondition({ path: "word", op: "is_true" }, ctx));
+  assert.ok(!wf.testCondition({ path: "failed", op: "is_true" }, ctx));
+  assert.ok(wf.testCondition({ path: "label", op: "equals", value: "beginner" }, ctx));
+});
+
 test("the graph drops impossible edges and flags missing pieces", () => {
   const w = wf.normalizeWorkflow({ nodes: [node("t", "trigger"), node("o", "output"), node("i", "if")],
     edges: [{ from: "o", to: "t" }, { from: "i", port: "maybe", to: "o" }, { from: "t", port: "main", to: "i" }, { from: "t", port: "main", to: "i" }] });
@@ -111,7 +121,7 @@ test("an approval inside the agent pauses the whole workflow", async () => {
 
 test("an agent that rejects its input fails the node, not the server", async () => {
   const flow = triageFlow();
-  flow.nodes[1].config.input = { email: 42 };
+  flow.nodes[1].config.input = { subject: "no email given" };
   const run = await wf.startWorkflowRun(flow, {}, { user: USER });
   assert.strictEqual(run.status, "failed");
   assert.strictEqual(run.failedNode, "a");

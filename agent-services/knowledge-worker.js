@@ -1,5 +1,6 @@
 // A separate process is the only way the reserved key stays reserved.
 
+import "./models.js";
 import { getModels } from "@mariozechner/pi-ai";
 import { buildKnowledge } from "./knowledge.js";
 

@@ -1,6 +1,6 @@
 // Agent Hub API under /agent/hub, plus the token-authenticated n8n endpoints Go forwards from /hooks/agents.
 import express from "express";
-import { PROVIDER_MODELS, providerHasKey } from "../llm.js";
+import { PROVIDER_MODELS, providerHasKey, modelFor } from "../llm.js";
 import {
   normalizeDefinition, validateDefinition, buildSystemPrompt, renderGitagentFiles, definitionFromGitagent,
   diffDefinitions, TOOL_CATALOG, MEMORY_MODES, SECTIONS, defaultDefinition,
@@ -9,6 +9,8 @@ import * as store from "./store.js";
 import { startRun, prepareRun, drive, resolveApproval, sendCallback, publicRun, checkPublicUrl, privateNetAllowed } from "./runtime.js";
 import { draftAgent, refineAgent, followUpQuestions } from "./builder.js";
 import * as wf from "./workflows.js";
+import { applyBlueprint } from "./blueprint.js";
+import * as pg from "./playground.js";
 
 const MAX_ACTIVE_RUNS_PER_USER = 2;
 const DRAFT_RUN_TTL = 30 * 60 * 1000;
@@ -132,7 +134,7 @@ export function createHubRouter({ allowLLM }) {
     userOf(req);
     res.json({
       tools: TOOL_CATALOG,
-      providers: Object.keys(PROVIDER_MODELS).map((id) => ({ id, model: PROVIDER_MODELS[id], hasKey: providerHasKey(id) })),
+      providers: [{ id: "auto", model: modelFor(), hasKey: providerHasKey("auto") }, ...Object.keys(PROVIDER_MODELS).map((id) => ({ id, model: PROVIDER_MODELS[id], hasKey: providerHasKey(id) }))],
       memoryModes: MEMORY_MODES, sections: SECTIONS, blank: defaultDefinition(), publicBase: publicBase(),
       maxAgents: store.MAX_AGENTS_PER_USER,
     });
@@ -401,6 +403,12 @@ export function createHubRouter({ allowLLM }) {
     res.status(201).json({ workflow: wfSummary(user, w) });
   });
 
+  // Build mode: one call creates an app's agents, their workflows and a webhook token for each workflow.
+  r.post("/blueprint", async (req, res) => {
+    const user = userOf(req);
+    res.status(201).json(await applyBlueprint(user, req.body));
+  });
+
   r.post("/workflows/validate", (req, res) => {
     const user = userOf(req);
     const w = wf.normalizeWorkflow(req.body && req.body.workflow);
@@ -456,6 +464,66 @@ export function createHubRouter({ allowLLM }) {
       draftRuns.set(run.id, { user, run, def: w, expires: Date.now() + DRAFT_RUN_TTL, workflow: true });
     }
     res.json({ run: wf.publicWorkflowRun(run) });
+  });
+
+  // The playground keeps a run's essentials with the chat, so the history reads back without the full run record.
+  const runForChat = (run) => {
+    const p = wf.publicWorkflowRun(run);
+    return {
+      id: p.id, status: p.status, input: p.input, output: p.output, error: p.error, startedAt: p.startedAt, finishedAt: p.finishedAt,
+      log: (p.log || []).slice(-40), pending: p.pending ? { message: p.pending.message || (p.pending.detail && p.pending.detail.summary) || "" } : null,
+    };
+  };
+
+  r.get("/workflows/:id/playground", (req, res) => {
+    const user = userOf(req);
+    const w = mustWorkflow(user, req.params.id);
+    res.json({ info: pg.describeWorkflow(user, w), messages: pg.readThread(user, w.id) });
+  });
+
+  // A greeting gets the system's answer; anything else runs the saved workflow once.
+  r.post("/workflows/:id/playground", async (req, res) => {
+    const user = userOf(req);
+    const w = mustWorkflow(user, req.params.id);
+    const text = String((req.body && req.body.text) || "").slice(0, 4000);
+    const input = req.body && req.body.input && typeof req.body.input === "object" ? req.body.input : null;
+    if (!text.trim() && !input) throw new HttpError(400, "type a message first");
+    // Field values are defaults from the workflow's examples, so only the typed text decides whether this is a greeting.
+    if (pg.isGreeting(text)) {
+      const msgs = pg.appendMessages(user, w.id, { role: "user", text }, { role: "system", text: pg.greetingReply(pg.describeWorkflow(user, w)) });
+      return res.json({ messages: msgs });
+    }
+    const [userMsg] = pg.appendMessages(user, w.id, { role: "user", text, input });
+    let reply;
+    try {
+      const run = await tracked(user, () => wf.startWorkflowRun(w, input || { message: text }, wfCtx(user, "playground")));
+      reply = { role: "run", run: runForChat(run) };
+    } catch (e) {
+      reply = { role: "system", error: e.message || String(e) };
+    }
+    const [botMsg] = pg.appendMessages(user, w.id, reply);
+    res.json({ messages: [userMsg, botMsg] });
+  });
+
+  r.post("/workflows/:id/playground/decision", async (req, res) => {
+    const user = userOf(req);
+    const w = mustWorkflow(user, req.params.id);
+    const { messageId, approved, note } = req.body || {};
+    const msg = pg.readThread(user, w.id).find((m) => m.id === messageId && m.role === "run");
+    const run = msg && wf.readWorkflowRun(user, w.id, msg.run.id);
+    if (!run) throw new HttpError(404, "that run is no longer available");
+    const out = await tracked(user, () => wf.decideWorkflowRun(run, w, { approved: !!approved, note }, wfCtx(user, "playground")));
+    wfCallback(out);
+    pg.updateMessage(user, w.id, messageId, { decided: approved ? "approved" : "rejected" });
+    const [botMsg] = pg.appendMessages(user, w.id, { role: "run", run: runForChat(out) });
+    res.json({ decided: messageId, message: botMsg });
+  });
+
+  r.delete("/workflows/:id/playground", (req, res) => {
+    const user = userOf(req);
+    const w = mustWorkflow(user, req.params.id);
+    pg.clearThread(user, w.id);
+    res.json({ ok: true });
   });
 
   r.post("/workflows/runs/:runId/decision", async (req, res) => {
