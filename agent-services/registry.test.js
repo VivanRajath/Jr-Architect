@@ -1,5 +1,4 @@
-// Tests for the GitAgent registry integration (pure functions only — no network
-// fetch, no git clone). Run: `node --test` in agent-services.
+// Tests for the GitAgent registry integration (pure functions only — no network fetch, no git clone).
 import { test } from "node:test";
 import assert from "node:assert";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
@@ -37,8 +36,7 @@ test("pulling a guardrail writes its rules and stage into the spec folder", () =
   const rules = readFileSync(join(dir, ".gitagent", "compliance", "acme__pci-guard.md"), "utf8");
   assert.match(rules, /Never log a card number/);
   assert.equal(parseFrontmatter(rules).agent, "acme/pci-guard");
-  // The file's note to the developer is an HTML comment: visible when you open it,
-  // never sent to the reviewer as though it were one of the agent's rules.
+  // The file's note to the developer is an HTML comment: visible when you open it, never sent to the reviewer as though it were one of the agent's rules.
   const body = readOverlayBody(dir, "acme/pci-guard", "guardrails");
   assert.match(body, /Never log a card number/);
   assert.ok(!/next review uses your version/.test(body), body);
@@ -64,8 +62,7 @@ test("pulling a developer writes a skill the pipeline actually reads", () => {
   const skill = readFileSync(join(dir, ...p.spec.split("/")), "utf8");
   assert.match(skill, /I am an architect/);
   assert.match(skill, /Plan before coding/);
-  // It shows in the panel's skill list, tagged with the agent that put it there,
-  // and it is NOT mistaken for one the developer wrote by hand.
+  // It shows in the panel's skill list, tagged with the agent that put it there, and it is NOT mistaken for one the developer wrote by hand.
   const listed = listSkillsDetailed(dir).find((s) => s.slug === "shreyas-lyzr__architect");
   assert.ok(listed, "the pulled skill should be listed");
   assert.equal(listed.agent, "shreyas-lyzr/architect");
@@ -113,8 +110,7 @@ test("an agent whose clone failed keeps its files — only removing it prunes th
   const agents = { developer: null, guardrails: [persona("acme/guard", { rules: "No raw SQL." })] };
   syncSpecOverlay(dir, agents, [{ ref: "acme/guard", slot: "guardrails" }]);
 
-  // Next turn the network is down: the agent still holds its slot, but resolving
-  // it produced no persona. Its rules must survive.
+  // Next turn the network is down: the agent still holds its slot, but resolving it produced no persona.
   const out = syncSpecOverlay(dir, { developer: null, guardrails: [] },
     [{ ref: "acme/guard", slot: "guardrails" }]);
   assert.deepEqual(out.removed, []);
@@ -146,8 +142,7 @@ test("loadComplianceRules reads the repo's own rule files and skips pulled overl
   const text = loadComplianceRules(dir);
   assert.match(text, /Never edit \.env/);
   assert.match(text, /Keep contrast AA/);
-  // The pulled agent's rules go in through personaPreamble; sending them here too
-  // would spend the token budget twice for the same enforcement.
+  // The pulled agent's rules go in through personaPreamble; sending them here too would spend the token budget twice for the same enforcement.
   assert.ok(!/No raw SQL/.test(text), text);
 });
 
@@ -164,8 +159,7 @@ test("a pulled skill never stands in for the repo's own root spec", () => {
 });
 
 test("classifySlot sends a code agent to Developer and a policy agent to Guardrails", () => {
-  // The curated category wins outright — gstack-agent is developer-tools but
-  // tagged "code-review", and it must NOT be mistaken for a reviewer.
+  // The curated category wins outright — gstack-agent is developer-tools but tagged "code-review", and it must NOT be mistaken for a reviewer.
   assert.equal(classifySlot({ category: "developer-tools", tags: ["code-review", "plan-review"] }).slot, "developer");
   assert.equal(classifySlot({ category: "developer-tools", description: "design, audit, and refine agents" }).slot, "developer");
 
@@ -204,8 +198,7 @@ test("assignSlot fills one slot without disturbing the rest, and one agent holds
   p = assignSlot(dir, "acme/guard", "guardrails");
   assert.deepEqual(p.guardrails, ["acme/guard"]);
 
-  // Moving the developer into Guardrails takes it out of Developer — otherwise
-  // it would write code and then review its own work.
+  // Moving the developer into Guardrails takes it out of Developer — otherwise it would write code and then review its own work.
   p = assignSlot(dir, "acme/dev", "guardrails");
   assert.equal(p.developer, null);
   assert.deepEqual(p.guardrails, ["acme/guard", "acme/dev"]);
@@ -407,8 +400,7 @@ test("resolveSpecPath confines edits to the agent spec", () => {
 
 test("readSpecFile / writeSpecFile round-trip, and mirror agent.yaml to the root", () => {
   const dir = mkdtempSync(join(tmpdir(), "gitagent-rw-"));
-  // A file that doesn't exist yet reads as empty rather than erroring, so the
-  // panel can offer to create it.
+  // A file that doesn't exist yet reads as empty rather than erroring, so the panel can offer to create it.
   const missing = readSpecFile(dir, ".gitagent/RULES.md");
   assert.equal(missing.exists, false);
   assert.equal(missing.content, "");
@@ -418,8 +410,7 @@ test("readSpecFile / writeSpecFile round-trip, and mirror agent.yaml to the root
   assert.equal(back.exists, true);
   assert.match(back.content, /Never touch pricing\.ts/);
 
-  // The runtime reads its manifest from <root>/agent.yaml while the developer
-  // edits .gitagent/agent.yaml — the two must not drift.
+  // The runtime reads its manifest from <root>/agent.yaml while the developer edits .gitagent/agent.yaml — the two must not drift.
   writeSpecFile(dir, ".gitagent/agent.yaml", "model: groq\n");
   assert.match(readFileSync(join(dir, "agent.yaml"), "utf8"), /model: groq/);
   writeSpecFile(dir, "agent.yaml", "model: anthropic\n");
@@ -494,16 +485,14 @@ test("loadRepoRootSpec reads memory from the standard memory/ dir, and falls bac
   writeFileSync(join(std, ".gitagent", "memory", "MEMORY.md"), "UI entry: app/page.tsx");
   assert.match(loadRepoRootSpec(std).memory, /app\/page\.tsx/);
 
-  // A repo scaffolded before the move keeps its memory at the spec root — it
-  // must still be read, or that repo silently loses everything it learned.
+  // A repo scaffolded before the move keeps its memory at the spec root — it must still be read, or that repo silently loses everything it learned.
   const legacy = mkdtempSync(join(tmpdir(), "gitagent-mem-legacy-"));
   mkdirSync(join(legacy, ".gitagent"), { recursive: true });
   writeFileSync(join(legacy, ".gitagent", "SOUL.md"), "I am the agent.");
   writeFileSync(join(legacy, ".gitagent", "MEMORY.md"), "Legacy: pricing.ts is off limits");
   assert.match(loadRepoRootSpec(legacy).memory, /pricing\.ts/);
 
-  // With both present the standard location wins, so a leftover root copy can
-  // never shadow the file the generator migrated to.
+  // With both present the standard location wins, so a leftover root copy can never shadow the file the generator migrated to.
   const both = mkdtempSync(join(tmpdir(), "gitagent-mem-both-"));
   mkdirSync(join(both, ".gitagent", "memory"), { recursive: true });
   writeFileSync(join(both, ".gitagent", "SOUL.md"), "I am the agent.");
@@ -549,8 +538,7 @@ test("assignSlot records the pin, and removing an agent drops it", () => {
   saved = JSON.parse(readFileSync(join(dir, ".gitagent", "pipeline.json"), "utf8"));
   assert.equal(saved.pipeline.pins["acme/soc2"], "4f2a1c9e5b");
 
-  // A pin for an agent no longer in the pipeline is a commit nobody can trace
-  // back to a rule, so it goes with the agent.
+  // A pin for an agent no longer in the pipeline is a commit nobody can trace back to a rule, so it goes with the agent.
   writePipelineManifest(dir, { developer: null, guardrails: [], knowledge: null,
     pins: { "acme/soc2": "4f2a1c9e5b" } });
   assert.equal(existsSync(join(dir, ".gitagent", "pipeline.json")), false);

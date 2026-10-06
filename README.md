@@ -28,6 +28,10 @@ Prompt-to-app builders are good at producing a first version. The moment a devel
 - **AI coding agent.** Three modes: **Ask** (grounded answers about the repo), **Edit** (a layered pipeline that applies changes directly and shows them as clickable before/after diffs with an explicit Apply control), and **Agent** (a tool-driven loop for stronger models).
 - **A self-diagnosing IDE.** When the app is slow to boot or the logs show an error, a built-in build doctor reads the container logs, tells a genuine failure from noise, and proposes a single safe fix, applied in one click. The IDE troubleshoots itself.
 - **GitAgent standard, end to end.** Every repository becomes its own versioned agent: identity, rules, memory, and a full `skills` / `tools` / `hooks` / `workflows` / `compliance` tree scaffolded at clone time. The built-in developer personas are editable skill files, and community agents from the GitAgent registry plug straight into the edit pipeline. See [GitAgent integration](#gitagent-integration).
+- **Sign in with Google or GitHub.** OAuth login, with accounts joined by verified email. Signing in with GitHub connects the user's repositories; a Google user connects GitHub from Settings or the IDE (OAuth or a personal access token).
+- **GitHub sync.** Pick any of your repos (private included) and the whole repository is cloned into a sandbox. The IDE's Source Control view shows changes from you and the coding agent, and can pull, commit and push, push to a new branch with a pull request, or publish a project as a new repo. Finished Build-mode apps are pushed to the user's GitHub automatically (private by default, switchable in Settings) with a README written from the app's spec and blank `.env.example` copies of secret files. Git runs inside the sandbox, the token is passed only through the environment and stored encrypted, and it never reaches the browser.
+- **OpenGAP agent team in the IDE.** The Agents panel manages the repo's `.gitagent/` team in the OpenGAP / GitAgent layout: agents as folders (`SOUL.md` front matter for role, priority, owned files, escalation; `RULES.md`), guardrails in `hooks/*.yaml` (four sealed in code), `DUTIES.md` and routing in `agent.yaml`. Tasks are routed by `@name`, owned files or a classifier with a confidence floor; each agent gets its attempts, then hands off with a compiled brief from the Context Orchestration Engine's ledger (claims vs verified facts, append-only failures), and a terminal agent stops and asks you. A live Workflow graph, a Runs history, smoke tests, `/check`, and installing agents or guards from Git or the GitAgent registry are built in. Engine modules are vendored from [jr-arch](https://github.com/VivanRajath/jr-arch) (MIT).
+- **Git Graph.** Every branch's history as lanes in the IDE, with refs, commit details and per-file diffs; shallow clones can load their full history.
 - **Build Mode (experimental).** Scaffold a small, fully local app from a plain-language description and run it immediately in the same IDE.
 
 ## How it works
@@ -54,14 +58,14 @@ When a repository is launched, a **repo map** is generated at clone time (stack,
 
 One design choice is worth calling out, because it is what makes the agent reliable on a free model.
 
-The default model on the free tier (`llama-3.3-70b-versatile`) is a capable text generator but a weak tool-caller. So the Ask and Edit paths keep the model out of the function-calling loop entirely. The backend does the retrieval and applies the changes; the model only produces text.
+The default model on the free tier (`openai/gpt-oss-120b`) is a capable text generator, but free-tier models are uneven tool-callers. So the Ask and Edit paths keep the model out of the function-calling loop entirely. The backend does the retrieval and applies the changes; the model only produces text.
 
 - **Ask** searches the repo, injects the results (and the entry file for overview questions), and the model writes a grounded answer. It is instructed to answer concretely, not to describe what it would look at.
 - **Edit** runs a layered pipeline, **Orchestrator to Complexity Classifier to Guardrails to Developer**, and streams each layer's decision into the chat as a step. The Orchestrator routes the message (free heuristics for obvious cases, a one-word LLM classifier for genuinely ambiguous ones like "rebrand the heading"). Guardrails block edits to sensitive files and secret injection. The Developer layer returns each changed file's complete updated contents, and the backend overwrites the file and reloads the preview. The result is a clickable file list; click any file to open a before/after diff in a modal.
 
 Whole-file rewrite is used instead of SEARCH/REPLACE patch markers because a weak model garbles fragile patch syntax, and a reply truncated by the output cap simply fails to parse (no half-written file is ever saved). When a stronger provider is configured, the tool-driven Agent loop is available instead (`AGENT_EDIT_STRATEGY=agentic`).
 
-For the reasoning behind each of these decisions, and the trade-offs against frontier-model tools like Cursor and Antigravity, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For the reasoning behind each of these decisions, and the trade-offs against frontier-model tools like Cursor and Antigravity, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## GitAgent integration
 
@@ -114,7 +118,7 @@ An honest note on scope: the `system-prompt` adapter runs an agent's identity, r
 
 A short tour of the harder problems this project solves, and how.
 
-- **Reliable editing on a free-tier model.** `llama-3.3-70b-versatile` is a strong text generator but a weak tool-caller, so the Ask and Edit paths keep the model out of the function-calling loop entirely. The backend retrieves and applies; the model only writes text. Whole-file rewrites replace fragile patch syntax, so a reply truncated by the token cap fails to parse instead of corrupting a file.
+- **Reliable editing on a free-tier model.** `openai/gpt-oss-120b` is a strong text generator but only an adequate tool-caller under a tight token budget, so the Ask and Edit paths keep the model out of the function-calling loop entirely. The backend retrieves and applies; the model only writes text. Whole-file rewrites replace fragile patch syntax, so a reply truncated by the token cap fails to parse instead of corrupting a file.
 - **The repo's agent runs without the IDE.** `.gitagent/` only meant something while Jr Architect had the workspace open, which made a pulled compliance pack a suggestion: it blocked the agent and waved through the human typing the same line. `node agent-services/cli.js review --base main` now runs the *identical* pipeline against a git range — same manifest, same pulled packs, same code-level floor, same deny-wins semantics — with no IDE, no server and no Docker. Exit code 1 when a pack denies, which is all a merge gate needs; a GitHub Action is included. Every decision appends to `.gitagent/audit/<date>.jsonl`, so "which pack, which rule, which file, which commit" is answerable later and the answer is a git diff. A file that passed only because the review could not run is logged as `unreviewed`, never `allow` — an audit trail that overstates a check is worse than none.
 - **A knowledge agent with its own budget.** A file list is not knowledge: it says where things are and nothing about what they do, so an agent asked to summarise a repo could only paraphrase a directory listing. The Knowledge slot fixes that with an agent that runs once when a workspace opens, on a **dedicated API key** taken out of the chat pool, and reads roughly four times what a chat turn can afford — then writes `knowledge/overview.md`, which every later turn is grounded in. Its prompt is `.gitagent/skills/knowledge-builder/SKILL.md`: a real file you can open, edit and commit, not a hidden system prompt. Any registry agent can replace it. Every path the document cites is checked against the repo, and anything unverifiable is recorded in the file's own frontmatter rather than quietly presented as fact.
 - **Agentic retrieval instead of vector RAG.** A repo map (stack, layout, entry point, exported symbols) is generated at clone time and injected into every turn, with a ripgrep-style `search_code` tool for `file:line` snippets. Chosen deliberately: the free tier has no embeddings API, and for code, structure locates things more precisely than semantic similarity.
@@ -128,11 +132,14 @@ A short tour of the harder problems this project solves, and how.
 
 ## Modes
 
-Jr Architect has three entry points, chosen on the landing screen.
+Jr Architect has four entry points, chosen on the home screen.
 
-- **Prompt Mode.** Paste a URL and get the app running fast, with no IDE. For when you only want to see a repository run.
-- **Dev Mode.** The full cloud IDE described above: editor, terminal, live preview, and the agent.
-- **Build Mode (experimental).** Scaffolds a small, fully local app from a plain-language description. This is an experiment for exercising the generate-then-edit loop end to end, guarded against third-party integrations, not a general-purpose app builder.
+- **Run a repo.** Paste a URL and get the app running fast, with no IDE. For when you only want to see a repository run.
+- **Open in IDE.** The full cloud IDE described above: editor, terminal, live preview, and the agent. Open a saved project, clone from GitHub, or upload a local folder.
+- **Build an app (experimental).** Describe an app in plain language. Build mode asks two or three questions about that idea (and which tech stack, unless the prompt names one), writes a spec that says which AI agents and workflows the app needs, creates them in Agent Hub with a webhook token each, and generates the app. Stacks: Next.js, React + Vite, Express, Bun, Deno, Django, FastAPI, Flask, Go, Rust, Java (Spring Boot), .NET, PHP, Ruby (Sinatra) and static HTML. Each stack starts from a small working server in `builder-template/` that serves the UI and exposes `/api/workflows/<name>`, reading tokens from `jr-workflows.json` (Next.js uses `.env.local`) so they never reach the browser; the model writes only the UI, from a shared design system: shadcn/ui components and theme tokens for Next.js and React + Vite, and a shadcn-style CSS kit (`builder-template/_kit`) for the plain-HTML stacks, with light and dark modes, an accent picked from the spec's style note, and responsive layouts. Generated code is checked for syntax slips, broken imports and components used without an import, and sent back to the model for repair before the app starts. Apps run through the same scan-and-launch pipeline as a cloned repo, so the agents, the workflows and the app are then edited in Agent Hub, the workflow editor and the IDE.
+- **Agent Hub.** Build agents, chain them into workflows, and call them from n8n or any app over a webhook.
+
+Generated apps reach their workflows at `host.docker.internal` (Docker Desktop and Podman) or `JR_PUBLIC_ORIGIN` on a public server. On native Linux Docker the server must listen on an address the container can reach, not only 127.0.0.1.
 
 ## Getting started
 
@@ -154,11 +161,11 @@ Requires Docker Desktop (running), Go 1.22+, and Node.js.
    ```
    The server starts on port 9000 and launches the agent service on 8001 automatically. Open http://localhost:9000.
 
-Run `go run .`, not `go run main.go`. The package spans several files, and naming one file compiles it in isolation and fails. Full setup, build, and troubleshooting steps are in the [runbook](runbook.md).
+Run `go run .`, not `go run main.go`. Naming one file compiles it in isolation and never links the `internal/` packages. Full setup, build, and troubleshooting steps are in the [runbook](docs/runbook.md).
 
 ## Configuration
 
-The agent auto-selects the first provider that has a key, preferring Groq, so a Groq-only setup needs no extra configuration.
+The agent auto-selects the first provider that has a key, preferring Groq, so a Groq-only setup needs no extra configuration. Keys can also be pasted in **Settings** (`/settings.html`): the provider is detected from the key prefix, checked once, and stored in `keys.json` under the data directory. A key set in `.env` always wins and cannot be changed from Settings.
 
 | Variable | Purpose |
 | :--- | :--- |
@@ -167,25 +174,32 @@ The agent auto-selects the first provider that has a key, preferring Groq, so a 
 | `AGENT_MAX_OUTPUT_TOKENS` | Caps reserved output so a turn stays under the Groq free-tier limit (default 3000). |
 | `AGENT_EDIT_STRATEGY` | Set to `agentic` to route edits through the tool-driven Agent loop instead of the default Edit engine. |
 | `AGENT_MODEL_GROQ` / `_ANTHROPIC` / `_OPENAI` / `_GEMINI` | Override the model used per provider. |
+| `JR_DATA_DIR` | Where saved projects and Settings keys live (default `~/.jr-architect`). |
+| `JR_GOOGLE_CLIENT_ID` / `JR_GOOGLE_CLIENT_SECRET` | Google sign-in. Callback: `<origin>/auth/oauth/google/callback`. |
+| `JR_GITHUB_CLIENT_ID` / `JR_GITHUB_CLIENT_SECRET` | GitHub sign-in and repo access (scopes `repo read:user user:email`). Callback: `<origin>/auth/oauth/github/callback`. |
+| `JR_GITHUB_COLLABORATOR` | A GitHub account you own, invited with push access to repos Jr Architect publishes (each user can turn it off). |
+| `JR_GITHUB_COLLABORATOR_TOKEN` | That account's token (scope `repo`); it accepts invitations to repos this server published, right away and every 5 minutes. |
+| `JR_OAUTH_ALLOW` | Optional allow-list for OAuth sign-in: emails, `@domain`s or `gh:<login>`. |
+| `JR_KEYS_EDITABLE` | Set to `true` to allow editing keys from Settings on a public server (it is always allowed locally). |
 
 ### The front end lives in `web/`
 
 ```
 web/index.html      markup and load order only
-web/css/            tokens.css (the only file that defines a token), then app, ide, ide-agent
-web/js/             app.js, ide.js, ide-agent.js
+web/css/            tokens.css (the only file that defines a token), shell.css (rail, key widget), then app, ide, ide-agent, hub
+web/js/             shell.js (rail, theme, key widget), app.js, ide.js, ide-agent.js, hub/studio/flows/settings
 web/vendor/         Monaco, xterm, and the webfonts — no CDN, works offline
 ```
 
 The whole directory is embedded into the Go binary with one `//go:embed all:web`
 and served by one `http.FileServer`, so **any front-end change requires a rebuild**
 (`go run .` or `go build`) and a browser hard-refresh (Ctrl+Shift+R). Adding a
-stylesheet means adding a file — `main.go` does not need to know about it.
+stylesheet means adding a file — no Go source needs to know about it.
 
 ## Documentation
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)**: the end-to-end system design, covering the component breakdown, request lifecycle, runtime detection, the agent pipeline, the API reference, the port and network map, and the security model.
-- **[runbook.md](runbook.md)**: step-by-step setup, build, and run instructions, plus troubleshooting for the common errors (Docker, PowerShell execution, Groq rate limits, the agent panel, and live preview).
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: the end-to-end system design, covering the component breakdown, request lifecycle, runtime detection, the agent pipeline, the API reference, the port and network map, and the security model.
+- **[docs/runbook.md](docs/runbook.md)**: step-by-step setup, build, and run instructions, plus troubleshooting for the common errors (Docker, PowerShell execution, Groq rate limits, the agent panel, and live preview).
 
 ## Note
 

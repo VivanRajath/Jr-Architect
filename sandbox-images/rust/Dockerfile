@@ -1,4 +1,4 @@
-FROM rust:1.77-slim
+FROM docker.io/library/rust:1.77-slim
 
 WORKDIR /workspace
 

@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-// jr-architect review --base main
-//
-// Reads .gitagent/pipeline.json, clones the packs it names, applies them to a diff.
-// Exit 1 on a denial, which is all a CI gate needs. No IDE, server or Docker.
+// Usage: jr-architect review --base main; reads .gitagent/pipeline.json, clones the packs it names and applies them to a diff.
 
 import { reviewRange } from "./review.js";
 

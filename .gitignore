@@ -11,12 +11,7 @@
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
-# Python / Agent
-agent/venv/
-agent/.venv/
-agent/env/
-agent/__pycache__/
-*.pyc
+# Secrets
 .env
 
 # Docker / Sandboxes temp files

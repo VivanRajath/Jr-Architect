@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Studio - Jr Architect</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27%2318181B%27/%3E%3Ctext x=%2716%27 y=%2721.5%27 font-family=%27Arial,sans-serif%27 font-size=%2714%27 font-weight=%27700%27 text-anchor=%27middle%27 fill=%27%23FAFAFA%27%3EJr%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/css/tokens.css" />
+  <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="/css/shell.css" />
+  <link rel="stylesheet" href="/css/hub.css" />
+</head>
+
+<body class="h-page dark-mode">
+  <header class="h-top">
+    <div class="h-brand">
+      <a href="/hub.html">Agent Hub</a>
+      <span class="h-title" id="s-title">Agent Studio</span>
+    </div>
+    <ol class="s-steps" id="s-steps" hidden></ol>
+    <span class="h-pill" id="s-version" hidden></span>
+    <span class="s-dirty" id="s-dirty" hidden>Unsaved changes</span>
+    <span class="h-spacer"></span>
+    <div class="h-row" id="s-save-bar" hidden>
+      <input class="h-input" id="s-message" placeholder="Version note (optional)" style="width: 220px">
+      <button class="h-btn" id="s-save">Save</button>
+    </div>
+  </header>
+
+  <div id="view-start" class="s-start h-hidden"></div>
+
+  <div id="view-builder" class="s-builder h-hidden"></div>
+
+  <div id="view-editor" class="s-editor h-hidden">
+    <nav class="s-nav" id="s-nav" aria-label="Sections"></nav>
+    <main class="s-form" id="s-form"></main>
+    <aside class="s-side">
+      <nav class="h-tabs" id="s-side-tabs"></nav>
+      <div class="s-side-body" id="s-side-body"></div>
+    </aside>
+  </div>
+
+  <script src="/js/shell.js"></script>
+  <script src="/js/hub-common.js"></script>
+  <script src="/js/studio.js"></script>
+</body>
+
+</html>

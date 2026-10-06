@@ -13,6 +13,7 @@
   "dependencies": {
     "express": "^5.2.1",
     "gitclaw": "^0.5.0",
+    "js-yaml": "^4.1.1",
     "ws": "^8.20.0"
   }
 }

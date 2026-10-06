@@ -4,210 +4,164 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Jr Architect - Cloud IDE</title>
+  <title>Jr Architect</title>
   <meta name="description"
-    content="Run any GitHub repo instantly in a Docker sandbox with a full cloud IDE experience." />
+    content="Build apps with their agents and workflows, or open your GitHub repos in a sandboxed IDE with a coding agent." />
 
-  <!-- Stylesheets. The load order IS the cascade contract:
-         tokens  the single source of truth for color, type, space and radius
-         fonts   self-hosted @font-face declarations
-         vendor  third-party component CSS
-         app     landing page and shell
-         ide     editor, file tree, terminal, preview
-         agent   the GitAgent dock
-       Nothing below tokens.css may define a token; they only consume them. -->
+  <!-- Stylesheets. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27%2318181B%27/%3E%3Ctext x=%2716%27 y=%2721.5%27 font-family=%27Arial,sans-serif%27 font-size=%2714%27 font-weight=%27700%27 text-anchor=%27middle%27 fill=%27%23FAFAFA%27%3EJr%3C/text%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/css/tokens.css" />
   <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="/css/shell.css" />
   <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
   <link rel="stylesheet" href="/css/app.css" />
   <link rel="stylesheet" href="/css/ide.css" />
   <link rel="stylesheet" href="/css/ide-agent.css" />
+  <link rel="stylesheet" href="/css/github.css" />
+  <link rel="stylesheet" href="/css/home.css" />
+  <link rel="stylesheet" href="/css/ide-plan.css" />
+  <link rel="stylesheet" href="/css/ide-agents.css" />
 </head>
 
-<body>
+<body class="dark-mode">
   <div id="landing-page">
-    <div class="app">
-      <header>
-        <div class="badge">
-          <div class="badge-dot"></div>
-          Jr Architect
-        </div>
-        <h1>Run Any Repo <span>Instantly</span></h1>
-        <p class="subtitle">Paste a GitHub URL and get a live sandbox in seconds. Use Prompt Mode for quick runs or Dev
-          Mode for a full cloud IDE experience.</p>
+    <main class="home hx">
+      <header class="hx-hero">
+        <p class="hx-greet" id="homeGreeting">Welcome</p>
+        <h1>What do you want to make today?</h1>
+        <p class="hx-lead">Describe an app and get it built with its agents and workflows, or bring in code from GitHub and work on it with the coding agent.</p>
       </header>
-  
-      <!-- Run a sandbox -->
-      <div class="card">
-        <div class="card-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M5 3l14 9-14 9V3z" />
-          </svg>
-          Launch Sandbox
+
+      <div id="keyBanner" hidden></div>
+
+      <section class="launcher" id="launcher">
+        <div class="hx-modes" role="tablist" aria-label="How to start">
+          <button class="action-tile active" role="tab" aria-selected="true" data-mode="build" onclick="setMode('build')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg><span>Build an app</span></button>
+          <button class="action-tile" role="tab" aria-selected="false" data-mode="dev" onclick="setMode('dev')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 6-6 6 6 6"/><path d="m16 6 6 6-6 6"/></svg><span>Open code</span></button>
+          <button class="action-tile" role="tab" aria-selected="false" data-mode="prompt" onclick="setMode('prompt')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l14 8-14 8z"/></svg><span>Run a repo</span></button>
         </div>
-  
-        <!-- Mode Toggle -->
-        <div class="mode-toggle" id="modeToggle">
-          <div class="mode-option active" data-mode="prompt" onclick="setMode('prompt')">
-            Prompt Mode
-          </div>
-          <div class="mode-option" data-mode="dev" onclick="setMode('dev')">
-            Dev Mode
-          </div>
-          <div class="mode-option" data-mode="build" onclick="setMode('build')">
-            <span class="build-sparkle"><svg style="vertical-align:middle" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg></span> Build Mode
-          </div>
-        </div>
-  
-        <!-- Repo input row (Prompt / Dev Mode) -->
-        <div id="repoSection">
-          <div class="input-row">
-            <div class="input-wrap">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path
-                  d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />
-              </svg>
-              <input id="repoInput" type="text" placeholder="https://github.com/user/repo" autocomplete="off"
-                spellcheck="false" />
+
+        <!-- Build: the composer is the front door -->
+        <div class="launch-panel hx-build" id="panel-build">
+          <div class="hx-composer">
+            <textarea id="buildPromptInput" rows="3"
+              placeholder="A coding tutor that checks my level, builds a weekly roadmap and gives hints while I practise..."></textarea>
+            <div class="hx-composer-foot">
+              <ol class="hx-path" aria-label="What happens next">
+                <li>Questions</li><li>Spec</li><li>Agents &amp; workflows</li><li>App</li>
+              </ol>
+              <button class="btn btn-primary hx-go" onclick="startBuilder()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg>Build<kbd>Ctrl &#8629;</kbd></button>
             </div>
-            <button id="runBtn" class="btn" onclick="runSandbox()">
-              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="15"
-                height="15">
-                <path d="M5 3l14 9-14 9V3z" />
-              </svg>
-              <div class="spinner"></div>
-              Run
-            </button>
           </div>
-  
-          <div class="instructions-wrap">
-            <div class="instructions-label">
-              <span>Optional INSTRUCTIONS.md</span>
-              <small>Paste install &amp; run commands if not in repo</small>
+          <div class="hx-ideas">
+            <button class="idea-chip" type="button" onclick="useIdea(this)">Habit tracker with streaks</button>
+            <button class="idea-chip" type="button" onclick="useIdea(this)">Recipe box with tags and search</button>
+            <button class="idea-chip" type="button" onclick="useIdea(this)">Support inbox that drafts replies</button>
+            <button class="idea-chip" type="button" onclick="useIdea(this)">Team standup notes board</button>
+          </div>
+        </div>
+
+        <!-- Open code: GitHub on the left, an upload on the right -->
+        <div class="launch-panel hx-code" id="panel-dev" hidden>
+          <div class="hx-code-grid">
+            <div class="hx-card" id="source-clone">
+              <div class="hx-card-head"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.26 5.67.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg><h2>From GitHub</h2></div>
+              <div class="gh-mount" id="gh-picker"></div>
+              <div class="hx-url">
+                <label class="field grow">
+                  <input id="cloneInput" type="text" placeholder="or paste a repo URL" autocomplete="off" spellcheck="false" aria-label="GitHub repository URL" />
+                </label>
+                <button class="btn btn-primary launch-go" onclick="cloneToIDE()"><span class="spinner"></span>Open</button>
+              </div>
             </div>
-            <textarea id="instructionsInput" placeholder="Paste your setup commands, one per line:
-  
-  npm install
-  npm run dev
-  
-  Or any shell commands:
-  npm install
-  node server.js"></textarea>
+
+            <div class="hx-card" id="source-local">
+              <div class="hx-card-head"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M20 15v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4"/></svg><h2>From your computer</h2></div>
+              <div class="dropzone" id="dropzone" tabindex="0">
+                <strong id="dropTitle">Drop a folder or .zip</strong>
+                <span id="dropSub">node_modules and build output are skipped</span>
+                <div class="dropzone-actions">
+                  <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('folderPick').click()">Choose folder</button>
+                  <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('zipPick').click()">Choose .zip</button>
+                </div>
+                <input id="folderPick" type="file" webkitdirectory multiple hidden />
+                <input id="zipPick" type="file" accept=".zip,application/zip" hidden />
+              </div>
+              <div id="localReady" hidden>
+                <label class="field">
+                  <input id="localName" type="text" placeholder="Project name" autocomplete="off" aria-label="Project name" />
+                </label>
+                <div class="local-actions">
+                  <button class="btn btn-ghost" onclick="clearLocal()">Clear</button>
+                  <button class="btn btn-primary launch-go" onclick="uploadToIDE()"><span class="spinner"></span>Upload &amp; open</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-  
-        <!-- Build Mode prompt field -->
-        <div id="buildSection" style="display:none; margin-top:16px;">
-          <div class="instructions-label" style="margin-bottom:8px;">
-            <span><svg style="vertical-align:middle" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg> Describe the app you want to build</span>
-            <small>Be as specific or as vague as you like</small>
+
+        <!-- Run a repo: one URL bar -->
+        <div class="launch-panel hx-run" id="panel-prompt" hidden>
+          <div class="run-bar">
+            <span class="field-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.26 5.67.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg></span>
+            <input id="repoInput" type="text" placeholder="https://github.com/user/repo" autocomplete="off" spellcheck="false" aria-label="GitHub repository URL" />
+            <button id="runBtn" class="btn btn-primary launch-go" onclick="runSandbox()"><span class="spinner"></span>Run</button>
           </div>
-          <textarea id="buildPromptInput" class="qa-input" rows="4"
-            placeholder="e.g. A Kanban board for dev teams where users can create tickets, assign them, drag between columns, and leave comments. Dark mode, purple accent."
-            style="min-height:100px;"></textarea>
-          <div style="margin-top:12px;">
-            <button class="btn" onclick="startBuilder()">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-              </svg>
-              Start Building
-            </button>
-          </div>
+          <p class="hx-run-note">The stack, services and ports are detected and shown to you before anything runs. You get a live URL, and the IDE is one click away.</p>
+          <details class="more">
+            <summary>Add setup commands <span>(only if the repo doesn't say how to run)</span></summary>
+            <textarea id="instructionsInput" rows="4" placeholder="npm install&#10;npm run dev"></textarea>
+          </details>
         </div>
-  
+
         <div id="runStatus" class="status-bar"></div>
-      </div>
-  
-      <!-- Build History -->
-      <div class="card" id="buildHistoryCard" style="display:none;">
-        <div class="sandboxes-header">
-          <div class="section-title">
-            <svg style="vertical-align:middle" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg> Recent Builds
-            <span class="count-badge" id="buildHistoryCount">0</span>
+      </section>
+
+      <section class="hx-work" id="work">
+        <div class="hx-work-main">
+          <div class="hx-block" id="runningCard" hidden>
+            <div class="hx-block-head">
+              <h2><span class="hx-live"></span>Running now <span class="count-badge" id="sandboxCount">0</span></h2>
+              <button class="icon-btn" onclick="loadSandboxes()" title="Refresh" aria-label="Refresh sandboxes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg></button>
+            </div>
+            <div id="sandboxList"></div>
           </div>
-          <button class="btn btn-sm btn-ghost" onclick="loadBuildHistory()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
-              <path d="M1 4v6h6M23 20v-6h-6" />
-              <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
-            </svg>
-            Refresh
-          </button>
-        </div>
-        <div id="buildHistoryList"></div>
-      </div>
-  
-      <!-- Active Sandboxes -->
-      <div class="card">
-        <div class="sandboxes-header">
-          <div class="section-title">
-            Active Sandboxes
-            <span class="count-badge" id="sandboxCount">0</span>
+
+          <div class="hx-block" id="source-saved">
+            <div class="hx-block-head">
+              <h2>Projects <span class="source-count" id="projectCount"></span></h2>
+            </div>
+            <div class="project-grid" id="projectList"></div>
           </div>
-          <button class="btn btn-sm btn-ghost" onclick="loadSandboxes()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
-              <path d="M1 4v6h6M23 20v-6h-6" />
-              <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
-            </svg>
-            Refresh
-          </button>
-        </div>
-        <div id="sandboxList">
-          <div class="empty-state">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <rect x="2" y="3" width="20" height="14" rx="2" />
-              <path d="M8 21h8M12 17v4" />
-            </svg>
-            <p>No active sandboxes</p>
+
+          <div class="hx-block" id="buildHistoryCard" hidden>
+            <div class="hx-block-head">
+              <h2>Recent builds <span class="count-badge" id="buildHistoryCount">0</span></h2>
+            </div>
+            <div id="buildHistoryList"></div>
           </div>
         </div>
-      </div>
-  
-      <!-- Supported Runtimes -->
-      <div class="card">
-        <div class="card-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="11" width="18" height="11" rx="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
-          Supported Runtimes
-        </div>
-        <div class="runtimes-grid">
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">PY</span>Python / Flask / FastAPI / Django
+
+        <aside class="hx-block hx-hub" id="hubCard">
+          <div class="hx-block-head">
+            <h2>Agent Hub</h2>
+            <a class="panel-link" href="/hub.html">Open</a>
           </div>
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">JS</span>Node.js / Express / Next.js / Vite
+          <div class="hub-stats">
+            <a class="hub-stat" href="/hub.html"><strong id="hubAgentCount">-</strong><span id="hubAgentWord">agents</span></a>
+            <a class="hub-stat" href="/hub.html#workflows"><strong id="hubFlowCount">-</strong><span id="hubFlowWord">workflows</span></a>
           </div>
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">GO</span>Go</div>
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">RS</span>Rust</div>
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">JV</span>Java / Spring Boot</div>
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">PHP</span>PHP / Laravel</div>
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">RB</span>Ruby / Rails</div>
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">BN</span>Bun</div>
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">DN</span>Deno</div>
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">.N</span>.NET</div>
-          <div class="runtime-chip"><span class="chip-icon"
-              style="font-size:12px;font-weight:700;font-family:var(--mono)">HT</span>Static HTML</div>
-        </div>
-        <div class="divider" style="margin-top: 16px;"></div>
-        <p style="font-size: 12px; color: var(--text3); margin-top: 12px; line-height: 1.6;">
-          FastAPI apps expose <code
-            style="font-family: var(--mono); background: var(--surface2); padding: 1px 5px; border-radius: 4px; color: var(--accent);">/docs</code>
-          and <code
-            style="font-family: var(--mono); background: var(--surface2); padding: 1px 5px; border-radius: 4px; color: var(--accent);">/redoc</code>
-          automatically. Sandboxes auto-destroy after 10 minutes.
-        </p>
-      </div>
-    </div>
-  
+          <div id="hubRecent" class="hub-recent"></div>
+          <div class="panel-actions">
+            <a class="btn btn-sm" href="/studio.html">New agent</a>
+            <a class="btn btn-sm btn-ghost" href="/flows.html">New workflow</a>
+          </div>
+        </aside>
+      </section>
+
+      <footer class="home-foot">Python, Django, Node, Next.js, Vite, Go, Rust, Java, PHP, Ruby, Bun, Deno, .NET and static sites. Sandboxes stop after 15 idle minutes; saved projects stay.</footer>
+    </main>
+
     <!-- Logs Modal -->
     <div class="modal-overlay" id="logsModal" onclick="closeLogsIfOverlay(event)">
       <div class="modal">
@@ -229,7 +183,7 @@
           <div class="builder-header-icon"><svg style="vertical-align:middle" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg></div>
           <div class="builder-header-text">
             <div class="builder-header-title" id="builderHeaderTitle">What do you want to build?</div>
-            <div class="builder-header-sub" id="builderHeaderSub">Powered by Groq + llama-3.3-70b</div>
+            <div class="builder-header-sub" id="builderHeaderSub">Powered by Groq + gpt-oss-120b</div>
           </div>
           <button class="builder-close" onclick="closeBuilder()">&times;</button>
         </div>
@@ -272,48 +226,45 @@
   <div id="ide-page" style="display:none; flex-direction:column; height:100vh;">
     <!-- Top Bar -->
     <div class="ide-topbar">
-      <span class="logo">Jr Architect</span>
+      <button class="top-btn top-home" onclick="backToLanding()" title="Back to Home (the sandbox keeps running)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        <span class="logo">Jr</span>
+      </button>
       <span class="repo-name"></span>
       <span class="framework-badge" id="framework-badge" style="display:none;"></span>
-      <span class="mode-badge">DEV MODE</span>
+      <span class="project-chip" id="project-chip" hidden>Saved</span>
       <div class="spacer"></div>
-      <button class="top-btn" onclick="saveCurrentFile()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" stroke-width="2">
-          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-          <polyline points="17 21 17 13 7 13 7 21" />
-          <polyline points="7 3 7 8 15 8" />
-        </svg> Save</button>
-      <button class="top-btn" onclick="openLivePreview()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10" />
-          <line x1="2" y1="12" x2="22" y2="12" />
-          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-        </svg> Preview</button>
-      <button class="top-btn" onclick="loadFileTree()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" stroke-width="2">
-          <path d="M1 4v6h6M23 20v-6h-6" />
-          <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
-        </svg> Refresh</button>
-      <button class="top-btn dark-mode-toggle" id="dark-mode-btn" onclick="toggleDarkMode()"><svg width="14" height="14"
-          viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-        </svg> Dark</button>
-      <button class="top-btn" onclick="backToLanding()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" stroke-width="2">
-          <line x1="19" y1="12" x2="5" y2="12" />
-          <polyline points="12 19 5 12 12 5" />
-        </svg> Back</button>
+      <button class="top-btn" onclick="saveCurrentFile()" title="Save the open file (Ctrl+S)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" /></svg>
+        Save file</button>
+      <button class="top-btn" onclick="openLivePreview()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
+        Preview</button>
+      <a class="top-btn" href="/hub.html" title="Open Agent Hub">Agent Hub</a>
+      <button class="top-btn top-primary" id="save-project-btn" onclick="saveProject()" title="Keep a copy of this project after the sandbox stops">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6M9 14h6"/></svg>
+        <span>Save project</span></button>
     </div>
     <!-- Main -->
     <div class="ide-main">
       <!-- Activity Bar -->
       <div class="ide-activitybar">
         <div class="activity-top">
-          <button class="activity-btn active" id="act-explorer" title="Explorer" onclick="toggleSidebar(this)">
+          <button class="activity-btn active" id="act-explorer" title="Explorer" onclick="showSidebarView('explorer')">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
               <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
               <polyline points="13 2 13 9 20 9" />
             </svg>
+          </button>
+          <button class="activity-btn" id="act-scm" title="Source Control: pull, commit and push to GitHub" onclick="showSidebarView('scm')">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <circle cx="6" cy="6" r="2.5" />
+              <circle cx="6" cy="18" r="2.5" />
+              <circle cx="18" cy="8" r="2.5" />
+              <path d="M6 8.5v7" />
+              <path d="M18 10.5a6 6 0 0 1-6 6H8.5" />
+            </svg>
+            <span class="activity-badge" id="scm-badge" hidden></span>
           </button>
           <button class="activity-btn" id="act-agent" title="AI Agent" onclick="toggleAgentPanel()">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
@@ -321,7 +272,7 @@
             </svg>
           </button>
           <button class="activity-btn" id="act-gitagent"
-            title="GitAgent — this repo's agent: identity, rules, guardrails, skills, registry"
+            title="Agents (OpenGAP): your coding-agent team, its workflow, guardrails and the GitAgent registry"
             onclick="toggleGitAgentPanel()">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
               <circle cx="12" cy="12" r="3" />
@@ -351,6 +302,7 @@
       </div>
       <!-- Sidebar -->
       <div class="ide-sidebar">
+        <div class="sidebar-view" id="sb-explorer">
         <div class="sidebar-header">
           <span>Explorer</span>
           <div style="display:flex;gap:4px;">
@@ -364,6 +316,20 @@
           </div>
         </div>
         <div class="file-tree" id="file-tree"></div>
+        </div>
+        <div class="sidebar-view" id="sb-scm" hidden>
+          <div class="sidebar-header">
+            <span>Source Control</span>
+            <div style="display:flex;gap:4px;">
+              <button onclick="scmRefresh(true)" title="Fetch from GitHub and refresh"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2">
+                  <path d="M1 4v6h6M23 20v-6h-6" />
+                  <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+                </svg></button>
+            </div>
+          </div>
+          <div class="scm-body" id="scm-body"></div>
+        </div>
       </div>
       <!-- Editor Area -->
       <div class="ide-editor-area">
@@ -390,6 +356,7 @@
             <div class="panel-tab active" data-tab="terminal" onclick="switchPanelTab('terminal')">Terminal</div>
             <div class="panel-tab" data-tab="logs" onclick="switchPanelTab('logs')">Logs</div>
             <div class="panel-tab" data-tab="status" onclick="switchPanelTab('status')">Status</div>
+            <div class="panel-tab" data-tab="graph" onclick="switchPanelTab('graph'); loadGitGraph()">Git Graph</div>
           </div>
           <div class="panel-content">
             <div class="terminal-pane active" data-tab="terminal">
@@ -400,6 +367,7 @@
             <div class="panel-pane" data-tab="status" id="status-output">
               <div class="status-panel-content" id="status-panel-content">Loading status...</div>
             </div>
+            <div class="panel-pane gg-pane" data-tab="graph" id="git-graph"></div>
           </div>
         </div>
       </div>
@@ -415,8 +383,8 @@
           <div class="agent-header-actions">
             <button class="agent-header-btn" onclick="runDoctor(false)"
               title="Diagnose the app — read the container logs and propose a fix">Diagnose</button>
-            <button class="agent-header-btn" onclick="openGitAgentPanel('registry')"
-              title="GitAgent registry — run community agents from registry.gitagent.sh">GitAgent</button>
+            <button class="agent-header-btn" onclick="openGitAgentPanel('team')"
+              title="Your OpenGAP agent team: customise who edits what, guardrails and the registry">Agents</button>
             <button onclick="toggleAgentPanel()" title="Close">&times;</button>
           </div>
         </div>
@@ -425,20 +393,34 @@
             <div class="agent-welcome">
               <div style="font-size:16px;margin-bottom:8px;font-weight:700;color:var(--accent)">AI</div>
               <div style="font-weight:600;margin-bottom:4px">AI Coding Agent</div>
-              <div style="font-size:12px;color:var(--text3)">Ask me to explain code, suggest edits, create files,
-                or run commands.</div>
+              <div style="font-size:12px;color:var(--text3)"><b>Planning</b> researches your code, shows an implementation plan and task list to review, then builds it step by step and writes a walkthrough. <b>Fast</b> edits right away. Mention files with @.</div>
             </div>
+            <div id="agent-keybanner" hidden></div>
           </div>
           <div class="agent-input-row">
+            <div class="ag-mention-pop" id="agent-mention-pop" hidden></div>
+            <div class="ag-settings-pop" id="agent-settings-pop" hidden>
+              <div class="ag-set-title">Agent settings</div>
+              <div class="ag-set-group">
+                <div class="ag-set-label">Plan review</div>
+                <label><input type="radio" name="review" value="request"> Request review <span>The agent waits for you to approve the plan</span></label>
+                <label><input type="radio" name="review" value="always"> Always proceed <span>The agent starts right after planning</span></label>
+              </div>
+              <div class="ag-set-group">
+                <div class="ag-set-label">Terminal commands</div>
+                <label><input type="radio" name="terminal" value="request"> Request review <span>Ask before running a verification command</span></label>
+                <label><input type="radio" name="terminal" value="always"> Always proceed <span>Run checks in the sandbox without asking</span></label>
+              </div>
+            </div>
             <textarea id="agent-input" class="agent-input" rows="1"
-              placeholder="Ask the AI agent…  (Enter to send · Shift+Enter for a new line)"
+              placeholder="Ask anything · @ to mention a file · /plan /fast /ask"
               spellcheck="false"></textarea>
             <div class="agent-input-controls">
-              <select id="agent-mode" class="agent-provider-select" title="How the agent handles your message">
-                <option value="auto">Auto</option>
+              <select id="agent-mode" class="agent-provider-select ag-mode-select" title="Planning: plan, review, then build. Fast: edit right away. Ask: answer only.">
+                <option value="plan">Planning</option>
+                <option value="fast">Fast</option>
                 <option value="ask">Ask</option>
-                <option value="edit">Edit</option>
-                <option value="agent">Agent</option>
+                <option value="agent">Agent (tools)</option>
               </select>
               <select id="agent-provider" class="agent-provider-select">
                 <option value="groq">Groq</option>
@@ -446,12 +428,13 @@
                 <option value="openai">OpenAI</option>
                 <option value="gemini">Gemini</option>
               </select>
-              <button class="agent-send-btn" onclick="sendAgentMessage()">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
-                </svg>
-                Send
+              <button class="agent-icon-btn" id="agent-settings-btn" type="button" onclick="toggleAgentSettings()" title="Agent settings: plan review and terminal command policy">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+              </button>
+              <button class="agent-send-btn" type="button" onclick="agentSendOrStop()" title="Send">
+                <svg class="ag-send-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                <svg class="ag-stop-ico" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+                <span class="agent-send-label">Send</span>
               </button>
             </div>
           </div>
@@ -470,19 +453,22 @@
               <line x1="9.7" y1="13.7" x2="6.4" y2="16.4" />
               <line x1="14.3" y1="13.7" x2="17.6" y2="16.4" />
             </svg>
-            GitAgent
+            Agents
+            <span class="og-badge" title="Agents follow the OpenGAP / GitAgent folder layout in .gitagent/">OpenGAP</span>
           </span>
           <div class="ga-panel-actions">
-            <a href="https://www.gitagent.sh" target="_blank" rel="noopener" class="ga-sub"
-              title="The GitAgent standard">gitagent.sh</a>
-            <button class="agent-header-btn" onclick="gaRefresh()" title="Reload the spec and registry">Refresh</button>
+            <button class="agent-header-btn" onclick="gaRefresh()" title="Reload the team, guards and registry">Refresh</button>
+            <button class="agent-header-btn" onclick="document.getElementById('ide-gitagent-panel').classList.toggle('wide'); if (GitAgent.tab==='workflow') setTimeout(ogDrawArcs, 50); if (IDE.editor) setTimeout(() => IDE.editor.layout(), 0)" title="Widen the panel">⇔</button>
             <button onclick="closeGitAgentPanel()" title="Close">&times;</button>
           </div>
         </div>
         <div class="ga-tabs">
-          <button class="ga-tab active" data-tab="agent" onclick="gaSwitchTab('agent')">Agent</button>
-          <button class="ga-tab" data-tab="skills" onclick="gaSwitchTab('skills')">Skills</button>
+          <button class="ga-tab active" data-tab="team" onclick="gaSwitchTab('team')">Team</button>
+          <button class="ga-tab" data-tab="workflow" onclick="gaSwitchTab('workflow')">Workflow</button>
+          <button class="ga-tab" data-tab="guards" onclick="gaSwitchTab('guards')">Guardrails</button>
+          <button class="ga-tab" data-tab="runs" onclick="gaSwitchTab('runs')">Runs</button>
           <button class="ga-tab" data-tab="registry" onclick="gaSwitchTab('registry')">Registry</button>
+          <button class="ga-tab" data-tab="agent" onclick="gaSwitchTab('agent')">Knowledge</button>
         </div>
         <div class="ga-panel-body" id="ga-panel-body"></div>
         <div class="ga-steps" id="ga-steps"></div>
@@ -491,6 +477,8 @@
       <div class="ide-preview-panel" id="ide-preview-panel" style="display:none;">
         <div class="preview-header">
           <span>Live Preview</span>
+          <select id="preview-service" class="preview-service" style="display:none;"
+            onchange="switchPreviewService(this.value)" title="Which service the preview shows"></select>
           <div style="display:flex;gap:4px;">
             <button onclick="refreshPreview()" title="Refresh"><svg width="12" height="12" viewBox="0 0 24 24"
                 fill="none" stroke="currentColor" stroke-width="2">
@@ -508,8 +496,8 @@
         </div>
         <div id="preview-loading" class="preview-loading" style="display:none;">
           <div class="preview-loading-spinner"></div>
-          <div class="preview-loading-title">Starting your app…</div>
-          <div class="preview-loading-sub">Installing dependencies and booting the dev server. This can take a minute on first run — the preview loads automatically once it's ready.</div>
+          <div id="preview-loading-title" class="preview-loading-title">Starting your app…</div>
+          <div id="preview-loading-sub" class="preview-loading-sub">Installing dependencies and booting the dev server. This can take a minute on first run — the preview loads automatically once it's ready.</div>
         </div>
         <button class="preview-locate-btn" id="preview-locate-btn" type="button"
           onmouseenter="locateUISource(false)" onclick="locateUISource(true)"
@@ -529,14 +517,14 @@
           <span class="ide-status-dot"></span>
           <span class="ide-status-text">Running</span>
         </span>
-        <span class="statusbar-item statusbar-branch" title="Sandbox branch">
+        <span class="statusbar-item statusbar-branch" id="statusbar-branch" title="Source control" onclick="showSidebarView('scm')" style="cursor:pointer">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="6" y1="3" x2="6" y2="15" />
             <circle cx="18" cy="6" r="3" />
             <circle cx="6" cy="18" r="3" />
             <path d="M18 9a9 9 0 0 1-9 9" />
           </svg>
-          main
+          <span id="statusbar-branch-name">main</span>
         </span>
       </div>
       <div class="statusbar-right">
@@ -549,20 +537,21 @@
     <div class="ide-toast" id="ide-toast"></div>
   </div>
 
+  <script src="/js/shell.js"></script>
+  <script src="/js/github.js"></script>
   <script src="/js/app.js"></script>
 
-  <!-- Load xterm (UMD) BEFORE Monaco's AMD loader. Monaco's loader installs a
-       global AMD define(); if xterm loads after it, xterm's UMD wrapper registers
-       as an anonymous AMD module instead of setting window.Terminal - which threw
-       "Can only have one anonymous define call per script file" and left the
-       terminal (and FitAddon) undefined. Loading xterm first makes it attach to
-       window normally; Monaco's loader then only governs Monaco's own modules. -->
+  <!-- Load xterm (UMD) BEFORE Monaco's AMD loader. -->
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/xterm/xterm-addon-fit.js"></script>
   <script src="/vendor/monaco/vs/loader.js"></script>
 
   <script src="/js/ide.js"></script>
   <script src="/js/ide-agent.js"></script>
+  <script src="/js/ide-git.js"></script>
+  <script src="/js/ide-plan.js"></script>
+  <script src="/js/ide-agents.js"></script>
+  <script src="/js/ide-gitgraph.js"></script>
 </body>
 
 </html>

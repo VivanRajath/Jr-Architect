@@ -1,11 +1,6 @@
-/* ─────────────────────────────────────────────
-   Jr Architect IDE — VS Code-style shell
-   Colour, type, space and radius come from tokens.css.
-   This file styles the shell; it defines no tokens.
-   ───────────────────────────────────────────── */
+/* IDE shell (VS Code style); colour, type, space and radius come from tokens.css. */
 
-/* Only the IDE view locks scrolling (it manages its own internal panes).
-   The landing page must stay free to scroll vertically. */
+/* Only the IDE view locks scrolling (it manages its own internal panes). */
 body.ide-mode {
   overflow: hidden;
   font-family: var(--sans);
@@ -59,46 +54,66 @@ body.ide-mode {
 }
 
 .ide-topbar .logo {
-  font-weight: 700;
-  font-size: var(--fs-sm);
-  background: linear-gradient(135deg, var(--accent), var(--accent2));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  letter-spacing: .3px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-2xs);
+}
+
+.ide-topbar .top-home {
+  padding: 3px 8px 3px 4px;
 }
 
 .ide-topbar .repo-name {
   font-family: var(--mono);
   font-size: var(--fs-sm);
-  color: var(--text2);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 300px;
 }
 
-.ide-topbar .mode-badge {
+.ide-topbar .project-chip {
   font-size: var(--fs-2xs);
-  font-weight: 700;
-  letter-spacing: .09em;
-  background: var(--accent-soft, rgba(107, 62, 26, .08));
-  border: 1px solid var(--border2);
+  font-weight: var(--fw-semibold);
   color: var(--accent);
+  background: var(--accent-soft);
   padding: 2px 8px;
   border-radius: var(--r-pill);
 }
 
-body.dark-mode .ide-topbar .mode-badge {
-  background: rgba(166, 124, 82, .12);
+.ide-topbar .project-chip[hidden] {
+  display: none;
+}
+
+.ide-topbar .top-btn.top-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: var(--fw-semibold);
+}
+
+.ide-topbar .top-btn.top-primary:hover {
+  background: var(--accent2);
+  color: var(--on-accent);
+}
+
+.ide-topbar .top-btn:disabled {
+  opacity: .5;
+  cursor: default;
 }
 
 .ide-topbar .framework-badge {
   font-size: var(--fs-2xs);
   font-weight: 700;
   letter-spacing: .04em;
-  background: var(--green-soft, rgba(45, 106, 79, .12));
-  border: 1px solid rgba(45, 106, 79, .3);
+  background: var(--green-soft, color-mix(in srgb, var(--green) 12%, transparent));
+  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
   color: var(--green);
   padding: 2px 8px;
   border-radius: var(--r-pill);
@@ -118,6 +133,7 @@ body.dark-mode .ide-topbar .mode-badge {
   padding: 5px 10px;
   cursor: pointer;
   font-family: var(--sans);
+  text-decoration: none;
   transition: .12s;
   display: inline-flex;
   align-items: center;
@@ -332,7 +348,7 @@ body.dark-mode .ide-topbar .mode-badge {
 
 .tree-actions button:hover {
   color: var(--red);
-  background: var(--red-soft, rgba(164, 22, 26, .1));
+  background: var(--red-soft, color-mix(in srgb, var(--red) 10%, transparent));
 }
 
 .tree-dir>.tree-children {
@@ -629,7 +645,7 @@ body.dark-mode .ide-topbar .mode-badge {
 
 .terminal-tab-close:hover {
   color: var(--red);
-  background: var(--red-soft, rgba(164, 22, 26, .1));
+  background: var(--red-soft, color-mix(in srgb, var(--red) 10%, transparent));
 }
 
 .terminal-add-btn {
@@ -795,6 +811,18 @@ body.dark-mode .ide-topbar .mode-badge {
   flex-shrink: 0;
 }
 
+.preview-service {
+  margin: 0 auto 0 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
 .preview-header button {
   background: none;
   border: none;
@@ -815,9 +843,7 @@ body.dark-mode .ide-topbar .mode-badge {
 .preview-iframe {
   flex: 1;
   border: none;
-  /* Deliberately literal: this is the paint behind the USER'S app before it
-     loads, and most pages are light. It is not IDE chrome, so it does not
-     follow the IDE's theme. */
+  /* Deliberately literal: this is the paint behind the USER'S app before it loads, and most pages are light. */
   background: #fff;
   width: 100%;
 }
@@ -1009,11 +1035,11 @@ body.dark-mode .ide-toast {
 }
 
 .ide-toast.success {
-  border-color: rgba(45, 106, 79, .4);
+  border-color: color-mix(in srgb, var(--green) 40%, transparent);
 }
 
 .ide-toast.error {
-  border-color: rgba(164, 22, 26, .4);
+  border-color: color-mix(in srgb, var(--red) 40%, transparent);
 }
 
 @keyframes toastSlide {

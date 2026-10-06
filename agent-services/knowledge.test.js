@@ -181,10 +181,7 @@ test("the manifest stays clean when the built-in holds the knowledge slot", () =
   assert.ok(existsSync(join(dir, ".gitagent", "pipeline.json")));
 });
 
-// ── Grounding checks ─────────────────────────────────────────────────────────
-// The document is loaded into EVERY later turn, so a file it invents becomes a
-// fact the coding agent then acts on. These are what make "cite only real files"
-// a check rather than a wish.
+// Grounding checks
 
 test("invalidPaths catches a cited file that does not exist", () => {
   const dir = fixture();
@@ -194,9 +191,7 @@ test("invalidPaths catches a cited file that does not exist", () => {
 
 test("invalidPaths does not cry wolf over expressions or bare packages", () => {
   const dir = fixture();
-  // These are the things a model quotes constantly. Flagging them would make the
-  // signal useless: `process.stdout` was reported as a missing file before the
-  // extension list was narrowed to real source extensions.
+  // These are the things a model quotes constantly.
   const doc = "Writes to `process.stdout` via `res.end`, using `react` and `:method`, run `npm install`.";
   assert.deepEqual(invalidPaths(dir, doc), []);
 });

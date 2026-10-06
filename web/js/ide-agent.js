@@ -1,20 +1,11 @@
-// ── Agent Chat (streaming, agentic) ──
-//
-// The agent-service (agent-services/server.js) runs a real coding agent against
-// the sandbox workdir and streams its work over a WebSocket at /agent/ws
-// (reverse-proxied by the Go server to the Node service on :8001). We render that
-// stream live — tokens as they arrive, each tool call as its own row — and when
-// the agent edits files we auto-refresh the file tree, reload open editors, and
-// reload the live preview. If the socket can't be established we fall back to the
-// single-shot REST endpoint so the panel still works.
+// Agent Chat (streaming, agentic) The agent-service (agent-services/server.js) runs a real coding agent against the sandbox workdir and streams its work over a WebSocket at /agent/ws (reverse-proxied by the Go server to the Node service on :8001).
 
 const AgentWS = {
   sock: null,
   bound: null, // container the socket is currently bound to
 };
 
-// The turn currently streaming. Only one runs at a time (input is disabled while
-// busy). Holds the DOM anchors and the set of files the agent touched this turn.
+// The turn currently streaming. Only one runs at a time (input is disabled while busy).
 let agentTurn = null;
 
 function agentWsUrl() {
@@ -22,9 +13,7 @@ function agentWsUrl() {
   return `${protocol}//${window.location.host}/agent/ws`;
 }
 
-// ensureAgentSocket resolves with an OPEN socket, opening one if needed. It does
-// NOT bind — the caller sends bind+chat so a reused socket rebinds if the active
-// sandbox changed.
+// ensureAgentSocket resolves with an OPEN socket, opening one if needed.
 function ensureAgentSocket() {
   return new Promise((resolve, reject) => {
     const s = AgentWS.sock;
@@ -51,11 +40,21 @@ function ensureAgentSocket() {
   });
 }
 
+// The send button doubles as Stop while the agent works.
+function agentSendOrStop() {
+  if (agentTurn) { if (typeof stopAgent === 'function') stopAgent(); return; }
+  sendAgentMessage();
+}
+
 async function sendAgentMessage() {
   const input = document.getElementById('agent-input');
-  const msg = input.value.trim();
+  let msg = input.value.trim();
   if (!msg) return;
   if (agentTurn) return; // a turn is already streaming
+  // "/plan …", "/fast …" and "/ask …" pick the mode for this message only.
+  const slash = typeof parseSlash === 'function' ? parseSlash(msg) : { mode: null, text: msg };
+  if (slash.mode && !slash.text.trim()) { showToast('Add what you want after ' + msg.split(' ')[0], 'error'); return; }
+  msg = slash.text.trim() || msg;
   input.value = '';
   autoGrowAgentInput(input); // collapse the composer back to one line
 
@@ -78,7 +77,8 @@ async function sendAgentMessage() {
 
   const provider = document.getElementById('agent-provider').value;
   const modeEl = document.getElementById('agent-mode');
-  const mode = modeEl ? modeEl.value : 'auto';
+  const mode = slash.mode || (modeEl ? modeEl.value : 'auto');
+  if (mode === 'plan') loadEl.textContent = 'Researching and planning';
 
   agentTurn = {
     messagesEl: messages,
@@ -97,10 +97,10 @@ async function sendAgentMessage() {
       sock.send(JSON.stringify({ type: 'bind', container: IDE.container }));
       AgentWS.bound = IDE.container;
     }
-    sock.send(JSON.stringify({ type: 'chat', container: IDE.container, message: msg, provider, mode }));
+    sock.send(JSON.stringify({ type: 'chat', container: IDE.container, message: msg, provider, mode, policy: typeof AgentPolicy !== 'undefined' ? AgentPolicy.get() : undefined }));
   } catch (e) {
     // Streaming transport unavailable — fall back to the single-shot REST path.
-    await sendAgentViaRest(msg, provider, messages, mode);
+    await sendAgentViaRest(msg, provider, messages, mode === 'plan' || mode === 'fast' ? 'edit' : mode);
   }
 }
 
@@ -108,6 +108,10 @@ function handleAgentWsMessage(ev) {
   let msg;
   try { msg = JSON.parse(ev.data); } catch { return; }
   const t = agentTurn;
+  if (typeof planHandle === 'function' && /^(artifact|artifact_update|awaiting_review|command_request|command_result)$/.test(msg.type)) {
+    planHandle(msg);
+    return;
+  }
 
   switch (msg.type) {
     case 'ready':
@@ -135,8 +139,7 @@ function handleAgentWsMessage(ev) {
     case 'tool': {
       if (!t) break;
       clearLoad(t);
-      // Close the current assistant bubble so any following prose starts a fresh
-      // bubble — producing a natural interleaved transcript (text, tool, text…).
+      // Close the current assistant bubble so any following prose starts a fresh bubble — producing a natural interleaved transcript (text, tool, text…).
       t.assistantEl = null;
       const changed = renderToolRow(t.messagesEl, msg.content || '');
       if (changed) t.changedPaths.add(changed);
@@ -146,6 +149,10 @@ function handleAgentWsMessage(ev) {
 
     case 'file_changed':
       if (t) t.sawFileChange = true;
+      break;
+
+    case 'og':
+      if (typeof ogHandleEvent === 'function' && msg.event) ogHandleEvent(msg.event);
       break;
 
     case 'edit_summary': {
@@ -158,8 +165,7 @@ function handleAgentWsMessage(ev) {
     }
 
     case 'message_end':
-      // Soft boundary between the agent's assistant messages within one turn —
-      // just close the current bubble; the turn continues.
+      // Soft boundary between the agent's assistant messages within one turn — just close the current bubble; the turn continues.
       if (t) t.assistantEl = null;
       break;
 
@@ -186,11 +192,138 @@ function clearLoad(t) {
   if (t && t.loadEl) { t.loadEl.remove(); t.loadEl = null; }
 }
 
-// Render the layered edit pipeline's result as a clickable file list. Rows for
-// edited/created files open a before/after diff on click.
+// Render the layered edit pipeline's result as a clickable file list.
+function renderDenial(f) {
+  const d = f.denial || {};
+  const box = document.createElement('div');
+  box.className = 'agent-denial';
+
+  const head = document.createElement('div');
+  head.className = 'agent-denial-head';
+  head.innerHTML =
+    `<span class="agent-denial-pack">${escapeHtml(d.pack || 'guardrail')}</span>` +
+    (d.tier === 'floor' ? '<span class="ga-badge">code floor</span>' : '');
+  box.appendChild(head);
+
+  const quote = document.createElement('div');
+  quote.className = 'agent-denial-why';
+  quote.textContent = d.why || 'denied';
+  box.appendChild(quote);
+
+  if (d.rulePath) {
+    const link = document.createElement('button');
+    link.className = 'ga-chip';
+    link.textContent = d.rulePath.split('/').pop();
+    link.title = `Open ${d.rulePath}`;
+    link.onclick = () => gaOpenEditor(d.rulePath, d.pack || 'Guardrail rules',
+      'The rules this guardrail enforces. Edit them and the next review uses your version.');
+    box.appendChild(link);
+  }
+
+  // The code floor is not a judgement call — there is nothing to argue with, so it gets no Fix/Override, only the explanation.
+  if (!d.answerable || !f.proposed) return box;
+
+  const actions = document.createElement('div');
+  actions.className = 'agent-denial-actions';
+
+  const fix = document.createElement('button');
+  fix.className = 'ga-btn primary';
+  fix.textContent = 'Fix it';
+  fix.title = 'Send the rule back to the developer and try again';
+  fix.onclick = () => guardrailFix(f, box);
+  actions.appendChild(fix);
+
+  const over = document.createElement('button');
+  over.className = 'ga-btn';
+  over.textContent = 'Override…';
+  over.title = 'Apply anyway, with a reason on the record';
+  over.onclick = () => guardrailOverride(f, box);
+  actions.appendChild(over);
+
+  box.appendChild(actions);
+  return box;
+}
+
+async function guardrailFix(f, box) {
+  const btns = box.querySelectorAll('button');
+  btns.forEach((b) => { b.disabled = true; });
+  const status = document.createElement('div');
+  status.className = 'agent-denial-status';
+  status.textContent = 'Rewriting to satisfy the rule…';
+  box.appendChild(status);
+  try {
+    const res = await fetch('/agent/guardrail/fix', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        container: IDE.container, path: f.path, proposed: f.proposed,
+        why: f.denial.why, pack: f.denial.pack,
+        provider: (document.getElementById('agent-provider') || {}).value,
+      }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      status.className = 'agent-denial-status ok';
+      status.textContent = 'Fixed and applied — the guardrail approved the rewrite.';
+      showToast(`${f.path} fixed and applied`, 'success');
+      if (typeof loadFileTree === 'function') loadFileTree();
+      revealChangesInPreview();
+    } else if (data.reason === 'still-denied') {
+      status.className = 'agent-denial-status bad';
+      status.textContent = `Still denied — ${data.denial || 'the rewrite violates the rule too'}`;
+      btns.forEach((b) => { b.disabled = false; });
+    } else {
+      status.className = 'agent-denial-status bad';
+      status.textContent = data.error || 'The developer produced no usable rewrite.';
+      btns.forEach((b) => { b.disabled = false; });
+    }
+  } catch {
+    status.className = 'agent-denial-status bad';
+    status.textContent = 'Could not reach the agent service.';
+    btns.forEach((b) => { b.disabled = false; });
+  }
+}
+
+async function guardrailOverride(f, box) {
+  // A reason is required, not optional: an unexplained override is indistinguishable from having no guardrail at all.
+  const reason = prompt(
+    `Override the guardrail on ${f.path}?\n\n` +
+    `Denied for: ${f.denial.why}\n\n` +
+    `This is recorded in .gitagent/audit/. Why is it acceptable here?`, '');
+  if (reason == null) return;
+  if (reason.trim().length < 8) { showToast('An override needs a reason', 'error'); return; }
+
+  const btns = box.querySelectorAll('button');
+  btns.forEach((b) => { b.disabled = true; });
+  try {
+    const res = await fetch('/agent/guardrail/override', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        container: IDE.container, path: f.path, proposed: f.proposed,
+        reason, pack: f.denial.pack, why: f.denial.why,
+      }),
+    });
+    const data = await res.json();
+    const status = document.createElement('div');
+    status.className = 'agent-denial-status ' + (data.ok ? 'ok' : 'bad');
+    status.textContent = data.ok
+      ? `Overridden and applied — recorded in ${data.audit}`
+      : (data.error || 'Could not override');
+    box.appendChild(status);
+    if (data.ok) {
+      showToast(`${f.path} overridden`, 'success');
+      if (typeof loadFileTree === 'function') loadFileTree();
+      revealChangesInPreview();
+    } else {
+      btns.forEach((b) => { b.disabled = false; });
+    }
+  } catch {
+    showToast('Could not reach the agent service', 'error');
+    btns.forEach((b) => { b.disabled = false; });
+  }
+}
+
 function renderEditSummary(container, files, turn) {
-  // Use the shared escaper rather than a local textContent/innerHTML trick — the
-  // local one had the same quote-blind behaviour that made the registry XSS possible.
+  // Use the shared escaper rather than a local textContent/innerHTML trick.
   const escLocal = escapeHtml;
   const changed = files.filter(f => f.status === 'edited' || f.status === 'created');
   const wrap = document.createElement('div');
@@ -222,11 +355,11 @@ function renderEditSummary(container, files, turn) {
       };
     }
     wrap.appendChild(row);
+    // A denial used to end here. Now it expands into the rule that fired and the three things you can actually do about it.
+    if (f.denial) wrap.appendChild(renderDenial(f));
   });
 
-  // Explicit control so the change is visible and confirmable: re-apply the new
-  // contents to disk and force the preview to show them. Changes are already
-  // written by the pipeline, so this is a safe re-apply that also reveals them.
+  // Explicit control so the change is visible and confirmable: re-apply the new contents to disk and force the preview to show them.
   if (changed.length) {
     const actions = document.createElement('div');
     actions.className = 'agent-edit-actions';
@@ -248,9 +381,7 @@ function renderEditSummary(container, files, turn) {
   container.appendChild(wrap);
 }
 
-// Re-apply the edited files' new contents to disk (idempotent — the pipeline
-// already wrote them) and force the preview to reveal the change. Gives the user
-// a tangible "the code changed and here it is" confirmation.
+// Re-apply the edited files' new contents to disk (idempotent — the pipeline already wrote them) and force the preview to reveal the change.
 async function applyEditSummary(changed, btn) {
   if (!IDE.container) { showToast('Launch a repo first', 'error'); return; }
   const orig = btn ? btn.textContent : '';
@@ -272,9 +403,8 @@ async function applyEditSummary(changed, btn) {
   }
   if (typeof renderTabs === 'function') renderTabs();
   if (typeof loadFileTree === 'function') loadFileTree();
-  // /file/save already wrote each file through the container, so the recompile is
-  // in flight — just reveal it (reloads now and after the recompile settles).
-  revealChangesInPreview(changed.map(f => f.path), true);
+  // /file/save already wrote each file through the container, so the recompile is in flight.
+  revealChangesInPreview();
   showToast(`Applied ${ok} change${ok === 1 ? '' : 's'} · preview updating`, ok ? 'success' : 'error');
   if (btn) { btn.disabled = false; btn.textContent = orig; }
 }
@@ -288,8 +418,7 @@ function editStatusIcon(kind) {
   return s + '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
 }
 
-// finishAgentTurn finalizes the streaming turn: re-enable input, and reflect any
-// filesystem changes the agent made into the tree, open editors, and preview.
+// finishAgentTurn finalizes the streaming turn.
 function finishAgentTurn() {
   const t = agentTurn;
   if (!t || t.finished) { if (!t) setAgentBusy(false); return; }
@@ -302,33 +431,18 @@ function finishAgentTurn() {
     loadFileTree();
     // Reload editors for files the agent touched (without clobbering unsaved edits).
     t.changedPaths.forEach(reloadOpenFileFromDisk);
-    // Reveal the change in the preview. The agent's auto-apply writes files
-    // host-side, which the containerized dev server won't notice on its own, so
-    // touch them inside the container to force a recompile, then reload.
+    // The agent service writes each change through the container before it reports it, so the recompile is already in flight — just reload.
     if (!IDE.previewUserClosed) {
-      revealChangesInPreview(Array.from(t.changedPaths), false);
+      revealChangesInPreview();
     } else {
       const preview = document.getElementById('ide-preview-panel');
-      if (preview && preview.style.display !== 'none') revealChangesInPreview(Array.from(t.changedPaths), false);
+      if (preview && preview.style.display !== 'none') revealChangesInPreview();
     }
   }
 }
 
-// Make an edit actually show in the live preview. The dev server runs inside the
-// sandbox and doesn't reliably see host-side writes (Docker bind-mount cache), so
-// we ask the backend to re-write the changed files THROUGH the container (unless
-// they were just saved via /file/save, which already does this) — that forces the
-// dev server to recompile. Then we reload the preview twice: once now (catches HMR
-// / an already-compiled route) and once after the recompile settles.
-async function revealChangesInPreview(paths, alreadySynced) {
-  try {
-    if (!alreadySynced && Array.isArray(paths) && paths.length && IDE.container) {
-      await fetch('/sandbox/sync', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ container: IDE.container, paths }),
-      });
-    }
-  } catch { /* best-effort */ }
+// Every writer (file save, edit pipeline, agent write tool, guardrail fix/override) now writes THROUGH the container server-side.
+function revealChangesInPreview() {
   if (typeof showChangesInPreview !== 'function') return;
   showChangesInPreview();
   setTimeout(() => showChangesInPreview(), 2200);
@@ -338,7 +452,12 @@ function setAgentBusy(busy) {
   const input = document.getElementById('agent-input');
   const btn = document.querySelector('.agent-send-btn');
   if (input) input.disabled = busy;
-  if (btn) { btn.disabled = busy; btn.style.opacity = busy ? '0.6' : ''; }
+  if (btn) {
+    btn.classList.toggle('stop', busy);
+    btn.title = busy ? 'Stop after the current step' : 'Send';
+    const label = btn.querySelector('.agent-send-label');
+    if (label) label.textContent = busy ? 'Stop' : 'Send';
+  }
   if (!busy && input) input.focus();
 }
 
@@ -367,9 +486,7 @@ function toolIconSVG(name) {
 
 const WRITE_TOOL_RE = /(write|edit|create|save|patch|apply|update|insert)/i;
 
-// renderToolRow renders one tool invocation and returns the file path it changed
-// (if it looks like a write), so the caller can reload that editor afterward.
-// rawContent is "toolName({...json args...})" from the agent service.
+// renderToolRow renders one tool invocation and returns the file path it changed (if it looks like a write).
 function renderToolRow(container, rawContent) {
   let name = rawContent, argStr = '';
   const m = /^([A-Za-z0-9_.\-]+)\(([\s\S]*)\)$/.exec(rawContent);
@@ -413,9 +530,7 @@ function renderToolRow(container, rawContent) {
   return null;
 }
 
-// reloadOpenFileFromDisk refreshes an open editor tab from the sandbox after the
-// agent edited it — unless the user has unsaved changes in that tab, in which case
-// we leave their work alone and just flag it.
+// reloadOpenFileFromDisk refreshes an open editor tab from the sandbox after the agent edited it.
 async function reloadOpenFileFromDisk(path) {
   const tab = IDE.tabs.find(t => t.path === path);
   if (!tab) return;
@@ -489,7 +604,6 @@ function appendAgentError(messages, text) {
 
 function formatAgentResponse(text) {
   // Escape HTML first so model/user/file content can never inject markup (XSS).
-  // The markdown tags we add below are inserted after escaping, so they render.
   text = escapeHtml(text);
   // Code blocks
   text = text.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="lang-$1">$2</code></pre>');
@@ -502,15 +616,7 @@ function formatAgentResponse(text) {
   return text;
 }
 
-// Escape a value for insertion into HTML — including BOTH quote characters, so
-// the result is safe in an attribute value as well as in element text.
-//
-// This used to be `d.textContent = s; return d.innerHTML`, which escapes only
-// `& < >`: a text node never needs a quote escaped, so the browser doesn't
-// produce one. That made every `title="${escapeHtml(x)}"` an injection point for
-// any value we don't control — and several of them carry data straight from the
-// public registry index, so merely browsing the Registry tab was enough to run
-// an attacker's `onmouseover`. Escaping explicitly closes the whole class.
+// Escape a value for insertion into HTML — including BOTH quote characters, so the result is safe in an attribute value as well as in element text.
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -520,14 +626,10 @@ function escapeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
-// Same function, named for the position. Use it where the value lands inside an
-// attribute so the intent is legible at the call site.
+// Same function, named for the position. Use it where the value lands inside an attribute so the intent is legible at the call site.
 const escapeAttr = escapeHtml;
 
-// Only http(s) may reach an href. A registry entry supplies its own repository
-// URL, and a `javascript:` URL is dangerous without needing a quote at all —
-// escaping cannot help there, so the scheme is allowlisted instead. Returns ""
-// for anything else, which renders as a dead link rather than a live hazard.
+// Only http(s) may reach an href.
 function safeUrl(u) {
   const s = String(u == null ? '' : u).trim();
   return /^https?:\/\/[^\s]+$/i.test(s) ? s : '';
@@ -558,8 +660,7 @@ async function applyAgentChange(change) {
   }
 }
 
-// Grow the composer textarea to fit its content (up to the CSS max-height, then
-// it scrolls). Mirrors the Cursor/ChatGPT input behaviour.
+// Grow the composer textarea to fit its content (up to the CSS max-height, then it scrolls).
 function autoGrowAgentInput(el) {
   if (!el) return;
   el.style.height = 'auto';
@@ -580,22 +681,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// ── GitAgent panel ───────────────────────────────────────────────────────────
-//
-// The IDE's front door to the GitAgent standard (gitagent.sh). One dock, three
-// tabs:
-//
-//   Agent     this repository's own agent — identity, rules, memory, guardrails,
-//             manifest — plus which agents fill the edit pipeline's slots
-//   Skills    the personas under .gitagent/skills that drive the pipeline; the
-//             built-in ones are editable files, not hidden prompts
-//   Registry  community agents from registry.gitagent.sh: preview what an agent
-//             will inject, install it, hand it a slot
-//
-// Everything shown here is a real file in the workspace, so every change is a
-// git diff the user can review and commit — the point of the standard. Assigning
-// a slot writes .gitagent/pipeline.json and live-clones the agent into the
-// sandbox, so the next edit runs as that agent. See agent-services/registry.js.
+// GitAgent panel
 
 const GitAgent = {
   status: null,      // GET /agent/gitagent — spec, skills, slots, installed
@@ -612,9 +698,7 @@ const GitAgent = {
   knowledgePoll: null, // interval id while a knowledge build is in flight
 };
 
-// The slot an agent will take. The backend classifies it (registry.js
-// classifySlot) and ships it on each row, so this is only a fallback for a
-// cached response from an older service.
+// The slot an agent will take.
 function gaSlotFor(agent) {
   if (agent && agent.slot) return agent.slot;
   const c = agent && agent.category;
@@ -625,9 +709,7 @@ function gaSlotLabel(slot) {
   return slot === 'guardrails' ? 'Guardrail' : 'Developer';
 }
 
-// escapeHtml() leaves quotes alone, which is fine for text but not for a value
-// interpolated into a single-quoted JS string inside an onclick attribute. A
-// registry ref is remote data, so escape it for that position specifically.
+// escapeHtml() leaves quotes alone, which is fine for text but not for a value interpolated into a single-quoted JS string inside an onclick attribute.
 function gaJs(s) {
   return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/&/g, '&amp;')
     .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -643,9 +725,7 @@ function toggleGitAgentPanel() {
   openGitAgentPanel();
 }
 
-// Everything except the registry index is per-workspace, so going back to the
-// landing page and launching a different repo must not leave the previous repo's
-// spec, skills, or install log on screen.
+// Everything except the registry index is per-workspace.
 function gaResetForContainer() {
   if (GitAgent.container === IDE.container) return;
   GitAgent.container = IDE.container;
@@ -654,11 +734,11 @@ function gaResetForContainer() {
   GitAgent.draft = null;
   GitAgent.detail = null;
   GitAgent.steps = [];
-  GitAgent.tab = 'agent';
+  GitAgent.tab = 'team';
+  if (typeof OG !== 'undefined') Object.assign(OG, { status: null, runs: [], editing: null, smoke: {}, live: null, openRun: null, guardForm: false, fileEdit: null });
 }
 
-// `tab` is optional — the AI-panel header button opens straight to the registry,
-// while the activity bar opens the repo's own agent.
+// `tab` is optional — the AI-panel header button opens straight to the registry, while the activity bar opens the repo's own agent.
 function openGitAgentPanel(tab) {
   if (!IDE.container) { showToast('Launch a repo first', 'error'); return; }
   const panel = document.getElementById('ide-gitagent-panel');
@@ -683,6 +763,7 @@ function closeGitAgentPanel() {
 
 function gaSwitchTab(tab) {
   GitAgent.tab = tab;
+  if (typeof OG !== 'undefined') { OG.editing = null; OG.fileEdit = null; if (tab === 'runs' || tab === 'workflow') ogLoadRuns(true).then(() => gaRender()); }
   GitAgent.editor = null;   // leaving a tab abandons an open file editor
   GitAgent.draft = null;
   gaRender();
@@ -690,7 +771,7 @@ function gaSwitchTab(tab) {
 }
 
 async function gaRefresh() {
-  await Promise.all([gaLoadStatus(), GitAgent.tab === 'registry' ? gaLoadRegistry() : null]);
+  await Promise.all([gaLoadStatus(), GitAgent.tab === 'registry' ? gaLoadRegistry() : null, typeof ogLoad === 'function' ? ogLoad() : null]);
 }
 
 async function gaLoadStatus() {
@@ -700,8 +781,7 @@ async function gaLoadStatus() {
     if (res.ok) {
       GitAgent.status = data;
       gaRender();
-      // Opening the panel during the automatic build at workspace open should
-      // show it finishing, not a frozen "building…" that never resolves.
+      // Opening the panel during the automatic build at workspace open should show it finishing, not a frozen "building…" that never resolves.
       if ((data.knowledgeState || {}).status === 'building' && !GitAgent.knowledgePoll) {
         gaPollKnowledge();
       }
@@ -726,18 +806,24 @@ function gaRender() {
   document.querySelectorAll('#ide-gitagent-panel .ga-tab').forEach((t) => {
     t.classList.toggle('active', t.dataset.tab === GitAgent.tab);
   });
-  // A file editor takes over the panel body so the textarea keeps focus and
-  // caret position — re-rendering the whole tab on every keystroke would not.
+  // A file editor takes over the panel body so the textarea keeps focus and caret position — re-rendering the whole tab on every keystroke would not.
   if (GitAgent.editor) { body.innerHTML = gaEditorHTML(); gaFocusEditor(); return; }
+  // The OpenGAP tabs (Team, Workflow, Guardrails, Runs) render from ide-agents.js.
+  if (typeof OG_TABS !== 'undefined' && OG_TABS.includes(GitAgent.tab)) {
+    body.innerHTML = ogTabHTML(GitAgent.tab);
+    gaRenderSteps();
+    ogAfterRender(GitAgent.tab);
+    return;
+  }
   if (GitAgent.tab === 'agent') body.innerHTML = gaAgentTabHTML();
   else if (GitAgent.tab === 'skills') body.innerHTML = gaSkillsTabHTML();
   else body.innerHTML = gaRegistryTabHTML();
   gaBindTabInputs();
   gaRenderSteps();
+  if (typeof ogAfterRender === 'function') ogAfterRender(GitAgent.tab);
 }
 
-// Re-attach the handlers for inputs that must not trigger a re-render on every
-// keystroke (search box, new-skill draft).
+// Re-attach the handlers for inputs that must not trigger a re-render on every keystroke (search box, new-skill draft).
 function gaBindTabInputs() {
   const search = document.getElementById('ga-search');
   if (search) {
@@ -793,15 +879,13 @@ function gaSlotCard(slot, agent) {
     return `<div class="ga-slot-agent empty">Built-in ${slot === 'developer' ? 'Developer' : 'Guardrails'}</div>`;
   }
   const dot = agent.installed ? 'installed' : 'pending';
-  // The files this agent wrote into .gitagent/ — its rules and its stage. Opening
-  // one shows exactly what it contributes, and editing it changes the next edit.
+  // The files this agent wrote into .gitagent/ — its rules and its stage.
   const hint = slot === 'guardrails'
     ? 'The rules this guardrail enforces. Edit them and the next review uses your version.'
     : slot === 'knowledge'
     ? 'The prompt this agent runs when the workspace opens. Edit it, then press Rebuild.'
     : 'What this agent injects before it rewrites code. Edit it and the next edit changes.';
-  // The built-in knowledge builder is a real skill file, not a pulled agent — so it
-  // gets no remove control (there is nothing to remove it to) but is still openable.
+  // The built-in knowledge builder is a real skill file, not a pulled agent.
   if (agent.builtin) {
     const bFiles = (agent.specFiles || []).map((f) => `
       <button class="ga-chip" title="${escapeAttr(f)}"
@@ -848,8 +932,7 @@ function gaSlotsHTML() {
     </div>`;
 }
 
-// What the Knowledge slot has actually produced. The slot always has an occupant,
-// so the useful question is not "is one assigned" but "did it run, and when".
+// What the Knowledge slot has actually produced.
 function gaKnowledgeDocHTML() {
   const st = GitAgent.status || {};
   const doc = st.knowledgeDoc || {};
@@ -877,8 +960,7 @@ function gaKnowledgeDocHTML() {
   const when = doc.builtAt ? gaAgo(doc.builtAt) : '';
   const kb = doc.bytes ? `${Math.max(1, Math.round(doc.bytes / 1024))} KB` : '';
   const meta = [when, kb, doc.sources ? `${doc.sources} sources` : ''].filter(Boolean).join(' · ');
-  // The document rides in every turn, so a claim it could not verify is worth
-  // showing rather than burying — the reader can open it and judge.
+  // The document rides in every turn, so a claim it could not verify is worth showing rather than burying — the reader can open it and judge.
   const unverified = (doc.unverified || []).length
     ? `<span class="ga-know-text warn" title="${escapeAttr('Cited but not found in the workspace: ' + doc.unverified.join(', '))}">${doc.unverified.length} unverified path${doc.unverified.length === 1 ? '' : 's'}</span>`
     : '';
@@ -901,9 +983,7 @@ function gaAgo(iso) {
   return `${Math.round(s / 86400)}d ago`;
 }
 
-// The overview lives under knowledge/, not .gitagent/, so the spec-file editor
-// cannot open it (it only reaches into the spec folder). Open it in the real
-// editor instead — it is a normal file in the workspace.
+// The overview lives under knowledge/, not .gitagent/, so the spec-file editor cannot open it (it only reaches into the spec folder).
 function gaOpenKnowledgeDoc() {
   const doc = (GitAgent.status || {}).knowledgeDoc || {};
   if (!doc.path) return;
@@ -930,8 +1010,7 @@ async function gaRebuildKnowledge() {
   }
 }
 
-// The build takes ~30-60s in a child process, so the panel polls rather than
-// waiting on the request. Stops as soon as the state settles.
+// The build takes ~30-60s in a child process, so the panel polls rather than waiting on the request.
 function gaPollKnowledge() {
   if (GitAgent.knowledgePoll) clearInterval(GitAgent.knowledgePoll);
   let ticks = 0;
@@ -955,8 +1034,7 @@ function gaPollKnowledge() {
   }, 2000);
 }
 
-// Community agents cloned into this workspace, slot or no slot — each one's real
-// files can be opened, which is how you audit what an installed agent injects.
+// Community agents cloned into this workspace, slot or no slot.
 function gaInstalledHTML() {
   const installed = (GitAgent.status && GitAgent.status.installedAgents) || [];
   if (!installed.length) return '';
@@ -993,8 +1071,7 @@ function gaSkillsTabHTML() {
     const desc = (typeof s === 'string' ? '' : s.description) || '';
     const builtin = typeof s === 'string' ? false : !!s.builtin;
     const path = (typeof s === 'string' ? `.gitagent/skills/${s}/SKILL.md` : s.path);
-    // A skill written here by a pulled agent: editable, but owned by its slot —
-    // deleting the file alone would just bring it back on the next turn.
+    // A skill written here by a pulled agent: editable, but owned by its slot — deleting the file alone would just bring it back on the next turn.
     const agent = (typeof s === 'string' ? '' : s.agent) || '';
     const badge = agent
       ? `<span class="ga-badge pulled" title="Pulled from the registry as ${escapeHtml(agent)}">${escapeHtml(agent)}</span>`
@@ -1187,8 +1264,7 @@ async function gaSaveEditor() {
   }
 }
 
-// Hand a spec file to the main code editor, for anyone who would rather work in
-// Monaco (diffs, search, the file tree) than in the panel.
+// Hand a spec file to the main code editor, for anyone who would rather work in Monaco (diffs, search, the file tree) than in the panel.
 function gaOpenInMonaco(path) {
   if (typeof openFile === 'function') openFile(path, path.split('/').pop());
 }
@@ -1228,8 +1304,7 @@ function gaListHTML() {
   return rows.map((a) => {
     const primary = gaSlotFor(a);
     const open = GitAgent.detail === a.ref;
-    // Pull is one click: the tag says which slot the agent lands in, and the
-    // title says why. The explicit slot buttons stay as an override.
+    // Pull is one click: the tag says which slot the agent lands in, and the title says why.
     return `<div class="ga-card${open ? ' open' : ''}">
       <div class="ga-card-main">
         <div class="ga-card-top">
@@ -1250,14 +1325,12 @@ function gaListHTML() {
   }).join('');
 }
 
-// The preview reads the agent's SOUL/RULES/README straight from its GitHub repo,
-// so you can see what it will inject before installing anything.
+// The preview reads the agent's SOUL/RULES/README straight from its GitHub repo, so you can see what it will inject before installing anything.
 function gaDetailHTML(ref) {
   const d = GitAgent.details[ref];
   if (!d) return '<div class="ga-detail"><div class="ga-empty">Loading the agent…</div></div>';
   const files = Object.entries(d.files || {});
-  // The repository URL is remote data, so the scheme is allowlisted before it
-  // reaches an href; the visible label is still the raw value, escaped.
+  // The repository URL is remote data, so the scheme is allowlisted before it reaches an href; the visible label is still the raw value, escaped.
   const repo = safeUrl(d.repository);
   return `<div class="ga-detail">
     <div class="ga-detail-meta">
@@ -1291,9 +1364,7 @@ async function gaToggleDetail(ref) {
   if (GitAgent.detail === ref) gaRender();
 }
 
-// Pull an agent: clone it and put it straight to work. The backend picks the
-// slot from the registry's own metadata, so one click is the whole flow. Pass
-// a slot to override it, or 'none' to clone without assigning (read it first).
+// Pull an agent: clone it and put it straight to work.
 async function gaPull(ref, slot) {
   if (GitAgent.busy) return;
   GitAgent.busy = true;
@@ -1310,15 +1381,13 @@ async function gaPull(ref, slot) {
       ? `${gaSlotLabel(data.slot)}${data.slotReason ? ` · ${data.slotReason}` : ''}`
       : 'cloned, no slot';
     const steps = [`GitAgent: cloned ${ref}`, `GitAgent: ${ref} → ${where}`];
-    // The pull writes the agent's rules and stage into .gitagent/ — say which
-    // files, so the folder change is visible instead of something to go hunt for.
+    // The pull writes the agent's rules and stage into .gitagent/ — say which files, so the folder change is visible instead of something to go hunt for.
     for (const f of data.files || []) {
       steps.push(`GitAgent: ${f.action === 'pruned' ? 'removed' : 'wrote'} ${f.path}`);
     }
     gaSetSteps(steps);
     gaRender();
-    // Reload the explorer, then flash the rules file the pull just wrote so the
-    // change to .gitagent/ is something you see, not something you go looking for.
+    // Reload the explorer, then flash the rules file the pull just wrote so the change to .gitagent/ is something you see, not something you go looking for.
     if (typeof loadFileTree === 'function') await loadFileTree();
     const wrote = (data.files || []).find((f) => f.action === 'updated');
     if (wrote && typeof revealInTree === 'function') revealInTree(wrote.path);
@@ -1341,8 +1410,7 @@ function gaCurrent() {
   };
 }
 
-// A ref typed by hand goes through the same pull path, so an agent that isn't in
-// the index yet is still classified (from its synthetic entry) and slotted.
+// A ref typed by hand goes through the same pull path.
 function gaPullManual(slot) {
   const input = document.getElementById('ga-ref');
   const ref = (input.value || '').trim();
@@ -1397,11 +1465,7 @@ function gaRenderSteps() {
     steps.map((s) => `<div class="ga-step">${escapeHtml(s)}</div>`).join('');
 }
 
-// ── Build doctor (intelligent auto-fix) ──────────────────────────────────────
-// Reads the sandbox's container logs and asks the agent to classify real errors
-// vs. noise, then proposes ONE fix (a command to run, or an edit to apply) with a
-// one-click action. Triggered automatically when the app is slow to come up
-// (ide.js fetchStatus) and manually from the "Diagnose" button in the agent panel.
+// Build doctor (intelligent auto-fix)
 let doctorBusy = false;
 
 function ensureAgentPanelOpen() {
@@ -1509,16 +1573,19 @@ async function doctorRunCommand(command, btn, card) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ container: IDE.container, command }),
     });
-    const out = await res.text();
+    // The exit code, not the HTTP status, says whether the command worked.
+    const r = await res.json().catch(() => ({ output: '', exitCode: -1 }));
+    const ok = res.ok && r.exitCode === 0;
     if (card) {
       const pre = document.createElement('pre');
       pre.className = 'doctor-output';
-      pre.textContent = (out || '').slice(-2000);
+      const note = r.timedOut ? '\n[timed out]' : (ok ? '' : `\n[exit ${r.exitCode}]`);
+      pre.textContent = (r.output || '(no output)').slice(-2000) + note;
       card.appendChild(pre);
       scrollAgent(document.getElementById('agent-messages'));
     }
-    showToast(res.ok ? 'Command finished' : 'Command failed', res.ok ? 'success' : 'error');
-    if (btn) { btn.textContent = res.ok ? 'Ran' : 'Retry'; btn.disabled = !res.ok; }
+    showToast(ok ? 'Command finished' : 'Command failed', ok ? 'success' : 'error');
+    if (btn) { btn.textContent = ok ? 'Ran' : 'Retry'; btn.disabled = ok; }
     // Re-arm the doctor and reset the grace window so a follow-up check can run.
     IDE.doctorRan = false; IDE.launchedAt = Date.now();
   } catch (e) {
@@ -1527,8 +1594,7 @@ async function doctorRunCommand(command, btn, card) {
   }
 }
 
-// Route an edit fix through the existing (guardrailed) edit pipeline by reusing
-// the normal agent send, forced to Edit mode for this one turn.
+// Route an edit fix through the existing (guardrailed) edit pipeline by reusing the normal agent send, forced to Edit mode for this one turn.
 function doctorApplyEdit(instruction) {
   const input = document.getElementById('agent-input');
   if (!input) return;

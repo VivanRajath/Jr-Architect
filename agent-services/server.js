@@ -1,43 +1,40 @@
+import "./models.js";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { createServer } from "http";
-import { query } from "gitclaw";
+import { safeQuery as query } from "./agent-home.js";
 import { getModels } from "@mariozechner/pi-ai";
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, resolveInside, workspaceRootOf } from "./workspace-fs.js";
 import { join, extname, resolve, sep, dirname } from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
+import { timingSafeEqual } from "crypto";
 import {
   resolvePipelineAgents, personaPreamble, fetchRegistryIndex, findAgent,
   readPipelineManifest, writePipelineManifest, installedAgents,
   loadSkill, loadComplianceRules, listSkills,
   readSpecFile, writeSpecFile, listSkillsDetailed, deleteSkill,
-  installedAgentsDetailed, installAgent, fetchAgentDetail, BUILTIN_SKILLS,
-  MEMORY_PATHS, classifySlot, assignSlot, overlayPaths,
+  installedAgentsDetailed, installAgent, fetchAgentDetail, BUILTIN_SKILLS, loadAgentPersona,
+  MEMORY_PATHS, classifySlot, assignSlot, overlayPaths, remoteSha,
   KNOWLEDGE_SKILL, SLOT_LABEL,
 } from "./registry.js";
 import { knowledgeStatus, OVERVIEW_REL } from "./knowledge.js";
-// The engine now lives in its own modules so it can run with no HTTP at all —
-// see review.js, which drives the identical guardrails over a pull request.
+import { createHubRouter } from "./hub/routes.js";
+import { reviewRange, writeAudit, AUDIT_DIR } from "./review.js";
 import {
-  PROVIDER_MODELS, providerHasKey, NO_KEY_MESSAGE, KNOWLEDGE_KEY,
-  rotateGroqKey, collectTurn, stripFences, parseJsonLoose,
-  AGENT_MAX_OUTPUT_TOKENS, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR,
-  firstAvailableProvider, modelFor,
+  NO_KEY_MESSAGE, KNOWLEDGE_KEY,
+  rotateKey, collectTurn, stripFences, parseJsonLoose,
+  AGENT_MAX_OUTPUT_TOKENS, AGENT_TOOLCALL_RETRIES, RETRIABLE_TURN_ERROR, dropRejectedKey, pruneGroqKeys,
+  firstAvailableProvider, modelFor, applyKeys, outputCap, providerHasKey,
 } from "./llm.js";
-import {
-  guardEditBlocks, buildGuardrailPrompt, applyGuardrailVerdicts, reviewEditBlocks,
-} from "./guardrails.js";
+import { guardEditBlocks, reviewEditBlocks } from "./guardrails.js";
+import { createPlanner } from "./planner.js";
+import * as opengap from "./opengap/index.js";
 
-// ESM has no __dirname; the knowledge worker is spawned by absolute path so the
-// service works regardless of the cwd Go happens to start it from.
+// ESM has no __dirname; the knowledge worker is spawned by absolute path so the service works regardless of the cwd Go happens to start it from.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Keep the agent service alive if a single request's agent loop throws
-// asynchronously — e.g. a provider/key error surfaced from a background stream
-// rather than through the awaited iterator. Without these, one bad turn becomes
-// an unhandled rejection that tears down the whole process and kills the chat
-// panel for the rest of the session. Log and keep serving.
+// Keep the agent service alive when one request's agent loop throws asynchronously.
 process.on("unhandledRejection", (err) => {
   console.error("[agent] unhandledRejection:", (err && err.message) || err);
 });
@@ -46,32 +43,224 @@ process.on("uncaughtException", (err) => {
 });
 
 const app = express();
+
+// Loopback is no boundary under Docker Desktop (host.docker.internal reaches it), so only callers holding Go's token get in.
+export function fromJrArch(headers, token = process.env.JR_INTERNAL_TOKEN || "") {
+  if (!token) return true;
+  const got = Buffer.from(String(headers["x-jr-internal"] || ""));
+  const want = Buffer.from(token);
+  return got.length === want.length && timingSafeEqual(got, want);
+}
+app.use((req, res, next) => (fromJrArch(req.headers) ? next() : res.status(403).json({ error: "forbidden" })));
 app.use(express.json());
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server });
+// Mirrors Go's OriginGuard in case this port is ever reached without going through it.
+export function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  const pub = (process.env.JR_PUBLIC_ORIGIN || "").replace(/\/$/, "").toLowerCase();
+  if (pub) return origin.replace(/\/$/, "").toLowerCase() === pub;
+  try {
+    return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+const wss = new WebSocketServer({ server, verifyClient: ({ origin, req }) => isAllowedOrigin(origin) && fromJrArch(req.headers) });
 
-// Active sessions: container -> { dir, stack, wss clients }
+// Active sessions: container -> { dir, stack, owner, wss clients }
 const sessions = new Map();
 
+// Go's proxy sets X-Jr-User on every call it forwards; only Go's own calls (token-checked above) come without one.
+function mayUse(user, session) {
+  return user === undefined || user === "internal" || user === session.owner;
+}
 
-// Restrict the agent to the core coding tools. gitclaw otherwise injects extra
-// built-ins (capture_photo, task_tracker, skill_learner) plus a system prompt
-// that pushes the model through skill/task rituals — noise that bloats the
-// request and derails smaller models (e.g. Groq's llama-3.3-70b) so they never
-// get around to answering. Override with AGENT_ALLOWED_TOOLS if needed.
-const AGENT_ALLOWED_TOOLS = (process.env.AGENT_ALLOWED_TOOLS || "cli,read,write,memory,search_code")
+// Per-user model calls per hour, set by Go (JR_LLM_PER_HOUR); 0 or unset means no cap.
+const llmUse = new Map();
+export function allowLLM(user, now = Date.now()) {
+  const max = Number(process.env.JR_LLM_PER_HOUR) || 0;
+  if (!max || user === undefined || user === "internal") return { ok: true };
+  const w = llmUse.get(user);
+  if (!w || now - w.start >= 3600_000) {
+    if (llmUse.size > 10000) llmUse.clear();
+    llmUse.set(user, { start: now, n: 1 });
+    return { ok: true };
+  }
+  if (w.n >= max) return { ok: false, minutes: Math.ceil((w.start + 3600_000 - now) / 60_000) };
+  w.n++;
+  return { ok: true };
+}
+const llmLimitMessage = (m) => `hourly AI limit reached, try again in ${m} min`;
+const LLM_ROUTES = new Set(["/agent/chat", "/agent/diagnose", "/agent/knowledge", "/agent/guardrail/fix", "/agent/registry/preview"]);
+app.use((req, res, next) => {
+  if (req.method !== "POST" || !LLM_ROUTES.has(req.path)) return next();
+  const r = allowLLM(req.get("x-jr-user"));
+  if (!r.ok) return res.status(429).json({ error: llmLimitMessage(r.minutes) });
+  next();
+});
+
+app.use("/agent/hub", createHubRouter({ allowLLM }));
+
+// Someone else's container reads as unregistered, the same answer as one that does not exist.
+app.use((req, res, next) => {
+  const container = (req.body && req.body.container) || req.query.container;
+  const session = container && sessions.get(container);
+  if (session && !mayUse(req.get("x-jr-user"), session)) {
+    return res.status(404).json({ error: "sandbox not registered" });
+  }
+  next();
+});
+
+
+// Restrict the agent to the core coding tools.
+const AGENT_ALLOWED_TOOLS = (process.env.AGENT_ALLOWED_TOOLS || "read,write,search_code,shell")
   .split(",").map((s) => s.trim()).filter(Boolean);
 
-// Tools whose completion means files on disk may have changed — used to tell the
-// UI to reload the tree/preview. Reads and memory ops don't touch the workspace.
-const WRITE_TOOLS = new Set(["write", "edit", "create", "cli"]);
+// Tools whose completion means files on disk may have changed — used to tell the UI to reload the tree/preview.
+const WRITE_TOOLS = new Set(["write", "edit", "create", "shell"]);
 
-// ── Layer 2 of code retrieval: the search_code tool ──────────────────────────
-// A ripgrep-style code search implemented in pure JS (no external binary, works
-// on Windows/macOS/Linux). The agent calls it to find where a symbol/string is
-// defined or used and pulls back only the matching lines — the token-frugal
-// alternative to reading whole files, which matters on Groq's 12k TPM tier.
+// The Go host owns every side effect (docker exec, container write-through).
+const HOST_PORT = Number(process.env.HOST_PORT) || 9000;
+const HOST_URL = `http://127.0.0.1:${HOST_PORT}`;
+// Go's login gate lets these callbacks through on the token it handed this process.
+const HOST_HEADERS = { "Content-Type": "application/json", "X-Jr-Internal": process.env.JR_INTERNAL_TOKEN || "" };
+
+// Run a command inside the sandbox container.
+async function hostExec(container, command, timeoutMs) {
+  const res = await fetch(`${HOST_URL}/terminal/exec`, {
+    method: "POST",
+    headers: HOST_HEADERS,
+    body: JSON.stringify({ container, command, timeoutMs: Number(timeoutMs) || 0 }),
+  });
+  if (!res.ok) throw new Error(`host exec failed (${res.status})`);
+  return res.json();
+}
+
+// Edits are written to the host bind-mount, but Docker Desktop's stat cache means the container may never see them.
+async function syncToContainer(container, results) {
+  if (!container) return;
+  const paths = (results || [])
+    .filter((r) => r.status === "edited" || r.status === "created")
+    .map((r) => r.path);
+  if (!paths.length) return;
+  try {
+    await fetch(`${HOST_URL}/sandbox/sync`, {
+      method: "POST",
+      headers: HOST_HEADERS,
+      body: JSON.stringify({ container, paths }),
+    });
+  } catch (e) {
+    console.error("[sync] container sync failed:", e.message);
+  }
+}
+
+// gitclaw's built-in write tool writes host-side, so the container needs the same write-through the edit pipeline gets.
+function writtenPathFrom(args) {
+  if (!args || typeof args !== "object") return null;
+  for (const k of ["path", "file_path", "filePath", "file", "filename"]) {
+    const v = args[k];
+    if (typeof v === "string" && v.trim()) return v.trim().replace(/^\.\//, "");
+  }
+  return null;
+}
+
+// Build a shell tool bound to a container.
+function makeShellTool(container) {
+  return {
+    name: "shell",
+    description:
+      "Run a shell command inside the project's sandbox container, from /workspace. " +
+      "Use it for builds, tests, installs, and inspecting the running app. Returns the " +
+      "exit code followed by combined stdout/stderr. A non-zero exit code means the " +
+      "command failed — read the output before retrying.",
+    inputSchema: {
+      properties: {
+        command: {
+          type: "string",
+          description: "Shell command to run, e.g. 'npm test' or 'ls -la src'.",
+          required: true,
+        },
+        timeout_ms: {
+          type: "number",
+          description: "Optional timeout in ms (default 120000, hard cap 600000).",
+        },
+      },
+    },
+    handler: async (params) => {
+      const command = ((params && params.command) || "").trim();
+      if (!command) return "shell: empty command.";
+      if (!container) return "shell: this session has no sandbox container bound.";
+      try {
+        const r = await hostExec(container, command, params && params.timeout_ms);
+        const head = r.timedOut ? `timed out (exit ${r.exitCode})` : `exit ${r.exitCode}`;
+        return `$ ${command}
+[${head}]
+${r.output || "(no output)"}`;
+      } catch (e) {
+        return `shell: could not run the command (${e.message}).`;
+      }
+    },
+  };
+}
+
+const READ_TOOL_MAX_CHARS = 100_000;
+
+// gitclaw's own read/write accept absolute host paths, so agentic turns get these workspace-bound ones.
+function makeReadTool(dir) {
+  return {
+    name: "read",
+    description: "Read a project file by its path relative to the repo root. Output is capped at ~100KB.",
+    inputSchema: {
+      properties: {
+        path: { type: "string", description: "Repo-relative path, e.g. 'src/App.tsx'.", required: true },
+      },
+    },
+    handler: async (params) => {
+      const rel = params && params.path;
+      const abs = resolveInside(dir, rel);
+      if (!abs) return `read: ${rel} is outside the project.`;
+      try {
+        const s = readFileSync(abs, "utf8");
+        return s.length > READ_TOOL_MAX_CHARS ? s.slice(0, READ_TOOL_MAX_CHARS) + "\n…(truncated)" : s;
+      } catch (e) {
+        return `read: ${e.code === "ENOENT" ? "no such file" : e.message}`;
+      }
+    },
+  };
+}
+
+function makeWriteTool(dir) {
+  return {
+    name: "write",
+    description: "Create or overwrite a project file by its path relative to the repo root.",
+    inputSchema: {
+      properties: {
+        path: { type: "string", description: "Repo-relative path, e.g. 'src/App.tsx'.", required: true },
+        content: { type: "string", description: "The complete new file contents.", required: true },
+      },
+    },
+    handler: async (params) => {
+      const rel = params && params.path;
+      const abs = resolveInside(dir, rel);
+      if (!abs) return `write: ${rel} is outside the project.`;
+      const content = String((params && params.content) ?? "");
+      try {
+        mkdirSync(dirname(abs), { recursive: true });
+        writeFileSync(abs, content);
+        return `Wrote ${Buffer.byteLength(content)} bytes to ${rel}`;
+      } catch (e) {
+        return `write: ${e.message}`;
+      }
+    },
+  };
+}
+
+function agentTools(dir, container) {
+  return [makeReadTool(dir), makeWriteTool(dir), makeSearchCodeTool(dir), makeShellTool(container)];
+}
+
+// Layer 2 of code retrieval: the search_code tool
 const SEARCH_SKIP_DIRS = new Set([
   ".git", "node_modules", "__pycache__", ".next", "vendor", ".venv", "venv",
   "dist", "build", ".gitagent", "coverage", ".turbo", ".cache", "out", "target",
@@ -86,8 +275,7 @@ const SEARCH_MAX_FILE_BYTES = 512 * 1024;
 const SEARCH_MAX_RESULTS_DEFAULT = 20;
 const SEARCH_MAX_RESULTS_CAP = 50;
 
-// Build a search_code tool bound to a specific workspace dir. Returned in the
-// gitclaw SDK-tool shape ({name, description, inputSchema, handler}).
+// Build a search_code tool bound to a specific workspace dir.
 function makeSearchCodeTool(dir) {
   return {
     name: "search_code",
@@ -171,22 +359,12 @@ function makeSearchCodeTool(dir) {
   };
 }
 
-// ── Ask mode: retrieve-then-generate (toolless) ──────────────────────────────
-// llama-3.3 is weak at function-calling, so *questions* about the repo don't go
-// through the agentic tool loop (where it garbles calls). Instead the backend
-// does the retrieval — repo map (already always-loaded via knowledge) + a
-// server-side search_code on the question's key terms — and hands the model a
-// plain, toolless prompt. The model only has to WRITE an answer, which it does
-// well. Edits still use the agentic path (writing files needs the write tool).
+// Ask mode: retrieve-then-generate (toolless)
 
-// Clear file-modification intent → agentic/edit path. Everything else defaults
-// to the safe, reliable read-only Ask mode. Deliberately excludes ambiguous
-// verbs like "make"/"generate"/"build" (as in "make a summary").
+// Clear file-modification intent → agentic/edit path.
 const EDIT_INTENT = /\b(add|create|write|edit|change|modif(?:y|ies|ied)|fix|update|refactor|implement|rename|rebrand|relabel|retitle|reword|delete|remove|replace|insert|append|scaffold|install|integrate|rewrite|convert|migrate|set up|setup|wire up)\b/i;
 
-// Imperative "make it look…" verbs. On their own these are ambiguous ("make a
-// summary" is a question), so they only count as an edit when paired with a
-// style/UI target — e.g. "make the ui dark red", "turn the theme purple".
+// Imperative "make it look…" verbs.
 const EDIT_IMPERATIVE = /\b(make|turn|give|switch|apply|paint|recolou?r|restyle|redesign)\b/i;
 
 const ASK_STOPWORDS = new Set([
@@ -204,8 +382,7 @@ const ASK_STOPWORDS = new Set([
   "value", "values", "data", "type", "types", "page", "pages", "when", "does",
 ]);
 
-// Pull a few salient search terms from a question, preferring identifier-like
-// tokens (camelCase / has an uppercase letter) and longer words.
+// Pull a few salient search terms from a question, preferring identifier-like tokens (camelCase / has an uppercase letter) and longer words.
 function extractSearchTerms(message) {
   const words = message.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) || [];
   const seen = new Set();
@@ -221,9 +398,7 @@ function extractSearchTerms(message) {
   return uniq.slice(0, 4);
 }
 
-// Build the toolless Ask-mode prompt: inject search_code hits for the question's
-// terms as grounding context. The repo map is already in the model's context via
-// gitclaw's always-loaded knowledge doc, so we only add the question-specific bits.
+// Build the toolless Ask-mode prompt: inject search_code hits for the question's terms as grounding context.
 async function buildAskPrompt(dir, message) {
   const terms = extractSearchTerms(message);
   const tool = makeSearchCodeTool(dir);
@@ -249,14 +424,7 @@ async function buildAskPrompt(dir, message) {
     ? `Relevant code found by searching the repository${terms.length ? ` for: ${terms.join(", ")}` : ""}:\n\n<search_results>\n${snippets.join("\n")}\n</search_results>\n\n`
     : "";
 
-  // For overview/summary questions, feed the model REAL substance so it can
-  // synthesize instead of hedging.
-  //
-  // knowledge/overview.md is the good answer when it exists: the Knowledge agent
-  // already read ~24k characters of this repo on its own key and wrote the
-  // synthesis. Leading with it is both BETTER and CHEAPER than the old fallback —
-  // four raw files at 3k each spent the whole budget on material the model then
-  // had to summarise under pressure, which is exactly why summaries were thin.
+  // For overview/summary questions, feed the model REAL substance so it can synthesize instead of hedging.
   const isOverview = /\b(summar|overview|understand|explain (?:the|this)|architecture|structure|how does|what is this|what does this|walk me through)\b/i.test(message);
   const overviewPath = firstExistingFile(dir, [OVERVIEW_REL]);
   let contextBlock = "";
@@ -268,8 +436,7 @@ async function buildAskPrompt(dir, message) {
       haveOverview = true;
       parts.push(`<file path="${overviewPath}">\n${overview}\n</file>`);
     }
-    // With the synthesis in hand only the entry file adds anything; without it,
-    // fall back to the old raw-file spread so an un-built workspace still answers.
+    // With the synthesis in hand only the entry file adds anything; without it, fall back to the old raw-file spread so an un-built workspace still answers.
     const wanted = haveOverview
       ? [firstExistingFile(dir, EDIT_ENTRY_CANDIDATES)]
       : [
@@ -298,8 +465,7 @@ async function buildAskPrompt(dir, message) {
     : `Be concrete and answer directly, citing \`file:line\` for specifics. ` +
       `If a needed file isn't shown, name it briefly, but still give your best answer from what's here. Do not invent files or code.`;
 
-  // The Ask persona is the source of truth in .gitagent/skills/ask (built-in
-  // fallback if absent).
+  // The Ask persona is the source of truth in .gitagent/skills/ask (built-in fallback if absent).
   const askPersona = skillPersona(dir, "ask");
   return (
     (askPersona ? askPersona + "\n\n" : "") +
@@ -309,47 +475,27 @@ async function buildAskPrompt(dir, message) {
   );
 }
 
-// Decide the turn's mode. An explicit client mode wins; otherwise auto-detect:
-// clear file-modification intent → "edit", else "ask". "agent" forces the legacy
-// tool-driven path (only useful with a strong tool-calling model).
-//   "ask"   — toolless Q&A (retrieve-then-generate)
-//   "edit"  — toolless code change (generate SEARCH/REPLACE, backend applies)
-//   "agent" — legacy agentic loop (model calls tools itself)
-// Confident question openers — clearly read-only, so no LLM router call needed.
+// Decide the turn's mode. An explicit client mode wins; otherwise auto-detect: clear file-modification intent → "edit", else "ask".
 const ASK_OPENER = /^\s*(what|why|how|where|which|who|when|whose|is|are|was|were|does|do|did|should|would|explain|summar(?:y|ise|ize|ising|izing)|describe|overview|list|walk me|tell me|show me|give me (?:a|an) (?:summary|overview|explanation))\b/i;
 
-// Fast heuristic router. Returns "edit" | "ask" | null, where null means "not
-// obvious — ask the model" (handled by decideMode). Kept as a pure function so
-// it's unit-testable and free (no LLM call) for the common, unambiguous cases.
+// Fast heuristic router. Returns "edit" | "ask" | null, where null means "not obvious — ask the model" (handled by decideMode).
 function heuristicMode(message) {
   const m = (message || "").trim();
   if (!m) return "ask";
-  // Obvious change: an edit verb, or an imperative styling command that names a
-  // style/UI target ("make the ui dark red") — but not a bare "make a summary".
+  // Obvious change: an edit verb, or an imperative styling command that names a style/UI target ("make the ui dark red").
   if (EDIT_INTENT.test(m) || (EDIT_IMPERATIVE.test(m) && EDIT_STYLE_INTENT.test(m))) return "edit";
   // Obvious question.
   if (ASK_OPENER.test(m)) return "ask";
   return null;
 }
 
-// Sync router used by tests and as the confident fast-path. Ambiguous messages
-// default to the safe read-only Ask mode here; decideMode() upgrades them with
-// the LLM Orchestrator at request time.
-function resolveTurnMode(explicit, message) {
-  if (explicit === "ask" || explicit === "edit" || explicit === "agent") return explicit;
-  const mode = heuristicMode(message) || "ask";
-  if (mode === "edit" && process.env.AGENT_EDIT_STRATEGY === "agentic") return "agent";
-  return mode;
-}
-
-// Shared stream+retry loop for one turn. Streams delta/tool/file_changed frames,
-// retries a transient pre-output failure on a fresh key, and always ends with a
-// single `complete`. Works for both agentic (tools) and Ask (toolless) turns.
-async function streamTurn(ws, queryOptions, model) {
+// Shared stream+retry loop for one turn.
+async function streamTurn(ws, queryOptions, model, container) {
   let streamedAny = false;
   let attempt = 0;
+  let pendingWrite = null;
   while (true) {
-    rotateGroqKey(model);
+    rotateKey(model);
     let turnError = null;
     try {
       for await (const msg of query(queryOptions)) {
@@ -359,9 +505,14 @@ async function streamTurn(ws, queryOptions, model) {
           ws.send(JSON.stringify({ type: "delta", content: msg.content }));
         } else if (msg.type === "tool_use") {
           streamedAny = true;
+          if (WRITE_TOOLS.has(msg.toolName)) pendingWrite = writtenPathFrom(msg.args);
           ws.send(JSON.stringify({ type: "tool", content: `${msg.toolName}(${JSON.stringify(msg.args)})` }));
         } else if (msg.type === "tool_result") {
-          if (WRITE_TOOLS.has(msg.toolName)) ws.send(JSON.stringify({ type: "file_changed", content: "" }));
+          if (WRITE_TOOLS.has(msg.toolName)) {
+            if (pendingWrite) await syncToContainer(container, [{ path: pendingWrite, status: "edited" }]);
+            pendingWrite = null;
+            ws.send(JSON.stringify({ type: "file_changed", content: "" }));
+          }
         } else if (msg.type === "assistant") {
           if (msg.stopReason === "error") turnError = msg.errorMessage || "The model returned an error.";
           else ws.send(JSON.stringify({ type: "message_end", content: "" }));
@@ -379,6 +530,7 @@ async function streamTurn(ws, queryOptions, model) {
       turnError = err.message || String(err);
     }
 
+    if (turnError && !streamedAny && dropRejectedKey(model, turnError)) continue;
     if (turnError && !streamedAny && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(turnError)) {
       attempt++;
       console.log(`[agent] retrying turn (attempt ${attempt + 1}/${AGENT_TOOLCALL_RETRIES + 1}) after: ${String(turnError).slice(0, 100)}`);
@@ -390,14 +542,7 @@ async function streamTurn(ws, queryOptions, model) {
   ws.send(JSON.stringify({ type: "complete", content: "" }));
 }
 
-// ── Edit mode: generate-then-apply (toolless code changes) ───────────────────
-// Editing needs a write, but llama-3.3 can't reliably CALL a write tool — and it
-// also can't reliably quote exact lines + emit conflict markers (SEARCH/REPLACE
-// garbles into unparseable junk). So the model never calls a tool AND never
-// patches: the backend picks the right small file(s), the model returns each
-// changed file's COMPLETE new contents in one clean block, and the backend
-// overwrites. Whole-file rewrite is what a weak model does most reliably, and the
-// closing delimiter doubles as a truncation guard (a cut-off reply won't parse).
+// Edit mode: generate-then-apply (toolless code changes)
 
 const EDIT_ENTRY_CANDIDATES = [
   "app/page.tsx", "app/page.jsx", "app/page.js", "src/app/page.tsx",
@@ -408,34 +553,29 @@ const EDIT_ENTRY_CANDIDATES = [
 // Files most likely targeted by look-and-feel changes.
 const EDIT_STYLE_CANDIDATES = [
   "app/globals.css", "src/app/globals.css", "styles/globals.css", "src/globals.css",
-  "src/index.css", "src/App.css", "app/layout.tsx", "src/app/layout.tsx",
-  "tailwind.config.ts", "tailwind.config.js",
+  "src/index.css", "src/App.css", "src/styles.css",
+  "public/styles.css", "public/style.css", "public/css/styles.css", "public/css/style.css", "public/app.css",
+  "styles.css", "style.css", "css/styles.css", "css/style.css", "static/styles.css", "static/css/styles.css",
+  "tailwind.config.ts", "tailwind.config.js", "app/layout.tsx", "src/app/layout.tsx",
 ];
+// Colour and theme requests are answered by stylesheets first, before markup.
+const EDIT_COLOR_INTENT = /\b(colou?rs?|theme|palette|dark|light|accent|primary|brand|orange|blue|pink|red|green|purple|violet|yellow|teal|cyan|indigo|gr[ae]y|black|white|gradient|background)\b/i;
+// Data, lockfiles, generated specs and examples never answer a UI request, even when a search word matches them.
+const EDIT_NOT_TARGET = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|[^/]*\.example\.[^/]+|\.env[^/]*|jr-workflows[^/]*\.json|agent\.yaml|INSTRUCTIONS\.md|(?:public\/)?ui\.(?:css|js))$|^(?:\.gitagent|knowledge)\//i;
 const EDIT_STYLE_INTENT = /\b(theme|dark|light|colou?r|style|styling|css|font|background|ui|layout|design|spacing|padding|margin)\b/i;
-// Library/generated boilerplate is never a good edit target even when a keyword
-// search matches it — e.g. shadcn's components/ui/*.tsx contain words like
-// "theme"/"color" but aren't where YOUR page's look is controlled.
+// Library and generated boilerplate is never a good edit target, even when a keyword search matches it.
 const EDIT_SKIP_PATH = /(?:^|\/)(?:components\/ui|node_modules|\.next|dist|build|out|coverage|vendor|\.git)\//i;
 const EDIT_MAX_FILES = 5;      // how many files to *show* the model as context
-const EDIT_MAX_FILE_CHARS = 7000;
-// A file we're willing to have the model rewrite whole. Kept under the output
-// budget (AGENT_MAX_OUTPUT_TOKENS ≈ 3000 tokens ≈ ~9k chars) so a full rewrite
-// can't get truncated. Sized so a real themed globals.css / index.css (where a
-// "neon" or accent palette actually lives) is editable, not just tiny config
-// files — the old 4200 cap silently dropped the CSS and left only a small
-// tailwind.config, which the model then returned unchanged ("0 changes").
+// Files are shown in full up to this size; the model patches them with SEARCH/REPLACE, so size no longer has to fit in the reply.
+const EDIT_MAX_FILE_CHARS = 24000;
+const EDIT_TOTAL_CHARS = 30000;
+// Small enough that a whole-file rewrite is also acceptable.
 const WHOLE_FILE_MAX_CHARS = 6000;
 const EDIT_MAX_EDITABLE = 3;   // don't offer more than this many rewritable files
 
-// ── Layered agentic edit pipeline (gitagent standard) ────────────────────────
-// The gitagent "repo-sandbox-agent" spec routes a code request through squads:
-//   Orchestrator → Complexity Classifier → Guardrails → Developer.
-// We mirror that here as explicit layers so the engine *decides how to code*
-// (scope, safety) instead of just answering. Each layer's decision is streamed
-// to the chat as a step, so the pipeline reads as agentic.
+// Layered agentic edit pipeline (gitagent standard)
 
 // Layer: Complexity Classifier (the "Code Editor Squad" tiered dispatch).
-// junior = one focused file; senior = a few related files (multi-file wording).
 function classifyEditComplexity(message, availableFiles) {
   const senior = /\b(refactor|across|every|all (?:the )?(?:files|pages|components)|multiple files|throughout|whole app|entire app|everywhere|migrate)\b/i.test(message);
   if (senior && availableFiles > 1) {
@@ -445,11 +585,7 @@ function classifyEditComplexity(message, availableFiles) {
 }
 
 
-// Layer: Guardrails (registry agents). The regex guard above is the code-level
-// floor — fixed rules, no model. This is the part a pulled guardrail agent
-// actually drives: it sees the rewrite the Developer produced and can DENY it.
-// Without this pass an installed guardrail agent is only advice in the writer's
-// own prompt, which a weak model ignores; here its verdict is enforced in code.
+// Layer: Guardrails (registry agents). The regex guard above is the code-level floor — fixed rules, no model.
 
 // Read a file, truncating to maxChars (keeps the request under the token budget).
 function readFileCapped(abs, maxChars) {
@@ -469,27 +605,32 @@ function firstExistingFile(dir, candidates) {
   return "";
 }
 
-// Choose which files to hand the model for an edit. Priority is deliberate: the
-// UI entry and style files come FIRST (they're the real targets for page/look
-// changes), and keyword-matched files only fill the remaining slots — so a search
-// hit on library boilerplate (e.g. components/ui/chart.tsx matching "theme")
-// can't crowd out the file you actually meant. Each file is tagged `whole` if it's
-// small enough to safely rewrite in full.
+// Choose which files to hand the model for an edit.
 async function gatherEditFiles(dir, message) {
   const chosen = [];
+  const named = new Set((message.match(/[\w./-]+\.[a-z0-9]{1,6}\b/gi) || []).map((x) => x.replace(/^\.\//, "")));
   const add = (p) => {
     if (!p || chosen.includes(p)) return;
     if (EDIT_SKIP_PATH.test(p)) return;              // never edit library boilerplate
+    if (EDIT_NOT_TARGET.test(p) && !named.has(p)) return;
     if (!existsSync(join(dir, p))) return;
     if (chosen.length >= EDIT_MAX_FILES) return;
     chosen.push(p);
   };
 
-  // 1. The UI entry point — the most common target for a UI/page change.
-  add(firstExistingFile(dir, EDIT_ENTRY_CANDIDATES));
-  // 2. Style files, for look-and-feel requests.
-  if (EDIT_STYLE_INTENT.test(message)) {
+  // 0. Files the user named always come first.
+  for (const n of named) add(n);
+  const colour = EDIT_COLOR_INTENT.test(message);
+  // 1. For colour and theme changes the stylesheets lead; otherwise the UI entry point does.
+  if (colour) {
     for (const c of EDIT_STYLE_CANDIDATES) add(c);
+    for (const c of findStylesheets(dir)) add(c);
+    add(firstExistingFile(dir, EDIT_ENTRY_CANDIDATES));
+  } else {
+    add(firstExistingFile(dir, EDIT_ENTRY_CANDIDATES));
+    if (EDIT_STYLE_INTENT.test(message)) {
+      for (const c of EDIT_STYLE_CANDIDATES) add(c);
+    }
   }
   // 3. Fill any remaining slots with files that mention the request's key terms.
   const tool = makeSearchCodeTool(dir);
@@ -508,18 +649,50 @@ async function gatherEditFiles(dir, message) {
     }
   }
 
+  let budget = EDIT_TOTAL_CHARS;
   return chosen.map((p) => {
-    const content = readFileCapped(join(dir, p), EDIT_MAX_FILE_CHARS);
-    const whole = content.length > 0 && content.length <= WHOLE_FILE_MAX_CHARS && !content.includes("…truncated…");
-    return { path: p, content, whole };
+    const content = readFileCapped(join(dir, p), Math.min(EDIT_MAX_FILE_CHARS, Math.max(budget, 0)));
+    const complete = content.length > 0 && !content.includes("…truncated…");
+    budget -= content.length;
+    // Every complete file can be patched; only small ones may also be rewritten whole.
+    return { path: p, content, whole: complete, small: complete && content.length <= WHOLE_FILE_MAX_CHARS };
   });
 }
 
-// The whole-file rewrite prompt. Input files and expected output use the SAME
-// delimiter, so the weak model mirrors the format correctly (the old bug: showing
-// `<file path=...>` but asking for `<file>path</file>` made it copy the wrong one).
-// Built-in fallbacks for the persona skills that now live (source of truth) in the
-// repo's .gitagent/skills/. If a skill file is missing, these keep behavior stable.
+// A plan task's files: existing ones in full, missing ones offered as new files to create.
+function readTaskFiles(dir, paths) {
+  let budget = EDIT_TOTAL_CHARS;
+  return paths.filter((p) => !EDIT_SKIP_PATH.test(p)).map((p) => {
+    const abs = join(dir, p);
+    if (!existsSync(abs)) return { path: p, content: "(new file: it does not exist yet; create it with a FILE block)", whole: true, small: true, isNew: true };
+    const content = readFileCapped(abs, Math.min(EDIT_MAX_FILE_CHARS, Math.max(budget, 0)));
+    budget -= content.length;
+    const complete = content.length > 0 && !content.includes("…truncated…");
+    return { path: p, content, whole: complete, small: complete && content.length <= WHOLE_FILE_MAX_CHARS };
+  });
+}
+
+// Stylesheets in the project, shallow first, without libraries or build output.
+function findStylesheets(dir, limit = 6) {
+  const out = [];
+  const walk = (rel, depth) => {
+    if (depth > 3 || out.length >= limit) return;
+    let ents = [];
+    try { ents = readdirSync(join(dir, rel), { withFileTypes: true }); } catch { return; }
+    ents.sort((a, b) => Number(a.isDirectory()) - Number(b.isDirectory()) || a.name.localeCompare(b.name));
+    for (const e of ents) {
+      if (out.length >= limit) return;
+      const p = rel ? `${rel}/${e.name}` : e.name;
+      if (e.name.startsWith(".") || EDIT_SKIP_PATH.test(p + "/") || /^(node_modules|dist|build|out|vendor|components)$/.test(e.name)) continue;
+      if (e.isDirectory()) walk(p, depth + 1);
+      else if (/\.(css|scss)$/i.test(e.name)) out.push(p);
+    }
+  };
+  walk("", 0);
+  return out;
+}
+
+// The whole-file rewrite prompt.
 const SKILL_FALLBACK = {
   "jnr-developer": "You are the Junior Developer. Make the smallest, most focused change that satisfies the request; prefer a single file; do not refactor, rename, or add anything not asked for.",
   "snr-developer": "You are the Senior Developer. The change spans a few related files; update all that must change together to keep the app consistent, keep the architecture intact, and do not expand scope.",
@@ -527,43 +700,56 @@ const SKILL_FALLBACK = {
   "build-doctor": "Classify the logs as a real blocker vs. noise; for a real blocker propose the smallest safe fix (one command or one edit); never rewrite lockfiles, run npm audit fix --force, or delete files.",
 };
 
-// Resolve a persona: the repo's own .gitagent/skills/<name>/SKILL.md wins (source
-// of truth — edit it and behavior changes), else the built-in fallback string.
+// Resolve a persona: the repo's own .gitagent/skills/<name>/SKILL.md wins (source of truth.
 function skillPersona(dir, name) {
   return loadSkill(dir, name) || SKILL_FALLBACK[name] || "";
 }
 
-function buildEditPrompt(files, message, cls, persona) {
+function buildEditPrompt(files, message, cls, persona, strict = false) {
   const wrap = (f) => `=== FILE: ${f.path} ===\n${f.content}\n=== END FILE ===`;
   const fileBlocks = files.map(wrap).join("\n\n");
   const scopeLine = cls && cls.tier === "junior"
-    ? `- Scope: this is a FOCUSED change — edit the single most relevant file (at most ${files.length}).\n`
-    : `- Scope: edit only the file(s) that must change to satisfy the request.\n`;
+    ? `- Scope: a focused change. Edit the fewest files that satisfy the request (at most ${files.length}). For colours and themes, change the stylesheet's colour variables and colour values rather than the markup.\n`
+    : `- Scope: edit every file that must change together to satisfy the request, and nothing else.\n`;
   return (
-    (persona || "") +
-    `You are the Developer layer of a coding agent. You DO the edit — you never ` +
-    `describe it. Here are the current files:\n\n${fileBlocks}\n\n` +
-    `Apply the requested change by returning, for EACH file you change, its COMPLETE ` +
-    `updated contents wrapped EXACTLY like the files above:\n\n` +
-    `=== FILE: relative/path ===\n{the ENTIRE file, with your change applied}\n=== END FILE ===\n\n` +
+    (persona ? persona + "\n\n" : "") +
+    `You are the Developer layer of a coding agent. You DO the edit; you never describe it. ` +
+    `Here are the current files:\n\n${fileBlocks}\n\n` +
+    `Return your change as EDIT blocks. Each SEARCH must copy lines EXACTLY as they appear in the file ` +
+    `(same spacing), and be just long enough to be unique:\n\n` +
+    `=== EDIT: relative/path ===\n<<<<<<< SEARCH\n{exact existing lines}\n=======\n{replacement lines}\n>>>>>>> REPLACE\n=== END EDIT ===\n\n` +
+    `One EDIT block may hold several SEARCH/REPLACE pairs. To create a NEW file, use:\n` +
+    `=== FILE: relative/path ===\n{entire contents}\n=== END FILE ===\n\n` +
     `Rules:\n` +
-    `- Return the WHOLE file, not a snippet — include every line, changed or not.\n` +
-    `- Change ONLY what the request asks for; keep everything else exactly as-is.\n` +
+    `- Change ONLY what the request asks for; keep everything else as it is.\n` +
     `- Do NOT invent features, extra options, comments, or placeholder content.\n` +
     scopeLine +
-    `- Only edit files shown above. Do not touch any other file.\n` +
-    `- NEVER answer with prose like "I would…" or "First I would look at…". ` +
-    `If you cannot produce the file, output nothing.\n` +
-    `- Output ONLY FILE blocks — no explanation, no code fences.\n\n` +
-    `Change requested: ${message}`
+    `- Only edit files shown above.\n` +
+    `- Output ONLY EDIT/FILE blocks: no explanation, no code fences around the blocks.\n` +
+    (strict ? `- Think briefly. Start your answer with "=== EDIT:" right away.\n` : "") +
+    `\nChange requested: ${message}`
   );
 }
 
+// Groq bills input plus reserved output against the key's tokens-per-minute (8k on the free tier for the big models), so the reply gets what the prompt leaves.
+const GROQ_REQUEST_TOKENS = Number(process.env.GROQ_EDIT_REQUEST_TOKENS) || 7600;
+function editOutputBudget(model, prompt) {
+  if (!String(model || "").startsWith("groq:")) return outputCap(model);
+  // The engine adds its own system prompt and the repo's agent spec, roughly 1.5k tokens.
+  const inputTokens = Math.ceil(prompt.length / 3.4) + 1500;
+  return Math.max(1500, Math.min(6000, GROQ_REQUEST_TOKENS - inputTokens));
+}
 
-// Parse whole-file blocks out of the model's reply. Accepts the `=== FILE: … ===`
-// delimiter we ask for, and also the `<file path="…">…</file>` form the model
-// tends to fall back to. A block only counts if it's properly CLOSED — so a reply
-// truncated by the output cap simply won't parse (no half-written file gets saved).
+// "Limit 8000, Requested 8130": the room the next try has, given what this one reserved.
+function roomAfter413(error, reserved) {
+  const m = /Limit\s+(\d+),\s*Requested\s+(\d+)/i.exec(String(error || ""));
+  if (!m) return null;
+  const limit = Number(m[1]), requested = Number(m[2]);
+  return limit - (requested - reserved) - 150;
+}
+
+
+// Parse whole-file blocks out of the model's reply.
 function parseEditBlocks(text) {
   const blocks = [];
   const seen = new Set();
@@ -574,6 +760,19 @@ function parseEditBlocks(text) {
     seen.add(p);
     blocks.push({ path: p, content });
   };
+  const reE = /={3,}\s*EDIT:\s*(.+?)\s*={3,}\s*\r?\n([\s\S]*?)={3,}\s*END\s*EDIT\s*={3,}/gi;
+  let e;
+  while ((e = reE.exec(text)) !== null) {
+    const path = (e[1] || "").trim().replace(/^["'`]|["'`]$/g, "");
+    const hunks = [];
+    const reH = /<{5,}\s*SEARCH\s*\r?\n([\s\S]*?)\r?\n?={5,}\s*\r?\n([\s\S]*?)\r?\n?>{5,}\s*REPLACE/g;
+    let h;
+    while ((h = reH.exec(e[2])) !== null) hunks.push({ search: h[1], replace: h[2] });
+    if (path && hunks.length && !seen.has(path)) {
+      seen.add(path);
+      blocks.push({ path, hunks });
+    }
+  }
   const reA = /={3,}\s*FILE:\s*(.+?)\s*={3,}\s*\r?\n([\s\S]*?)\r?\n?={3,}\s*END\s*FILE\s*={3,}/gi;
   let m;
   while ((m = reA.exec(text)) !== null) push(m[1], m[2]);
@@ -582,10 +781,8 @@ function parseEditBlocks(text) {
   return blocks;
 }
 
-// Apply whole-file blocks to disk. Path-safe (stays inside dir). Only overwrites
-// files we actually showed the model (or brand-new files) — so a hallucinated
-// path can't clobber unrelated code. Returns per-file status for the summary.
-function applyEditBlocks(dir, blocks, offered) {
+// Apply whole-file blocks to disk. Path-safe (stays inside dir).
+function applyEditBlocks(dir, blocks, offered, guard) {
   const root = resolve(dir);
   const known = new Set((offered || []).map((f) => f.path));
   const results = [];
@@ -600,12 +797,38 @@ function applyEditBlocks(dir, blocks, offered) {
       results.push({ path: b.path, status: "skipped (not offered for edit)" });
       continue;
     }
+    if (b.hunks && !existed) {
+      results.push({ path: b.path, status: "skipped (edit for a file that does not exist)" });
+      continue;
+    }
     try {
       const prev = existed ? readFileSync(abs, "utf8") : null;
-      const next = b.content.endsWith("\n") ? b.content : b.content + "\n";
+      let next;
+      if (b.hunks) {
+        const patched = applyHunks(prev, b.hunks);
+        if (patched.failed.length) {
+          results.push({ path: b.path, status: `not applied (${patched.failed.length} of ${b.hunks.length} change(s) did not match the file)` });
+          continue;
+        }
+        next = patched.text;
+      } else {
+        next = b.content.endsWith("\n") ? b.content : b.content + "\n";
+      }
       if (prev !== null && prev === next) {
         results.push({ path: b.path, status: "unchanged" });
         continue;
+      }
+      // OpenGAP guardrails run at the harness level on the final content, so no persona can talk its way past them.
+      if (guard) {
+        const g = guard(b.path, prev, next);
+        if (g && g.blocked && g.blocked.length) {
+          results.push({
+            path: b.path, status: `blocked by guardrails (${g.blocked.map((x) => x.hook).join(", ")})`,
+            denial: { pack: "OpenGAP hooks", why: g.blocked.map((x) => x.reason).join(" "), tier: "floor", rulePath: ".gitagent/hooks/hooks.yaml", answerable: false },
+            proposed: next.length <= 120000 ? next : null, before: prev && prev.length <= 60000 ? prev : null,
+          });
+          continue;
+        }
       }
       writeFileSync(abs, next);
       // Carry before/after so the UI can show a diff on click (cap the payload).
@@ -624,10 +847,38 @@ function applyEditBlocks(dir, blocks, offered) {
 }
 
 
-// LLM Orchestrator: classify an ambiguous message as "edit" vs "ask" with a
-// single cheap toolless call. This is what makes routing intelligent beyond the
-// keyword heuristic — "rebrand the heading" or "swap the hero copy" have no edit
-// verb but clearly change files. Any failure falls back to the safe Ask mode.
+// Applies SEARCH/REPLACE hunks in order; a hunk that matches nowhere is reported, never guessed at.
+function applyHunks(text, hunks) {
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  let out = text.replace(/\r\n/g, "\n");
+  const failed = [];
+  for (const h of hunks) {
+    const search = h.search.replace(/\r\n/g, "\n");
+    const replace = h.replace.replace(/\r\n/g, "\n");
+    if (!search.trim()) { failed.push(h); continue; }
+    if (out.includes(search)) {
+      out = out.replace(search, () => replace);
+      continue;
+    }
+    // Models often get indentation wrong: match line by line on trimmed text, keep the file's indentation.
+    const lines = out.split("\n");
+    const want = search.split("\n").map((l) => l.trim());
+    while (want.length && !want[want.length - 1]) want.pop();
+    let at = -1;
+    for (let i = 0; i + want.length <= lines.length && at < 0; i++) {
+      if (want.every((w, j) => lines[i + j].trim() === w)) at = i;
+    }
+    if (at < 0) { failed.push(h); continue; }
+    const indent = (lines[at].match(/^\s*/) || [""])[0];
+    const firstIndent = (search.split("\n")[0].match(/^\s*/) || [""])[0];
+    const repl = replace.split("\n").map((l) => (l.startsWith(firstIndent) ? indent + l.slice(firstIndent.length) : l));
+    lines.splice(at, want.length, ...repl);
+    out = lines.join("\n");
+  }
+  return { text: eol === "\n" ? out : out.replace(/\n/g, eol), failed };
+}
+
+// LLM Orchestrator: classify an ambiguous message as "edit" vs "ask" with a single cheap toolless call.
 async function classifyIntentLLM(message, dir, model) {
   const prompt =
     `You route messages for a coding agent. Decide whether the user wants to CHANGE ` +
@@ -637,7 +888,7 @@ async function classifyIntentLLM(message, dir, model) {
   try {
     const { text } = await collectTurn({
       prompt, dir, model, replaceBuiltinTools: true, allowedTools: [],
-      constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+      constraints: { maxTokens: outputCap(model) },
     }, model);
     return /\bedit\b/i.test(text || "") ? "edit" : "ask";
   } catch {
@@ -645,9 +896,7 @@ async function classifyIntentLLM(message, dir, model) {
   }
 }
 
-// The Orchestrator layer. Explicit UI mode wins; then the free heuristic; then,
-// for genuinely ambiguous messages, the LLM classifier. Applies the agentic
-// escape hatch for edits.
+// The Orchestrator layer. Explicit UI mode wins; then the free heuristic; then, for genuinely ambiguous messages, the LLM classifier.
 async function decideMode(explicit, message, dir, model) {
   if (explicit === "ask" || explicit === "edit" || explicit === "agent") return explicit;
   let mode = heuristicMode(message);
@@ -656,35 +905,30 @@ async function decideMode(explicit, message, dir, model) {
   return mode;
 }
 
-// The layered edit pipeline (gitagent squads): Orchestrator → Classifier →
-// Guardrails → Developer → Guardrails(apply). `onStep(name, detail)` receives each
-// layer's decision so callers can stream it. Returns a structured outcome; the
-// model never calls a tool, so it can't garble a call — the layers do the work.
-async function runEditPipeline(dir, message, model, onStep) {
+// The layered edit pipeline (gitagent squads): Orchestrator → Classifier → Guardrails → Developer → Guardrails(apply).
+async function runEditPipeline(dir, message, model, onStep, container, opts = {}) {
   const step = (name, detail) => { if (onStep) onStep(name, detail); };
 
   // Orchestrator already routed us here (mode=edit).
-  step("Orchestrator", "route → edit");
+  step("Orchestrator", opts.files ? `task → ${opts.files.join(", ") || "search"}` : "route → edit");
 
   // Gather candidate files, keep the ones small enough to rewrite whole.
-  const gathered = await gatherEditFiles(dir, message);
+  const gathered = opts.files && opts.files.length ? readTaskFiles(dir, opts.files) : await gatherEditFiles(dir, message);
   const whole = gathered.filter((f) => f.whole);
-  // Relevant files we found but can't rewrite whole on the free tier — surfaced
-  // in the summary so a "0 changes" result names the real target instead of the
-  // useless "try rephrasing".
+  // Relevant files we found but can't rewrite whole on the free tier.
   const tooLarge = gathered.filter((f) => !f.whole).map((f) => f.path);
   if (whole.length === 0) {
     return { ok: false, reason: gathered.length ? "too-large" : "not-found", tooLarge };
   }
 
-  // Complexity Classifier — decides how many files the Developer may rewrite.
-  const cls = classifyEditComplexity(message, whole.length);
+  // Complexity Classifier — decides how many files the Developer may rewrite; a plan's task already names its files.
+  const cls = opts.files && opts.files.length
+    ? { tier: whole.length > 1 ? "senior" : "junior", maxFiles: whole.length, label: `plan step · ${whole.length} file(s)` }
+    : classifyEditComplexity(message, whole.length);
   step("Classifier", cls.label);
   const editable = whole.slice(0, cls.maxFiles);
 
-  // GitAgent registry — if this workspace declares a pipeline (.gitagent/pipeline
-  // .yaml or env override), install the referenced registry agents (live clone)
-  // and let them drive the Developer/Guardrails slots. No manifest → built-ins.
+  // GitAgent registry — if this workspace declares a pipeline (.gitagent/pipeline .yaml or env override), install the referenced registry agents (live clone) and let them drive the Developer/Guardrails slots.
   let agents = { enabled: false };
   try {
     agents = await resolvePipelineAgents(dir, onStep);
@@ -692,13 +936,10 @@ async function runEditPipeline(dir, message, model, onStep) {
     step("GitAgent", `registry unavailable (${e.message}) · using built-ins`);
   }
 
-  // Developer persona comes from the repo's own .gitagent/skills/ (source of
-  // truth): the Complexity Classifier's tier selects jnr vs snr; the skill file
-  // supplies the text (built-in fallback if the file is absent). Compliance rules
-  // from .gitagent/compliance/ layer on top; a registry agent overlays via
-  // personaPreamble. Deny always wins (code-enforced guards run regardless).
+  // Developer persona comes from the repo's own .gitagent/skills/ (source of truth).
   const tierSkill = cls.tier === "senior" ? "snr-developer" : "jnr-developer";
-  const devText = skillPersona(dir, tierSkill);
+  // An OpenGAP agent brings its own SOUL, RULES and handoff brief.
+  const devText = opts.persona || skillPersona(dir, tierSkill);
   const compliance = loadComplianceRules(dir);
   const persona = [
     devText,
@@ -713,35 +954,72 @@ async function runEditPipeline(dir, message, model, onStep) {
   step("Guardrails", `scope ok · ${editable.length} file(s)${guardNote}${complianceNote}`);
 
   // Developer — produce the whole-file rewrite, driven by the tier's skill.
-  const devLabel = agents.developer ? ` as ${agents.developer.name}` : ` · skills/${tierSkill}`;
+  const devLabel = opts.agentName ? ` as ${opts.agentName}` : agents.developer ? ` as ${agents.developer.name}` : ` · skills/${tierSkill}`;
   step("Developer", `editing ${editable.map((f) => f.path).join(", ")}${devLabel}`);
-  const { text, error } = await collectTurn({
-    prompt: buildEditPrompt(editable, message, cls, persona),
-    dir,
-    model,
-    replaceBuiltinTools: true,
-    allowedTools: [],
-    constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
-  }, model);
+  const ask = async (files, strict) => {
+    const prompt = buildEditPrompt(files, message, cls, persona, strict);
+    let maxTokens = editOutputBudget(model, prompt);
+    let res = await collectTurn({ prompt, dir, model, replaceBuiltinTools: true, allowedTools: [], constraints: { maxTokens } }, model);
+    // A 413 says exactly how much room there is; retry once with that, if it still leaves space to answer.
+    const room = !res.text && roomAfter413(res.error, maxTokens);
+    if (room && room >= 1200 && room < maxTokens) {
+      maxTokens = room;
+      res = await collectTurn({ prompt, dir, model, replaceBuiltinTools: true, allowedTools: [], constraints: { maxTokens } }, model);
+    }
+    return res;
+  };
+  let { text, error } = await ask(editable, false);
+  if (error && !text && /\b413\b|too large/i.test(error) && editable.length > 1) {
+    step("Developer", `request too large · retrying with ${editable[0].path} only`);
+    ({ text, error } = await ask(editable.slice(0, 1), true));
+  }
   if (error && !text) return { ok: false, reason: "error", error };
 
-  const blocks = parseEditBlocks(text);
-  if (blocks.length === 0) return { ok: false, reason: "no-blocks", text };
+  let blocks = parseEditBlocks(text);
+  if (blocks.length === 0) {
+    // An empty or unparseable reply is usually a reasoning model spending its whole budget thinking: retry once, shorter.
+    step("Developer", `retrying with ${editable[0].path} only`);
+    ({ text, error } = await ask(editable.slice(0, 1), true));
+    blocks = parseEditBlocks(text || "");
+    if (blocks.length === 0) return { ok: false, reason: "no-blocks", text: error ? "" : text, tried: editable.map((f) => f.path) };
+  }
 
-  // Guardrails (apply) — refuse sensitive files / secret injection. Code-level,
-  // no model involved, so it holds even when the provider is down.
+  // Guardrails (apply) — refuse sensitive files / secret injection.
   const { allowed, blocked } = guardEditBlocks(blocks);
   if (blocked.length) step("Guardrails", `blocked ${blocked.length} unsafe edit(s)`);
 
-  // Then the installed guardrail agents get the last word on what survived: they
-  // read the actual rewrite and may deny it. Deny wins — nothing they reject is
-  // written, regardless of what the Developer (or its persona) wanted.
+  // Then the installed guardrail agents get the last word on what survived: they read the actual rewrite and may deny it.
   const reviewed = await reviewEditBlocks(dir, agents, message, allowed, model, step);
   blocked.push(...reviewed.blocked);
 
-  const results = applyEditBlocks(dir, reviewed.allowed, editable);
-  for (const b of blocked) results.push({ path: b.path, status: `blocked by guardrails (${b.reason})` });
+  const results = applyEditBlocks(dir, reviewed.allowed, editable, opts.guard);
+  await syncToContainer(container, results);
+  for (const b of blocked) {
+    results.push({
+      path: b.path,
+      status: `blocked by guardrails (${b.reason})`,
+      // A denial is answerable, so it has to carry enough to answer it: which pack, which rule, where that rule lives, and the content that was refused.
+      denial: {
+        pack: b.pack || "",
+        why: b.why || b.reason || "",
+        tier: b.tier || "pack",
+        rulePath: rulePathFor(dir, b.pack),
+        // Only the tier-2 review can be argued with; the code floor is fixed.
+        answerable: b.tier !== "floor",
+      },
+      proposed: b.content != null && b.content.length <= 120000 ? b.content : null,
+      before: existsSync(join(dir, ...b.path.split("/"))) ? readFileCapped(join(dir, ...b.path.split("/")), 60000) : null,
+    });
+  }
   return { ok: true, results, cls, tooLarge };
+}
+
+// Where a pack's rules live, so the panel can open them.
+function rulePathFor(dir, pack) {
+  if (!pack || pack === "code floor") return "";
+  if (pack.startsWith(".gitagent/")) return ".gitagent/compliance/RULES.md";
+  const rel = overlayPaths(pack, "guardrails").spec;
+  return existsSync(join(dir, ...rel.split("/"))) ? rel : "";
 }
 
 // Build the human summary + changed-flag from a pipeline result.
@@ -753,12 +1031,14 @@ function summarizeEdit(out) {
     }
     if (out.reason === "not-found") return { text: "I couldn't find the files to change for that request. Try naming a file or feature, e.g. \"make the header in app/page.tsx dark\".", changed: false, error: null };
     if (out.reason === "error") return { text: "", changed: false, error: out.error };
-    if (out.reason === "no-blocks") return { text: out.text || "No changes were produced.", changed: false, error: null };
+    if (out.reason === "no-blocks") {
+      const files = (out.tried || []).map((p) => `\`${p}\``).join(", ");
+      const said = out.text && !/^\s*$/.test(out.text) ? `\n\nThe model answered without an edit:\n${out.text.slice(0, 600)}` : "";
+      return { text: `I couldn't get an edit back from the model${files ? ` for ${files}` : ""}. Try again, name the exact file (for example \`public/styles.css\`), or pick a stronger model in the provider menu.${said}`, changed: false, error: null };
+    }
   }
   const changed = out.results.filter((r) => r.status === "edited" || r.status === "created");
-  // When nothing changed, if we found a relevant file too large to rewrite (e.g.
-  // the themed globals.css a recolor actually needs), name it — that's far more
-  // useful than a generic "try rephrasing".
+  // When nothing changed, name any relevant file that was too large to rewrite.
   const bigHint = (!changed.length && out.tooLarge && out.tooLarge.length)
     ? ` The change likely lives in ${out.tooLarge.slice(0, 3).map((p) => `\`${p}\``).join(", ")}, which is too large to rewrite whole on the free tier — try naming a smaller file or splitting the change.`
     : "";
@@ -770,10 +1050,16 @@ function summarizeEdit(out) {
 }
 
 // Run the layered edit pipeline over a WebSocket, streaming each layer as a step.
-async function runEditModeWS(ws, dir, message, model) {
-  const out = await runEditPipeline(dir, message, model, (name, detail) => {
+async function runEditModeWS(ws, dir, message, model, container) {
+  const out = await runCodingTask(dir, message, model, (name, detail) => {
     ws.send(JSON.stringify({ type: "tool", content: `${name}(${detail})` }));
-  });
+  }, container, { onEvent: (e) => ws.send(JSON.stringify({ type: "og", event: e })) });
+  // A team run that changed nothing still ends with a record of who tried what.
+  if (out && out.run && !out.results.length) {
+    ws.send(JSON.stringify({ type: "delta", content: `No files changed. ${out.run.outcome === "stopped" ? "The team stopped and needs you: see the workflow card above." : ""}` }));
+    ws.send(JSON.stringify({ type: "complete", content: "" }));
+    return;
+  }
   const { text, changed, error } = summarizeEdit(out);
   if (error) {
     ws.send(JSON.stringify({ type: "error", content: error }));
@@ -788,6 +1074,8 @@ async function runEditModeWS(ws, dir, message, model) {
       status: r.status,
       before: r.before ?? null,
       after: r.after ?? null,
+      denial: r.denial ?? null,
+      proposed: r.proposed ?? null,
     }));
     ws.send(JSON.stringify({ type: "edit_summary", files }));
   } else {
@@ -797,22 +1085,14 @@ async function runEditModeWS(ws, dir, message, model) {
 }
 
 
-// Register a sandbox dir after Jr Architect clones + generates agent spec
-// The scaffolded spec lives under .gitagent/ (grouped, visible in the explorer),
-// but a standard-pure repo may commit agent.yaml at its root. Accept either.
+// Registers a sandbox dir once Jr Architect has cloned it and generated its agent spec.
 function agentSpecPresent(dir) {
   return existsSync(join(dir, ".gitagent", "agent.yaml")) || existsSync(join(dir, "agent.yaml"));
 }
 
-// ── Knowledge slot ───────────────────────────────────────────────────────────
-//
-// Runs once when the workspace opens. Spawned as a child process so the reserved
-// key lives in an environment no chat turn can reach — see knowledge-worker.js for
-// why a mutex would not do.
+// Knowledge slot
 
-// Per-workspace build state, so the panel can show what is happening without the
-// build having to finish first. Keyed by directory, not container: reopening the
-// same workspace should not rebuild what is already there.
+// Per-workspace build state, so the panel can show what is happening without the build having to finish first.
 const knowledgeState = new Map();
 
 function knowledgeStateFor(dir) {
@@ -823,9 +1103,7 @@ function runKnowledgeBuild(dir, { agent, force } = {}) {
   const cur = knowledgeStateFor(dir);
   if (cur.status === "building") return cur;              // already in flight
   if (!force && knowledgeStatus(dir).exists) {
-    // A workspace that already carries the document does not rebuild on open —
-    // the file is committed knowledge, and a repo may well ship a better one than
-    // we would generate. Press Rebuild to override.
+    // A workspace that already carries the document does not rebuild on open.
     const st = { status: "ready", skipped: "already built" };
     knowledgeState.set(dir, st);
     return st;
@@ -836,13 +1114,12 @@ function runKnowledgeBuild(dir, { agent, force } = {}) {
     return st;
   }
 
-  const model = modelFor("groq");
+  const model = modelFor();
   const startedAt = Date.now();
   knowledgeState.set(dir, { status: "building", startedAt, agent: agent || KNOWLEDGE_SKILL });
 
   const env = { ...process.env };
-  // The reserved key, and only here. Absent it the worker inherits the chat key
-  // and simply competes — degraded, not broken.
+  // The reserved key, and only here. Absent it the worker inherits the chat key and simply competes — degraded, not broken.
   if (KNOWLEDGE_KEY) env.GROQ_API_KEY = KNOWLEDGE_KEY;
 
   const child = spawn(
@@ -877,14 +1154,16 @@ function runKnowledgeBuild(dir, { agent, force } = {}) {
 }
 
 app.post("/agent/register", (req, res) => {
-  const { container, workdir, stack } = req.body;
+  const { container, workdir, stack, owner } = req.body;
   if (!container || !workdir) {
     return res.status(400).json({ error: "container and workdir required" });
   }
-  sessions.set(container, { dir: workdir, stack: stack || "unknown", clients: new Set() });
+  if (workspaceRootOf(workdir) !== resolve(workdir)) {
+    return res.status(400).json({ error: "workdir is not a sandbox workspace" });
+  }
+  sessions.set(container, { dir: workdir, stack: stack || "unknown", owner: owner || "", clients: new Set() });
   console.log(`[agent] registered container=${container} dir=${workdir} stack=${stack}`);
-  // Respond first. The build takes ~30-60s and must never hold up the sandbox —
-  // Go calls this in a goroutine at clone time and ignores the body.
+  // Respond first. The build takes ~30-60s and must never hold up the sandbox — Go calls this in a goroutine at clone time and ignores the body.
   res.json({ status: "registered" });
   try {
     const manifest = readPipelineManifest(workdir);
@@ -894,8 +1173,15 @@ app.post("/agent/register", (req, res) => {
   }
 });
 
-// Rebuild on demand — after editing the builder's SKILL.md, or after the repo has
-// changed enough that the overview is stale.
+// Rebuild on demand — after editing the builder's SKILL.md, or after the repo has changed enough that the overview is stale.
+app.get("/agent/health", (_req, res) => res.json({ ok: true, sessions: sessions.size }));
+
+// Go calls this directly after Settings saves a key; its proxy refuses the path from browsers.
+app.post("/agent/keys", (req, res) => {
+  applyKeys(req.body);
+  res.json({ ok: true });
+});
+
 app.post("/agent/knowledge", (req, res) => {
   const { container } = req.body || {};
   const session = sessions.get(container);
@@ -938,10 +1224,9 @@ app.post("/agent/chat", async (req, res) => {
   const model = modelFor(provider);
   const mode = await decideMode(req.body.mode, message, session.dir, model);
 
-  // Edit mode: the layered pipeline (Orchestrator → Classifier → Guardrails →
-  // Developer), buffered into a single summary for the REST fallback.
+  // Edit mode: the layered pipeline (Orchestrator → Classifier → Guardrails → Developer), buffered into a single summary for the REST fallback.
   if (mode === "edit") {
-    const out = await runEditPipeline(session.dir, message, model, null);
+    const out = await runEditPipeline(session.dir, message, model, null, container);
     const { text, changed, error } = summarizeEdit(out);
     if (error) return res.status(502).json({ error });
     return res.json({ response: text, file_changed: changed });
@@ -955,33 +1240,40 @@ app.post("/agent/chat", async (req, res) => {
         model,
         replaceBuiltinTools: true,
         allowedTools: [],
-        constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+        constraints: { maxTokens: outputCap(model) },
       }
     : {
         prompt: message,
         dir: session.dir,
         model,
+        replaceBuiltinTools: true,
         allowedTools: AGENT_ALLOWED_TOOLS,
-        tools: [makeSearchCodeTool(session.dir)],
-        constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+        tools: agentTools(session.dir, container),
+        constraints: { maxTokens: outputCap(model) },
       };
   let fullResponse = "";
   let errText = "";
-  // Same transient-failure retry as the WS path (buffered, so no partial-reply
-  // concern): re-run on a fresh key until we get output or exhaust attempts.
+  let pendingWrite = null;
+  // Same transient-failure retry as the WS path (buffered, so no partial-reply concern): re-run on a fresh key until we get output or exhaust attempts.
   for (let attempt = 0; ; attempt++) {
-    rotateGroqKey(model);
+    rotateKey(model);
     fullResponse = "";
     errText = "";
     try {
       for await (const msg of query(queryOptions)) {
         if (msg.type === "delta" && msg.deltaType !== "thinking") fullResponse += msg.content;
+        else if (msg.type === "tool_use" && WRITE_TOOLS.has(msg.toolName)) pendingWrite = writtenPathFrom(msg.args);
+        else if (msg.type === "tool_result" && WRITE_TOOLS.has(msg.toolName)) {
+          if (pendingWrite) await syncToContainer(container, [{ path: pendingWrite, status: "edited" }]);
+          pendingWrite = null;
+        }
         else if (msg.type === "system" && msg.subtype === "error") errText = msg.content || errText;
         else if (msg.type === "assistant" && msg.stopReason === "error") errText = msg.errorMessage || errText;
       }
     } catch (err) {
       errText = err.message || String(err);
     }
+    if (!fullResponse && errText && dropRejectedKey(model, errText)) { attempt--; continue; }
     if (!fullResponse && errText && attempt < AGENT_TOOLCALL_RETRIES && RETRIABLE_TURN_ERROR.test(errText)) {
       console.log(`[agent] REST retry (attempt ${attempt + 2}/${AGENT_TOOLCALL_RETRIES + 1}) after: ${String(errText).slice(0, 100)}`);
       continue;
@@ -993,21 +1285,12 @@ app.post("/agent/chat", async (req, res) => {
   }
 });
 
-// ── Build doctor: diagnose container/terminal issues and propose a fix ────────
-// This is what makes Jr Architect an intelligent IDE rather than a passive one.
-// When the app is slow to boot or the terminal shows errors, the frontend sends
-// the recent container logs here. The model classifies real errors vs. noise
-// (deprecation warnings, audit notices, a slow-but-successful install) and, for a
-// genuine blocker, proposes ONE fix: a shell command to run in the sandbox, or a
-// file edit routed through the guardrailed edit pipeline. Nothing is applied here
-// — the UI shows the proposal with a one-click Apply/Run (the user chose "propose,
-// one-click apply"), so a weak free-tier model can't silently break the repo.
+// Build doctor: diagnose container/terminal issues and propose a fix
 
 // Pull a JSON object out of a model reply that may be fenced or wrapped in prose.
 
 function buildDiagnosePrompt(stack, logs) {
-  // Keep only the tail — the failure is almost always at the end, and the free
-  // tier has a tight token budget.
+  // Keep only the tail — the failure is almost always at the end, and the free tier has a tight token budget.
   const tail = String(logs || "").slice(-4000);
   return (
     `You are the build doctor for a ${stack || "web"} app running in a sandbox. ` +
@@ -1043,15 +1326,14 @@ app.post("/agent/diagnose", async (req, res) => {
     model,
     replaceBuiltinTools: true,
     allowedTools: [],
-    constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
+    constraints: { maxTokens: outputCap(model) },
   }, model);
 
   if (error && !text) return res.status(502).json({ error });
 
   const parsed = parseJsonLoose(text);
   if (!parsed) {
-    // Model didn't return usable JSON — treat as "nothing actionable" rather than
-    // surfacing a scary error, but pass the raw note through for context.
+    // Model didn't return usable JSON — treat as "nothing actionable" rather than surfacing a scary error, but pass the raw note through for context.
     return res.json({ severity: "ok", summary: "No actionable issue detected", cause: "", fix: { kind: "none" }, raw: (text || "").slice(0, 400) });
   }
   const fix = parsed.fix && typeof parsed.fix === "object" ? parsed.fix : { kind: "none" };
@@ -1068,13 +1350,9 @@ app.post("/agent/diagnose", async (req, res) => {
   });
 });
 
-// ── GitAgent registry panel ──────────────────────────────────────────────────
-// Powers the IDE's GitAgent panel: browse the registry, see which agents fill
-// the Developer/Guardrails slots for this workspace, and swap them.
+// GitAgent registry panel
 
-// Browse the registry index (community agents). Each row carries the slot it
-// would take, so the panel can label the button with what pulling it will do
-// instead of duplicating the classification in the frontend.
+// Browse the registry index (community agents).
 app.get("/agent/registry", async (_req, res) => {
   const index = await fetchRegistryIndex();
   res.json({
@@ -1096,16 +1374,13 @@ app.get("/agent/registry", async (_req, res) => {
   });
 });
 
-// The repo's own spec files, in the order the panel presents them. Each is a real
-// file in the workspace — editing one changes how the next turn behaves.
+// The repo's own spec files, in the order the panel presents them.
 const SPEC_FILES = [
   { key: "soul", path: ".gitagent/SOUL.md", label: "Identity",
     hint: "Who this agent is. Injected first, ahead of every edit." },
   { key: "rules", path: ".gitagent/RULES.md", label: "Rules",
     hint: "Must / Never rules. \"Never\" items are hard limits the agent may not cross." },
-  // memory/MEMORY.md is the standard's full layout; resolveMemoryPath() below
-  // falls back to a legacy root MEMORY.md so the card always points at the file
-  // the agent will actually read.
+  // memory/MEMORY.md is the standard's full layout.
   { key: "memory", path: ".gitagent/memory/MEMORY.md", label: "Memory",
     hint: "Durable facts about this project the agent reads before changing anything." },
   { key: "compliance", path: ".gitagent/compliance/RULES.md", label: "Guardrails",
@@ -1114,9 +1389,7 @@ const SPEC_FILES = [
     hint: "Model, tools, and runtime. Mirrored to the repo root, where the runtime reads it." },
 ];
 
-// Point the Memory card at the file the agent will actually read: the standard
-// memory/MEMORY.md, or a legacy root MEMORY.md in a repo scaffolded before the
-// move. Editing the wrong one would look like it worked and change nothing.
+// Point the Memory card at the file the agent will actually read.
 function resolveMemoryPath(dir) {
   for (const rel of MEMORY_PATHS) {
     if (existsSync(join(dir, ".gitagent", ...rel.split("/")))) return `.gitagent/${rel}`;
@@ -1124,33 +1397,51 @@ function resolveMemoryPath(dir) {
   return `.gitagent/${MEMORY_PATHS[0]}`; // neither exists — offer to create the standard one
 }
 
-// Compose the pipeline status for a workspace: the assigned agents (enriched from
-// the index), whether each is cloned to disk, and the repo's own spec — the files
+// Compose the pipeline status for a workspace.
+const DRIFT_TTL_MS = 10 * 60 * 1000;
+const driftCache = new Map(); // ref -> { at, sha }
+
+async function driftFor(pins, index) {
+  const out = {};
+  for (const [ref, pin] of Object.entries(pins)) {
+    const hit = driftCache.get(ref);
+    let upstream = hit && Date.now() - hit.at < DRIFT_TTL_MS ? hit.sha : null;
+    if (upstream === null) {
+      const entry = findAgent(index, ref);
+      upstream = entry ? await remoteSha(entry.repository) : "";
+      driftCache.set(ref, { at: Date.now(), sha: upstream });
+    }
+    if (upstream && upstream !== pin) out[ref] = upstream;
+  }
+  return out;
+}
+
 // that define its agent plus the skills that drive the pipeline.
 async function gitagentStatus(dir) {
   const index = await fetchRegistryIndex();
   const manifest = readPipelineManifest(dir) || { developer: null, guardrails: [] };
   const installed = new Set(installedAgents(dir));
   const pins = manifest.pins || {};
+  // Drift is a network call per pack, so it is cached and refreshed lazily rather than blocking every status poll.
+  const drift = await driftFor(pins, index);
   const enrich = (ref, slot) => {
     const e = findAgent(index, ref) || {};
     const p = overlayPaths(ref, slot);
     return {
       ref, slot,
       pin: pins[ref] || "",
+      // Unpinned means the rules can change with no diff and no review; drifted means they already have.
+      unpinned: installed.has(ref) && !pins[ref],
+      drifted: drift[ref] || "",
       category: e.category || "other",
       description: e.description || "",
       repository: e.repository || "",
       installed: installed.has(ref),
-      // Where this agent lives inside the spec folder. Present only once the
-      // overlay is materialized, so the panel links to files that really exist.
+      // Where this agent lives inside the spec folder.
       specFiles: [p.spec, p.workflow].filter((rel) => existsSync(join(dir, ...rel.split("/")))),
     };
   };
-  // The Knowledge slot always has an occupant: a pulled registry agent if one is
-  // assigned, otherwise the built-in knowledge-builder skill. It is shown as an
-  // agent either way — the built-in is a SKILL.md in this repo, not a hidden
-  // prompt, so "open it and edit it" is true for both.
+  // The Knowledge slot always has an occupant: a pulled registry agent if one is assigned, otherwise the built-in knowledge-builder skill.
   const kRef = manifest.knowledge || null;
   const knowledge = kRef ? enrich(kRef, "knowledge") : {
     ref: KNOWLEDGE_SKILL,
@@ -1172,25 +1463,20 @@ async function gitagentStatus(dir) {
     // What the Knowledge slot has actually produced, and whether it is running.
     knowledgeDoc: knowledgeStatus(dir),
     knowledgeState: knowledgeStateFor(dir),
-    // The repo's own .gitagent/skills/ — the built-in personas plus any the user
-    // authored. These drive the chat agent directly (source of truth).
+    // The repo's own .gitagent/skills/ — the built-in personas plus any the user authored.
     skills: listSkillsDetailed(dir),
     builtinSkills: BUILTIN_SKILLS,
-    // The identity/rules/memory files, with a presence flag so the panel can
-    // offer to create one that a hand-written repo never scaffolded.
+    // The identity/rules/memory files, with a presence flag so the panel can offer to create one that a hand-written repo never scaffolded.
     spec: SPEC_FILES.map((f) => {
       const path = f.key === "memory" ? resolveMemoryPath(dir) : f.path;
       return { ...f, path, exists: existsSync(join(dir, ...path.split("/"))) };
     }),
-    // Community agents already cloned into this workspace, whether or not they
-    // currently hold a slot — so an installed agent can be inspected and reused.
+    // Community agents already cloned into this workspace, whether or not they currently hold a slot — so an installed agent can be inspected and reused.
     installedAgents: installedAgentsDetailed(dir),
   };
 }
 
-// Create a new skill in the repo's own .gitagent/skills/<slug>/SKILL.md so it
-// shows in the folder and can drive the agent. Intertwined with the registry: a
-// local skill and an installed registry agent both compose through the pipeline.
+// Create a new skill in the repo's own .gitagent/skills/<slug>/SKILL.md so it shows in the folder and can drive the agent.
 app.post("/agent/skill", (req, res) => {
   const { container, name, description, body, overwrite } = req.body || {};
   const session = sessions.get(container);
@@ -1200,8 +1486,7 @@ app.post("/agent/skill", (req, res) => {
   try {
     const skillDir = join(session.dir, ".gitagent", "skills", slug);
     const file = join(skillDir, "SKILL.md");
-    // Creating is the default; the panel's skill editor passes overwrite to save
-    // an existing one, so a typo'd new skill can't silently clobber a persona.
+    // Creating is the default; the panel's skill editor passes overwrite to save an existing one, so a typo'd new skill can't silently clobber a persona.
     if (existsSync(file) && !overwrite) {
       return res.status(409).json({ error: `skill "${slug}" already exists` });
     }
@@ -1220,8 +1505,7 @@ app.post("/agent/skill", (req, res) => {
   }
 });
 
-// Delete a user-authored skill. Built-in personas are refused by deleteSkill —
-// removing one would quietly change how the pipeline codes.
+// Delete a user-authored skill. Built-in personas are refused by deleteSkill — removing one would quietly change how the pipeline codes.
 app.delete("/agent/skill", (req, res) => {
   const { container, slug } = req.body || {};
   const session = sessions.get(container);
@@ -1234,9 +1518,7 @@ app.delete("/agent/skill", (req, res) => {
   }
 });
 
-// ── Spec files (identity, rules, memory, guardrails, manifest) ────────────────
-// The panel edits the repo's own agent in place. Paths are confined to
-// .gitagent/ (plus the root agent.yaml) by resolveSpecPath.
+// Spec files (identity, rules, memory, guardrails, manifest)
 
 app.get("/agent/gitagent/file", (req, res) => {
   const session = sessions.get(req.query.container);
@@ -1262,9 +1544,7 @@ app.post("/agent/gitagent/file", (req, res) => {
   }
 });
 
-// Preview a registry agent before installing it: the index entry plus its spec
-// files read straight from GitHub. Lets a user see what an agent will inject
-// before handing it a slot.
+// Preview a registry agent before installing it: the index entry plus its spec files read straight from GitHub.
 app.get("/agent/registry/agent", async (req, res) => {
   const ref = String(req.query.ref || "");
   try {
@@ -1290,11 +1570,149 @@ app.get("/agent/registry/agent", async (req, res) => {
   }
 });
 
-// Pull an agent from the registry: clone it AND put it to work. The slot comes
-// from the registry's own metadata via classifySlot (a compliance agent guards,
-// a developer-tools agent writes), so pulling is one click and the next edit
-// already runs through it. Pass `slot` to override, or `slot: "none"` to clone
-// without assigning — for reading an agent's files before trusting it.
+// Answering a denial
+
+// Fix it: hand the refused content and the exact rule back to the Developer, then re-review the result.
+app.post("/agent/guardrail/fix", async (req, res) => {
+  const { container, path: rel, proposed, why, pack, provider } = req.body || {};
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  if (!rel || !proposed) return res.status(400).json({ error: "path and proposed content are required" });
+  if (!firstAvailableProvider()) return res.status(400).json({ error: NO_KEY_MESSAGE });
+
+  const model = modelFor(provider);
+  const steps = [];
+  const step = (n, d) => steps.push(`${n}: ${d}`);
+  try {
+    const prompt =
+      `A guardrail refused this file. Rewrite it so it satisfies the rule.\n\n` +
+      `RULE THAT REFUSED IT (${pack || "guardrail"}): ${why}\n\n` +
+      `=== FILE: ${rel} ===\n${String(proposed).slice(0, 12000)}\n=== END FILE ===\n\n` +
+      `Return the COMPLETE corrected file wrapped exactly as above. Change only what ` +
+      `the rule requires — keep every other line as it is. No prose, no fences.`;
+
+    step("Developer", `rewriting ${rel} to satisfy ${pack || "the guardrail"}`);
+    const { text, error } = await collectTurn({
+      prompt, dir: session.dir, model,
+      replaceBuiltinTools: true, allowedTools: [],
+      constraints: { maxTokens: outputCap(model) },
+    }, model);
+    if (error && !text) return res.status(502).json({ error, steps });
+
+    const blocks = parseEditBlocks(text).filter((b) => b.path === rel);
+    if (!blocks.length) return res.json({ ok: false, reason: "no-blocks", steps });
+
+    // The rewrite gets the same scrutiny as the original — a fix that is itself a violation must not slip through just because it came from a retry.
+    const agents = await resolvePipelineAgents(session.dir, step).catch(() => ({ guardrails: [] }));
+    const floor = guardEditBlocks(blocks);
+    if (floor.blocked.length) {
+      return res.json({ ok: false, reason: "still-denied", denial: floor.blocked[0].why, steps });
+    }
+    const reviewed = await reviewEditBlocks(session.dir, agents, `Fixing: ${why}`, floor.allowed, model, step);
+    if (reviewed.blocked.length) {
+      return res.json({ ok: false, reason: "still-denied", denial: reviewed.blocked[0].why, steps });
+    }
+
+    const results = applyEditBlocks(session.dir, reviewed.allowed, blocks);
+    await syncToContainer(container, results);
+    step("Guardrails", "approved · applied");
+    res.json({ ok: true, results, steps });
+  } catch (e) {
+    res.status(500).json({ error: e.message, steps });
+  }
+});
+
+// Override: apply the refused content anyway, with a reason on the record.
+app.post("/agent/guardrail/override", async (req, res) => {
+  const { container, path: rel, proposed, reason, pack, why } = req.body || {};
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  if (!rel || proposed == null) return res.status(400).json({ error: "path and proposed content are required" });
+  const note = String(reason || "").trim();
+  // An unexplained override is indistinguishable from no guardrail at all.
+  if (note.length < 8) return res.status(400).json({ error: "a reason is required (at least 8 characters)" });
+
+  try {
+    const results = applyEditBlocks(session.dir, [{ path: rel, content: String(proposed) }], []);
+    const applied = results.find((r) => r.status === "edited" || r.status === "created");
+    if (!applied) return res.status(400).json({ error: results[0] ? results[0].status : "could not write the file" });
+    await syncToContainer(container, results);
+
+    writeAudit(session.dir, [{
+      at: new Date().toISOString(),
+      file: rel,
+      decision: "override",
+      pack: pack || "",
+      denied_for: why || "",
+      reason: note,
+    }]);
+    res.json({ ok: true, results, audit: `${AUDIT_DIR}/${new Date().toISOString().slice(0, 10)}.jsonl` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Pin a pack at the commit it is currently running, so its rules stop being "whatever upstream is today" and start being a reviewable version.
+app.post("/agent/gitagent/pin", async (req, res) => {
+  const { container, ref } = req.body || {};
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  try {
+    const entry = findAgent(await fetchRegistryIndex(), ref);
+    if (!entry) return res.status(404).json({ error: `no agent "${ref}"` });
+    const { sha } = await installAgent(session.dir, entry);
+    if (!sha) return res.status(400).json({ error: "could not read the installed commit" });
+
+    const cur = readPipelineManifest(session.dir);
+    const slot = cur && cur.knowledge === ref ? "knowledge"
+      : cur && cur.developer === ref ? "developer"
+      : "guardrails";
+    assignSlot(session.dir, ref, slot, sha);
+    res.json({ ok: true, pin: sha, status: await gitagentStatus(session.dir) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// What WOULD this pack have done to your last N commits?
+app.post("/agent/registry/preview", async (req, res) => {
+  const { container, ref, commits } = req.body || {};
+  const session = sessions.get(container);
+  if (!session) return res.status(404).json({ error: "sandbox not registered" });
+  const n = Math.min(Math.max(Number(commits) || 10, 1), 50);
+
+  try {
+    const entry = findAgent(await fetchRegistryIndex(), ref);
+    if (!entry) return res.status(404).json({ error: `no agent "${ref}"` });
+
+    const { path: at, sha } = await installAgent(session.dir, entry);
+    const persona = loadAgentPersona(at, entry);
+    const rules = (persona.rules || persona.soul || "").trim();
+    if (!rules) {
+      return res.json({ ref, ok: true, unusable: "this agent ships no RULES.md or SOUL.md to enforce" });
+    }
+
+    const steps = [];
+    const out = await reviewRange({
+      dir: session.dir,
+      base: `HEAD~${n}`,
+      head: "HEAD",
+      message: `Would ${ref} have allowed these changes?`,
+      packs: [{ name: `${entry.author}/${entry.name}`, rules, sha, pin: sha }],
+      audit: false,
+      onStep: (name, detail) => steps.push(`${name}: ${detail}`),
+    });
+    res.json({ ref: `${entry.author}/${entry.name}`, commits: n, sha, steps, ...out });
+  } catch (e) {
+    // A shallow clone has no HEAD~10; say so rather than reporting a clean pass.
+    const msg = /could not diff/.test(e.message)
+      ? `this workspace has fewer than ${n} commits to replay`
+      : e.message;
+    res.status(400).json({ error: msg });
+  }
+});
+
+// Pull an agent from the registry: clone it AND put it to work.
 app.post("/agent/gitagent/install", async (req, res) => {
   const { container, ref, slot: wanted } = req.body || {};
   const session = sessions.get(container);
@@ -1312,14 +1730,10 @@ app.post("/agent/gitagent/install", async (req, res) => {
     const reason = slot === auto.slot ? auto.reason : "you chose this slot";
     // The canonical ref, which may differ in case/spacing from what was typed.
     const pulled = `${entry.author}/${entry.name}`;
-    // Pin at pull time. Without this the pack is "whatever upstream is today" and
-    // the rules can change with no diff and no review.
+    // Pin at pull time. Without this the pack is "whatever upstream is today" and the rules can change with no diff and no review.
     if (slot) assignSlot(session.dir, pulled, slot, sha);
 
-    // Resolving the pipeline is what writes the agent INTO .gitagent/: its rules
-    // become a real file under compliance/ or skills/, its stage is documented in
-    // workflows/, and RULES.md gains a managed index. Without this the folder
-    // would still read as the untouched scaffold while the pipeline ran the agent.
+    // Resolving the pipeline is what writes the agent INTO .gitagent/.
     const files = [];
     if (slot) {
       try {
@@ -1338,8 +1752,7 @@ app.post("/agent/gitagent/install", async (req, res) => {
       slot,
       slotReason: reason,
       auto: !wanted,
-      // The files the pull created or removed, so the panel can say what changed
-      // in the folder instead of leaving the user to go find it.
+      // The files the pull created or removed, so the panel can say what changed in the folder instead of leaving the user to go find it.
       files,
     });
   } catch (e) {
@@ -1358,8 +1771,7 @@ app.get("/agent/gitagent", async (req, res) => {
   }
 });
 
-// Assign agents to slots: writes .gitagent/pipeline.json, installs (live clone)
-// the referenced agents, and returns the new status plus install steps.
+// Assign agents to slots: writes .gitagent/pipeline.json, installs (live clone) the referenced agents, and returns the new status plus install steps.
 app.post("/agent/gitagent", async (req, res) => {
   const { container, developer, guardrails } = req.body;
   const session = sessions.get(container);
@@ -1377,11 +1789,94 @@ app.post("/agent/gitagent", async (req, res) => {
   }
 });
 
-// WebSocket — one connection per sandbox session
-// Client sends: { type: "chat", container: "...", message: "..." }
-// Server streams back: { type: "delta"|"done"|"tool"|"error", content: "..." }
-wss.on("connection", (ws) => {
+// Clones a pack for OpenGAP add-agent/add-guard with prompts and the host's credential helpers switched off.
+function gitClone(url, dest) {
+  return new Promise((resolveP, rejectP) => {
+    const child = spawn("git", ["clone", "--depth", "1", "--", url, dest], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: "" },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let err = "";
+    child.stderr.on("data", (d) => { err += d; });
+    const timer = setTimeout(() => child.kill(), 60000);
+    child.on("close", (code) => { clearTimeout(timer); code === 0 ? resolveP() : rejectP(new Error(`git clone failed: ${err.trim().split("\n").pop() || code}`)); });
+  });
+}
+
+const ogRunner = opengap.createRunner({
+  gatherEditFiles, runEditPipeline, collectTurn, parseJsonLoose, parseEditBlocks, providerHasKey,
+  outputBudget: (model, prompt) => editOutputBudget(model, prompt),
+});
+
+// The coding entry point: an installed OpenGAP team routes the task; otherwise the built-in pipeline edits directly.
+async function runCodingTask(dir, message, model, onStep, container, opts = {}) {
+  if (opengap.installed(dir)) {
+    return ogRunner.runTask(dir, message, { model, container, onStep, onEvent: opts.onEvent, files: opts.files });
+  }
+  return runEditPipeline(dir, message, model, onStep, container, opts);
+}
+
+function ogSession(req, res) {
+  const container = (req.body && req.body.container) || req.query.container;
+  const session = sessions.get(container);
+  if (!session) { res.status(404).json({ error: "sandbox not registered" }); return null; }
+  return session;
+}
+
+const ogRoute = (fn) => async (req, res) => {
+  const session = ogSession(req, res);
+  if (!session) return;
+  try {
+    const out = await fn(session, req);
+    res.json(out === undefined ? opengap.status(session.dir) : out);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+};
+
+app.get("/agent/opengap", ogRoute((s) => opengap.status(s.dir)));
+app.post("/agent/opengap/init", ogRoute((s) => { const wrote = opengap.init(s.dir); return { ...opengap.status(s.dir), wrote }; }));
+app.post("/agent/opengap/agent", ogRoute((s, req) => { opengap.saveAgent(s.dir, req.body.agent || {}); }));
+app.post("/agent/opengap/agent/delete", ogRoute((s, req) => { opengap.deleteAgent(s.dir, String(req.body.name || "")); }));
+app.get("/agent/opengap/file", ogRoute((s, req) => ({ path: req.query.path, content: opengap.readFile(s.dir, String(req.query.path || "")) })));
+app.post("/agent/opengap/file", ogRoute((s, req) => { opengap.saveFile(s.dir, String(req.body.path || ""), String(req.body.content ?? "")); }));
+app.post("/agent/opengap/routing", ogRoute((s, req) => { opengap.setRouting(s.dir, String(req.body.key || ""), req.body.value); }));
+app.post("/agent/opengap/guard", ogRoute((s, req) => { opengap.addGuard(s.dir, req.body.guard || {}); }));
+app.post("/agent/opengap/guard/toggle", ogRoute((s, req) => { opengap.toggleGuard(s.dir, String(req.body.name || ""), req.body.enabled !== false); }));
+app.post("/agent/opengap/add", ogRoute(async (s, req) => {
+  let url = req.body.url;
+  // A registry reference ("author/agent") resolves to its repository, so registry agents can join the team too.
+  if (!url && req.body.ref) {
+    const entry = findAgent(await fetchRegistryIndex(), String(req.body.ref));
+    if (!entry || !entry.repository) throw new Error("that agent is not in the registry");
+    url = entry.repository;
+  }
+  const installedNames = await opengap.addFromGit(s.dir, { url, as: req.body.as, kind: req.body.kind === "guard" ? "guard" : "agent" }, gitClone);
+  return { ...opengap.status(s.dir), installedNames };
+}));
+app.get("/agent/opengap/runs", ogRoute((s) => ({ runs: opengap.listRuns(s.dir) })));
+app.post("/agent/opengap/smoke", ogRoute(async (s, req) => {
+  const r = allowLLM(req.get("x-jr-user"));
+  if (!r.ok) throw new Error(llmLimitMessage(r.minutes));
+  return { steps: await ogRunner.smoke(s.dir, String(req.body.name || ""), modelFor(req.body.provider)) };
+}));
+
+const planner = createPlanner({
+  collectTurn, parseJsonLoose, gatherEditFiles, hostExec, readFileCapped,
+  checkCommand: (dir, command) => (opengap.installed(dir) ? opengap.checkCommandLine(dir, command) : null),
+  // Plan steps go through the OpenGAP team when one is installed, so its routing and guardrails apply to them too.
+  runEditPipeline: (dir, message, model, onStep, container, opts) => runCodingTask(dir, message, model, onStep, container, { ...opts, onEvent: opts && opts.onEvent }),
+  outputBudget: (model, prompt) => editOutputBudget(model, prompt),
+});
+
+// WebSocket: one connection per sandbox session.
+wss.on("connection", (ws, req) => {
   let boundContainer = null;
+  const user = req.headers["x-jr-user"];
+  const sessionFor = (c) => {
+    const s = sessions.get(c);
+    return s && mayUse(user, s) ? s : undefined;
+  };
 
   ws.on("message", async (raw) => {
     let payload;
@@ -1395,8 +1890,8 @@ wss.on("connection", (ws) => {
     const { type, container, message, provider } = payload;
 
     if (type === "bind") {
-      boundContainer = container;
-      const session = sessions.get(container);
+      const session = sessionFor(container);
+      if (session) boundContainer = container;
       if (!session) {
         ws.send(JSON.stringify({ type: "error", content: "sandbox not registered" }));
         return;
@@ -1406,9 +1901,40 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (type === "stop") {
+      planner.stop(ws);
+      return;
+    }
+    if (type === "command_decision") {
+      planner.decide(ws, payload);
+      return;
+    }
+    if (type === "plan_review" || type === "plan_proceed") {
+      const quota = allowLLM(user);
+      if (!quota.ok) {
+        ws.send(JSON.stringify({ type: "error", content: llmLimitMessage(quota.minutes) }));
+        ws.send(JSON.stringify({ type: "complete", content: "" }));
+        return;
+      }
+      const entry = planner._plans.get(payload.id);
+      if (!entry || !sessionFor(entry.container)) {
+        ws.send(JSON.stringify({ type: "error", content: "That plan is not available any more; ask again." }));
+        ws.send(JSON.stringify({ type: "complete", content: "" }));
+        return;
+      }
+      if (type === "plan_review") await planner.revise(ws, { id: payload.id, comments: (payload.comments || []).slice(0, 30), policy: payload.policy });
+      else await planner.proceed(ws, { id: payload.id, policy: payload.policy });
+      return;
+    }
+
     if (type === "chat") {
+      const quota = allowLLM(user);
+      if (!quota.ok) {
+        ws.send(JSON.stringify({ type: "error", content: llmLimitMessage(quota.minutes) }));
+        return;
+      }
       const targetContainer = container || boundContainer;
-      const session = sessions.get(targetContainer);
+      const session = sessionFor(targetContainer);
 
       if (!session) {
         ws.send(JSON.stringify({ type: "error", content: "sandbox not registered" }));
@@ -1427,11 +1953,20 @@ wss.on("connection", (ws) => {
       }
 
       const model = modelFor(provider);
-      const mode = await decideMode(payload.mode, message, session.dir, model);
+      // Planning and Fast are the Antigravity modes; a plain question in either is still just answered.
+      let mode;
+      if (payload.mode === "plan" || payload.mode === "fast") {
+        const route = await decideMode("auto", message, session.dir, model);
+        mode = route === "ask" ? "ask" : payload.mode === "plan" ? "plan" : "edit";
+      } else {
+        mode = await decideMode(payload.mode, message, session.dir, model);
+      }
       console.log(`[agent] chat container=${targetContainer} model=${model} mode=${mode}`);
       ws.send(JSON.stringify({ type: "thinking", content: "" }));
 
-      if (mode === "ask") {
+      if (mode === "plan") {
+        await planner.startPlan(ws, { message, dir: session.dir, model, container: targetContainer, policy: payload.policy });
+      } else if (mode === "ask") {
         // Toolless retrieve-then-generate: reliable on weak-tool-calling models.
         const askPrompt = await buildAskPrompt(session.dir, message);
         await streamTurn(ws, {
@@ -1440,17 +1975,13 @@ wss.on("connection", (ws) => {
           model,
           replaceBuiltinTools: true, // no built-in tools…
           allowedTools: [],          // …and nothing survives the filter → toolless
-          constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
-        }, model);
+          constraints: { maxTokens: outputCap(model) },
+        }, model, targetContainer);
       } else if (mode === "edit") {
-        // Toolless generate-then-apply: the model outputs edits, the backend
-        // writes them — so llama-3.3 never has to call a tool.
-        await runEditModeWS(ws, session.dir, message, model);
+        // Toolless generate-then-apply: the model outputs edits, the backend writes them — so the model never has to call a tool.
+        await runEditModeWS(ws, session.dir, message, model, targetContainer);
       } else {
-        // Legacy agentic path: the model drives cli/read/write/search_code itself
-        // (only reliable with a strong tool-calling model). It still runs as the
-        // installed agent — the persona is the same one the Edit pipeline uses,
-        // so switching the composer to "Agent" doesn't silently drop it.
+        // Legacy agentic path: the model drives shell/read/write/search_code itself (only reliable with a strong tool-calling model).
         let agents = { enabled: false };
         try {
           agents = await resolvePipelineAgents(session.dir, (n, d) =>
@@ -1461,15 +1992,17 @@ wss.on("connection", (ws) => {
           prompt: preamble ? `${preamble}--- USER REQUEST ---\n${message}` : message,
           dir: session.dir,
           model,
+          replaceBuiltinTools: true,
           allowedTools: AGENT_ALLOWED_TOOLS,
-          tools: [makeSearchCodeTool(session.dir)],
-          constraints: { maxTokens: AGENT_MAX_OUTPUT_TOKENS },
-        }, model);
+          tools: agentTools(session.dir, targetContainer),
+          constraints: { maxTokens: outputCap(model) },
+        }, model, targetContainer);
       }
     }
   });
 
   ws.on("close", () => {
+    planner.stop(ws);
     if (boundContainer) {
       const session = sessions.get(boundContainer);
       if (session) session.clients.delete(ws);
@@ -1477,30 +2010,18 @@ wss.on("connection", (ws) => {
   });
 });
 
+// For tests; server lets them drive the routes over real HTTP.
 export {
-  // Re-exported from llm.js / guardrails.js so existing callers and tests keep
-  // importing them from here while the engine lives in its own modules.
-  firstAvailableProvider, modelFor,
-  makeSearchCodeTool, resolveTurnMode, heuristicMode, extractSearchTerms, buildAskPrompt,
-  parseEditBlocks, applyEditBlocks, gatherEditFiles, buildEditPrompt,
-  classifyEditComplexity, guardEditBlocks, buildGuardrailPrompt,
-  reviewEditBlocks, applyGuardrailVerdicts,
-  // Exported so tests can drive the routes over real HTTP. A route can break in
-  // ways calling its helpers never shows — a shadowed binding, a bad status code —
-  // and those only surface by actually making the request.
-  server,
+  makeShellTool, makeReadTool, makeWriteTool, writtenPathFrom, heuristicMode, extractSearchTerms,
+  parseEditBlocks, applyEditBlocks, applyHunks, gatherEditFiles, classifyEditComplexity, buildEditPrompt, editOutputBudget, roomAfter413, runEditPipeline, planner, server,
 };
 
 // Skip binding a port when imported for tests (AGENT_NO_LISTEN=1).
 if (!process.env.AGENT_NO_LISTEN) {
   const PORT = process.env.AGENT_PORT || 8001;
-  // Bind loopback explicitly. `server.listen(PORT)` with no host binds 0.0.0.0,
-  // which exposed this service to the local network — and it can read and write
-  // any registered workspace and spend your provider API keys, with no auth of
-  // any kind. The Go host binds 127.0.0.1:9000 and reverse-proxies /agent/* here,
-  // so nothing legitimate ever needed an external interface.
-  // AGENT_HOST is an explicit opt-out for anyone deliberately running it remotely.
+  // Bind loopback explicitly.
   const HOST = process.env.AGENT_HOST || "127.0.0.1";
+  pruneGroqKeys().catch((e) => console.error("[agent] could not check the Groq keys:", e.message));
   server.listen(PORT, HOST, () => {
     console.log(`[agent-service] running on ${HOST}:${PORT}`);
   });

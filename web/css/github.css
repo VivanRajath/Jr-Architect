@@ -1,0 +1,168 @@
+/* GitHub connect, repo picker, account card (Home, Settings) and the IDE Source Control view. */
+.gh-mount { display: grid; gap: 12px; }
+.gh-connect-box { display: grid; gap: 10px; }
+.gh-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 8px 14px; font: inherit; font-size: var(--fs-md); font-weight: 600;
+  color: var(--text); background: var(--surface); border: 1px solid var(--border2);
+  border-radius: var(--r-md); cursor: pointer; transition: background .15s, border-color .15s;
+}
+.gh-btn:hover { border-color: var(--text3, var(--text2)); }
+.gh-btn:disabled { opacity: .55; cursor: default; }
+.gh-btn-primary { background: var(--text); color: var(--bg); border-color: var(--text); width: 100%; padding: 10px 14px; }
+.gh-btn-primary:hover { opacity: .9; }
+.gh-btn-danger { color: var(--red); }
+.gh-token summary { font-size: var(--fs-sm); color: var(--text2); cursor: pointer; }
+.gh-token[open] summary { margin-bottom: 8px; }
+.gh-token-form { display: flex; gap: 8px; }
+.gh-token-form input, .gh-search {
+  flex: 1; min-width: 0; padding: 8px 10px; font: inherit; font-size: var(--fs-md);
+  color: var(--text); background: var(--bg); border: 1px solid var(--border2); border-radius: var(--r-md);
+}
+.gh-token-form input:focus, .gh-search:focus { outline: none; border-color: var(--text2); }
+.gh-hint { margin: 0; font-size: var(--fs-sm); line-height: 1.5; color: var(--text2); }
+.gh-hint code, .gh-row code { font-size: var(--fs-xs); }
+.gh-hint a { color: inherit; }
+.gh-error { margin: 0; font-size: var(--fs-sm); color: var(--red); }
+.gh-error:empty { display: none; }
+.gh-ok { margin: 0; font-size: var(--fs-sm); color: var(--green); }
+.gh-muted { color: var(--text2); font-size: var(--fs-sm); }
+.gh-account { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-md); min-width: 0; }
+.gh-account img, .gh-avatar-blank { width: 22px; height: 22px; border-radius: 50%; flex: none; display: inline-grid; place-items: center; background: var(--surface2); }
+.gh-account em { font-style: normal; font-size: var(--fs-xs); color: var(--yellow); }
+.gh-picker { display: grid; gap: 8px; }
+.gh-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.gh-link { font-size: var(--fs-sm); color: var(--text2); }
+.gh-repos { max-height: 248px; overflow-y: auto; display: grid; align-content: start; gap: 2px; border: 1px solid var(--border); border-radius: var(--r-lg); padding: 4px; }
+.gh-repo {
+  display: grid; gap: 2px; text-align: left; padding: 8px 10px; background: none; border: 0;
+  border-radius: var(--r-md); color: var(--text); font: inherit; cursor: pointer; min-width: 0;
+}
+.gh-repo:hover, .gh-repo:focus-visible { background: var(--surface2); outline: none; }
+.gh-repo-name { display: flex; align-items: center; gap: 6px; font-size: var(--fs-md); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gh-repo-meta { font-size: var(--fs-xs); color: var(--text2); }
+.gh-tag { font-size: var(--fs-2xs); font-weight: 600; padding: 1px 6px; border-radius: var(--r-pill); border: 1px solid var(--border2); color: var(--text2); }
+.gh-empty { padding: 14px 10px; font-size: var(--fs-sm); color: var(--text2); text-align: center; }
+.gh-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.gh-row .gh-btn { margin-left: auto; }
+.gh-actions { display: flex; justify-content: flex-start; padding: 4px 0 8px; }
+.gh-sub { margin: 14px 0 0; font-size: var(--fs-md); }
+
+/* IDE Source Control */
+.sidebar-view { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.sidebar-view[hidden] { display: none; }
+.activity-badge {
+  position: absolute; top: 6px; right: 6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box;
+  border-radius: var(--r-pill); background: var(--accent, #3b82f6); color: var(--on-accent, #fff); font-size: var(--fs-2xs); font-weight: 700;
+  line-height: 16px; text-align: center;
+}
+.activity-badge[hidden] { display: none; }
+.scm-body { flex: 1; overflow-y: auto; padding: 8px 12px 16px; display: flex; flex-direction: column; gap: 10px; font-size: var(--fs-sm); }
+.scm-empty { color: var(--text2); padding: 10px 2px; line-height: 1.5; }
+.scm-note { padding: 8px 10px; border-radius: var(--r-md); line-height: 1.45; border: 1px solid var(--border); }
+.scm-note.ok { background: color-mix(in srgb, var(--green) 9%, transparent); border-color: color-mix(in srgb, var(--green) 30%, transparent); }
+.scm-note.err { background: color-mix(in srgb, var(--red) 9%, transparent); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
+.scm-note a { color: inherit; font-weight: 600; }
+.scm-summary { display: grid; gap: 4px; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--bg); }
+.scm-repo { display: flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
+.scm-repo svg { flex: none; }
+.scm-repo a, .scm-repo span { color: var(--text); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scm-repo a:hover { text-decoration: underline; }
+.scm-branch { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.scm-branch-name { font-family: var(--mono, monospace); font-size: var(--fs-sm); padding: 1px 6px; border-radius: var(--r-sm); background: var(--surface2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scm-sync, .scm-who, .scm-head { color: var(--text2); font-size: var(--fs-xs); }
+.scm-head { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scm-actions { display: flex; gap: 6px; }
+.scm-actions .scm-btn { flex: 1; }
+.scm-btn {
+  padding: 7px 10px; font: inherit; font-size: var(--fs-sm); font-weight: 600; color: var(--text);
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: var(--r-md); cursor: pointer;
+}
+.scm-btn:hover:not(:disabled) { border-color: var(--text2); }
+.scm-btn:disabled { opacity: .5; cursor: default; }
+.scm-primary { background: var(--text); color: var(--bg); border-color: var(--text); width: 100%; }
+.scm-commit { display: grid; gap: 8px; }
+.scm-commit textarea, .scm-commit input[type=text], .scm-publish input[type=text] {
+  width: 100%; box-sizing: border-box; padding: 7px 9px; font: inherit; font-size: var(--fs-sm); color: var(--text);
+  background: var(--bg); border: 1px solid var(--border2); border-radius: var(--r-md); resize: vertical;
+}
+.scm-commit textarea:focus, .scm-commit input:focus, .scm-publish input:focus { outline: none; border-color: var(--text2); }
+.scm-check { display: flex; align-items: center; gap: 6px; color: var(--text2); cursor: pointer; }
+.scm-branch-opts { display: grid; gap: 6px; padding-left: 20px; }
+.scm-branch-opts[hidden] { display: none; }
+.scm-section { display: flex; justify-content: space-between; font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text2); padding-top: 4px; }
+.scm-files { display: grid; gap: 1px; }
+.scm-file {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 6px; padding: 4px 6px;
+  background: none; border: 0; border-radius: var(--r-sm); color: var(--text); font: inherit; text-align: left; cursor: pointer; min-width: 0;
+}
+.scm-file:hover:not(:disabled) { background: var(--surface2); }
+.scm-file:disabled { cursor: default; opacity: .7; text-decoration: line-through; }
+.scm-file-name { white-space: nowrap; }
+.scm-file-dir { color: var(--text3, var(--text2)); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scm-letter { font-family: var(--mono, monospace); font-weight: 700; font-size: var(--fs-xs); }
+.scm-letter.modified { color: var(--yellow); }
+.scm-letter.added { color: var(--green); }
+.scm-letter.deleted, .scm-letter.conflict { color: var(--red); }
+.scm-letter.renamed { color: var(--accent, #3b82f6); }
+.scm-card { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-lg); }
+.scm-card h4 { margin: 0; font-size: var(--fs-md); }
+.scm-p { margin: 0; color: var(--text2); line-height: 1.5; }
+.scm-p code { font-size: var(--fs-xs); }
+.scm-publish { display: grid; gap: 8px; }
+.scm-card .gh-token-form { flex-direction: column; }
+
+/* Settings: Sync GitHub and the synced repo list */
+.gh-mount [hidden] { display: none !important; }
+.gh-row-actions { display: flex; gap: 8px; margin-left: auto; }
+.gh-row .gh-row-actions .gh-btn { margin-left: 0; }
+.gh-btn-sync { background: var(--text); color: var(--bg); border-color: var(--text); }
+.gh-btn-sync:hover { opacity: .9; border-color: var(--text); }
+.gh-sync-empty { display: grid; gap: 12px; justify-items: start; padding: 14px; border: 1px dashed var(--border2); border-radius: var(--r-lg); }
+.gh-synced { display: grid; gap: 10px; }
+.gh-synced:empty { display: none; }
+.gh-synced-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.gh-synced-head .gh-search { flex: 0 1 260px; }
+.gh-repos-tall { max-height: 420px; padding: 0; gap: 0; }
+.gh-repo-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.gh-repo-row:last-child { border-bottom: 0; }
+.gh-repo-row:hover { background: var(--hover); }
+.gh-repo-info { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.gh-repo-info .gh-repo-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gh-repo-row .gh-btn { flex: none; padding: 6px 12px; }
+.gh-mount .gh-ok { color: var(--green); }
+.gh-mount .gh-error { color: var(--red); }
+.gh-mount .gh-error-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+/* Settings: what happens when Build mode finishes an app */
+.gh-prefs { display: grid; gap: 4px; padding: 14px 0 6px; border-bottom: 1px solid var(--border); }
+.gh-prefs:empty { display: none; }
+.gh-prefs-title { font-size: var(--fs-xs); font-weight: var(--fw-semibold); text-transform: uppercase; letter-spacing: .05em; color: var(--text3); margin-bottom: 6px; }
+.gh-switch { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; cursor: pointer; }
+.gh-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.gh-switch-ui {
+  position: relative; flex: none; width: 34px; height: 20px; margin-top: 1px;
+  border-radius: var(--r-pill); background: var(--border2); transition: background var(--dur-fast) var(--ease);
+}
+.gh-switch-ui::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  border-radius: var(--r-pill); background: var(--bg); box-shadow: var(--shadow-sm);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.gh-switch input:checked + .gh-switch-ui { background: var(--green); }
+.gh-switch input:checked + .gh-switch-ui::after { transform: translateX(14px); }
+.gh-switch input:focus-visible + .gh-switch-ui { outline: 2px solid var(--accent-glow); outline-offset: 2px; }
+.gh-switch-text { display: grid; gap: 2px; }
+.gh-switch-text b { font-size: var(--fs-md); font-weight: var(--fw-semibold); }
+.gh-switch-text span { font-size: var(--fs-sm); color: var(--text3); line-height: 1.45; }
+.gh-switch-text code { font-size: var(--fs-xs); }
+.gh-prefs-saved { min-height: 1em; color: var(--green); }
+
+/* Builder: where the finished app was pushed */
+.build-github {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; padding: 10px 14px;
+  border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface2); font-size: var(--fs-sm); color: var(--text2);
+}
+.build-github span { flex: 1; min-width: 200px; }
+.build-github b { color: var(--text); }
+.build-github.error { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, transparent); }

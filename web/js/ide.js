@@ -5,11 +5,13 @@ const IDE = {
   // Live-preview readiness state
   appReady: false, previewPending: false, previewAutoOpened: false, previewUserClosed: false,
   framework: '', uiEntry: null, saveRefreshTimer: null,
+  // Multi-service containers: every service with a port, and the one previewed
+  services: [], activeService: '',
   // Multi-terminal support
   terminals: [],
   activeTerminalId: null,
   terminalCounter: 0,
-  darkMode: false,
+  darkMode: true,
   // Build doctor (auto issue diagnosis)
   launchedAt: 0, doctorRan: false, doctorRunning: false,
 };
@@ -21,25 +23,24 @@ function initIDE(containerId, repoUrl, port) {
   // Reset per-sandbox state
   IDE.appReady = false; IDE.previewPending = false; IDE.previewAutoOpened = false;
   IDE.previewUserClosed = false; IDE.framework = ''; IDE.uiEntry = null;
+  IDE.services = []; IDE.activeService = '';
   IDE.launchedAt = Date.now(); IDE.doctorRan = false; IDE.doctorRunning = false;
   document.body.classList.add('ide-mode');
   document.getElementById('landing-page').style.display = 'none';
   document.getElementById('ide-page').style.display = 'flex';
-  document.querySelector('.repo-name').textContent = repoUrl.replace(/https?:\/\/github\.com\//, '');
+  document.querySelector('.repo-name').textContent = repoUrl.replace(/https?:\/\/github\.com\//, '').replace(/^(project|local|generated):/, '');
+  setProjectSaved(repoUrl.startsWith('project:'));
   loadFileTree();
   initMonaco();
   initTerminal();
   startLogsPolling();
   startStatusPolling();
-  // Restore dark mode preference
-  if (localStorage.getItem('jr-dark-mode') === 'true') {
-    setDarkMode(true);
-  }
+  setDarkMode(document.body.classList.contains('dark-mode'));
+  if (window.jrKeyBanner) jrKeyBanner(document.getElementById('agent-keybanner'));
+  if (typeof scmInit === 'function') scmInit();
 }
 
-// ── File Tree ──
-// The workspace is populated asynchronously (clone/scaffold), so early calls can
-// come back empty. Poll until files appear so the tree fills in on its own.
+// File Tree The workspace is populated asynchronously (clone/scaffold), so early calls can come back empty.
 async function loadFileTree(attempt = 0) {
   try {
     const res = await fetch(`/files?container=${IDE.container}`);
@@ -82,8 +83,7 @@ function renderTree(nodes, parent, depth) {
         <span class="tree-actions">
           <button type="button" class="tree-delete" title="Delete">${TRASH_ICON}</button>
         </span>`;
-      // Bound as a property, not an onclick attribute. Paths come from a cloned
-      // repo, so a filename containing a quote must never be able to become code.
+      // Bound as a property, not an onclick attribute.
       bindTreeDelete(item, node.path, true);
       item.onclick = (e) => {
         if (e.target.closest('.tree-actions')) return;
@@ -143,11 +143,7 @@ function bindTreeDelete(item, path, isDir) {
   btn.onclick = (e) => { e.stopPropagation(); deleteFileOrFolder(path, isDir); };
 }
 
-// Escape a value for HTML — including both quote characters, so it is safe in an
-// attribute as well as in element text. The previous textContent/innerHTML trick
-// escaped only `& < >`, because a text node never needs a quote escaped; that left
-// every `data-ext="${esc(x)}"` open to a filename crafted to close the attribute.
-// Repos are cloned from arbitrary URLs, so filenames are untrusted input.
+// Escape a value for HTML — including both quote characters, so it is safe in an attribute as well as in element text.
 function esc(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -372,59 +368,26 @@ function askAIAbout(path) {
 function getTerminalTheme() {
   if (IDE.darkMode) {
     return {
-      background: '#1a1410',
-      foreground: '#D7CCC8',
-      cursor: '#A67C52',
-      cursorAccent: '#1a1410',
-      selectionBackground: '#3E2C1E80',
-      black: '#1a1410',
-      red: '#CF6679',
-      green: '#81C784',
-      yellow: '#FFD54F',
-      blue: '#64B5F6',
-      magenta: '#CE93D8',
-      cyan: '#4DD0E1',
-      white: '#D7CCC8',
-      brightBlack: '#5D4037',
-      brightRed: '#EF5350',
-      brightGreen: '#A5D6A7',
-      brightYellow: '#FFE082',
-      brightBlue: '#90CAF9',
-      brightMagenta: '#E1BEE7',
-      brightCyan: '#80DEEA',
-      brightWhite: '#EFEBE9',
-    };
-  } else {
-    return {
-      background: '#FAF8F5',
-      foreground: '#2C1810',
-      cursor: '#6B3E1A',
-      cursorAccent: '#FAF8F5',
-      selectionBackground: '#DEDAD180',
-      black: '#2C1810',
-      red: '#A4161A',
-      green: '#2D6A4F',
-      yellow: '#B07D05',
-      blue: '#1565C0',
-      magenta: '#7B1FA2',
-      cyan: '#00838F',
-      white: '#F5F2EE',
-      brightBlack: '#5D4037',
-      brightRed: '#C62828',
-      brightGreen: '#388E3C',
-      brightYellow: '#F9A825',
-      brightBlue: '#1E88E5',
-      brightMagenta: '#8E24AA',
-      brightCyan: '#00ACC1',
-      brightWhite: '#FFFFFF',
+      background: '#09090B', foreground: '#E4E4E7', cursor: '#FAFAFA', cursorAccent: '#09090B',
+      selectionBackground: '#3F3F4680',
+      black: '#18181B', red: '#F87171', green: '#4ADE80', yellow: '#FACC15', blue: '#60A5FA',
+      magenta: '#C084FC', cyan: '#22D3EE', white: '#D5DAE2',
+      brightBlack: '#71717A', brightRed: '#FCA5A5', brightGreen: '#86EFAC', brightYellow: '#FDE047',
+      brightBlue: '#93C5FD', brightMagenta: '#D8B4FE', brightCyan: '#67E8F9', brightWhite: '#FFFFFF',
     };
   }
+  return {
+    background: '#FFFFFF', foreground: '#09090B', cursor: '#18181B', cursorAccent: '#FFFFFF',
+    selectionBackground: '#E4E4E7',
+    black: '#09090B', red: '#B91C1C', green: '#15803D', yellow: '#8A6100', blue: '#1D4ED8',
+    magenta: '#7E22CE', cyan: '#0E7490', white: '#F4F4F5',
+    brightBlack: '#71717A', brightRed: '#DC2626', brightGreen: '#16A34A', brightYellow: '#A16207',
+    brightBlue: '#2563EB', brightMagenta: '#9333EA', brightCyan: '#0891B2', brightWhite: '#FFFFFF',
+  };
 }
 
 function initMonaco() {
-  // Monaco is served from the binary, not a CDN — the loader fetches the rest of
-  // the editor (workers, language services) relative to this path, so pointing it
-  // at /vendor/monaco/vs is what actually makes the IDE work offline.
+  // Monaco is served from the binary, not a CDN.
   require.config({ paths: { vs: '/vendor/monaco/vs' } });
   require(['vs/editor/editor.main'], () => {
     monaco.editor.defineTheme('jr-architect-light', {
@@ -432,23 +395,27 @@ function initMonaco() {
       rules: [],
       colors: {
         'editor.background': '#FFFFFF',
-        'editor.foreground': '#2C1810',
-        'editorLineNumber.foreground': '#8D6E63',
-        'editorCursor.foreground': '#6B3E1A',
-        'editor.selectionBackground': '#DEDAD180',
-        'editor.lineHighlightBackground': '#F5F2EE',
+        'editor.foreground': '#09090B',
+        'editorLineNumber.foreground': '#A1A1AA',
+        'editorLineNumber.activeForeground': '#09090B',
+        'editorCursor.foreground': '#18181B',
+        'editor.selectionBackground': '#E4E4E7',
+        'editor.lineHighlightBackground': '#FAFAFA',
       }
     });
     monaco.editor.defineTheme('jr-architect-dark', {
       base: 'vs-dark', inherit: true,
       rules: [],
       colors: {
-        'editor.background': '#1a1410',
-        'editor.foreground': '#D7CCC8',
-        'editorLineNumber.foreground': '#8D6E63',
-        'editorCursor.foreground': '#A67C52',
-        'editor.selectionBackground': '#3E2C1E80',
-        'editor.lineHighlightBackground': '#231C16',
+        'editor.background': '#09090B',
+        'editor.foreground': '#E4E4E7',
+        'editorLineNumber.foreground': '#52525B',
+        'editorLineNumber.activeForeground': '#FAFAFA',
+        'editorCursor.foreground': '#FAFAFA',
+        'editor.selectionBackground': '#3F3F4680',
+        'editor.lineHighlightBackground': '#18181B',
+        'editorWidget.background': '#18181B',
+        'minimap.background': '#09090B',
       }
     });
     IDE.editor = monaco.editor.create(document.getElementById('monaco-container'), {
@@ -573,9 +540,7 @@ function renderTabs() {
     d.className = 'editor-tab' + (tab === IDE.activeTab ? ' active' : '');
     const ext = tab.name.split('.').pop().toLowerCase();
     d.innerHTML = `<span class="tab-icon icon" data-ext="${esc(ext)}">${fileIcon(tab.name)}</span><span class="tab-label">${esc(tab.name)}</span>${tab.modified ? '<span class="tab-modified">\u25CF</span>' : ''}<span class="tab-close" role="button" tabindex="0" title="Close">\u00D7</span>`;
-    // The close handler is bound as a property. It used to interpolate tab.path
-    // into an onclick attribute completely unescaped, so a file named with a
-    // quote could inject script into the tab strip.
+    // The close handler is bound as a property.
     const close = d.querySelector('.tab-close');
     if (close) close.onclick = (e) => closeTab(tab.path, e);
     d.onclick = () => activateTab(tab);
@@ -610,14 +575,14 @@ async function saveCurrentFile() {
   } catch (e) { showToast('Save error', 'error'); }
 }
 
-// hmrStack reports whether the running app has working hot-reload via the polling
-// env vars (Next.js fast-refresh, CRA/webpack). For those, edits reflect on their
-// own and we must NOT force a reload (it would throw away app state). Vite, static
-// sites, and everything else don't hot-reload through a Docker bind mount, so we
-// reload the iframe on save — a full reload re-reads files from disk and shows the
-// change.
+// hmrStack reports whether the running app has working hot-reload via the polling env vars (Next.js fast-refresh, CRA/webpack).
 function hmrStack() {
-  return /next\.js|CRA/i.test(IDE.framework || '');
+  return /next\.js|CRA/i.test(activeFramework());
+}
+
+// Django's runserver restarts on a .py change, so a 400ms reload lands mid-restart.
+function saveReloadDelay() {
+  return /django/i.test(activeFramework()) ? 1800 : 400;
 }
 
 function reflectSaveInPreview() {
@@ -626,7 +591,7 @@ function reflectSaveInPreview() {
   if (!panel || panel.style.display === 'none' || !IDE.appReady) return;
   // Debounce so a burst of saves triggers a single reload.
   clearTimeout(IDE.saveRefreshTimer);
-  IDE.saveRefreshTimer = setTimeout(() => refreshPreview(), 400);
+  IDE.saveRefreshTimer = setTimeout(() => refreshPreview(), saveReloadDelay());
 }
 
 // ── Multi-Terminal Support ──
@@ -673,9 +638,7 @@ function createTerminal() {
   socket.binaryType = 'arraybuffer';
 
   socket.onmessage = (event) => {
-    // Shell output arrives as binary frames; the backend also sends the
-    // occasional plain-text status/error frame (e.g. "Failed to start shell").
-    // Handle both so an error is never silently swallowed into a blank terminal.
+    // Shell output arrives as binary frames; plain-text frames are status or error messages from the backend.
     if (typeof event.data === 'string') {
       term.write(event.data);
     } else {
@@ -690,8 +653,7 @@ function createTerminal() {
     term.write('\r\n\x1b[31m[terminal connection error]\x1b[0m\r\n');
   };
 
-  // Tell the backend our terminal size so column-aware output (ls, wrapping)
-  // lines up. Sent as a JSON text frame; keystrokes go as binary frames.
+  // Tell the backend our terminal size so column-aware output (ls, wrapping) lines up.
   const sendResize = () => {
     if (socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
@@ -831,18 +793,15 @@ async function fetchStatus() {
     const res = await fetch(`/sandbox/status?container=${IDE.container}`);
     const data = await res.json();
     IDE.previewUrl = data.url;
+    if (Array.isArray(data.services)) syncServiceSwitcher(data.services);
 
-    // The backend reports "running" only once the app's port actually answers
-    // (see sandboxStatusHandler), so it's a real readiness signal. Drive the
-    // preview off the running -> not-running edges.
+    // The backend reports "running" only once the app's port actually answers (see sandboxStatusHandler), so it's a real readiness signal.
     const running = data.status === 'running';
     if (running && !IDE.appReady) { IDE.appReady = true; onAppReady(); }
     else if (!running) { IDE.appReady = false; }
+    showStageInPreview(data.stage, data.detail);
 
-    // Intelligent IDE: if the app is still not answering well after a grace
-    // window (a slow install is normal, a broken build is not), let the agent
-    // read the container logs and decide — reassure if it's just installing,
-    // propose a fix if something is actually wrong. Once, per stuck episode.
+    // Intelligent IDE: if the app is still not answering well after a grace window (a slow install is normal, a broken build is not), let the agent read the container logs and decide — reassure if it's just installing, propose a fix if something is actually wrong.
     if (running) {
       IDE.doctorRan = false; // healthy again → re-arm for a future breakage
     } else if (!IDE.doctorRan && !IDE.doctorRunning && IDE.launchedAt &&
@@ -889,12 +848,7 @@ async function fetchStatus() {
   } catch (e) { }
 }
 
-// ── Live Preview ──
-// The dev server inside a freshly-cloned sandbox isn't up for a while (npm
-// install + build). Loading the iframe before then just shows a connection
-// error that never recovers, so the preview is readiness-aware: it waits for the
-// app to be "running" (per status polling), shows a loading state until then,
-// and loads/auto-opens once ready.
+// Live Preview The dev server inside a freshly-cloned sandbox isn't up for a while (npm install + build).
 function openLivePreview() {
   const panel = document.getElementById('ide-preview-panel');
   panel.style.display = 'flex';
@@ -911,8 +865,7 @@ function openLivePreview() {
 function onAppReady() {
   const panel = document.getElementById('ide-preview-panel');
   const open = panel && panel.style.display !== 'none';
-  // Auto-open the preview the first time the app is ready (unless the user
-  // deliberately closed it), so they see their app without hunting for a button.
+  // Auto-open the preview the first time the app is ready (unless the user deliberately closed it), so they see their app without hunting for a button.
   if (!IDE.previewAutoOpened && !IDE.previewUserClosed) {
     IDE.previewAutoOpened = true;
     openLivePreview();
@@ -922,13 +875,73 @@ function onAppReady() {
   if (open && IDE.previewPending) loadPreviewIntoIframe();
 }
 
+// A merged-image container runs every service at once, so the preview has to say which one it is showing.
+function syncServiceSwitcher(services) {
+  const sel = document.getElementById('preview-service');
+  if (!sel) return;
+  IDE.services = services.filter(s => s.url);
+  if (IDE.services.length < 2) {
+    sel.style.display = 'none';
+    return;
+  }
+  if (!IDE.services.some(s => s.name === IDE.activeService)) {
+    IDE.activeService = (IDE.services.find(s => s.primary) || IDE.services[0]).name;
+  }
+  const sig = IDE.services.map(s => s.name + ':' + s.port).join(',');
+  if (sel.dataset.sig !== sig) {
+    sel.innerHTML = IDE.services
+      .map(s => `<option value="${esc(s.name)}">${esc(s.name)} :${s.port}</option>`).join('');
+    sel.dataset.sig = sig;
+  }
+  sel.value = IDE.activeService;
+  sel.style.display = '';
+  // Polling would otherwise put the primary service's url back every 5s.
+  const active = IDE.services.find(s => s.name === IDE.activeService);
+  if (active) { IDE.port = active.port; IDE.previewUrl = active.url; }
+}
+
+function switchPreviewService(name) {
+  const svc = (IDE.services || []).find(s => s.name === name);
+  if (!svc) return;
+  IDE.activeService = svc.name;
+  IDE.port = svc.port;
+  IDE.previewUrl = svc.url;
+  IDE.uiEntry = null; // the locate control pointed at the other service's code
+  refreshPreview();
+}
+
+// The preview shows one service, and that is the one whose reload rules apply.
+function activeFramework() {
+  const svc = (IDE.services || []).find(s => s.name === IDE.activeService);
+  return (svc && svc.framework) || IDE.framework || '';
+}
+
 function loadPreviewIntoIframe() {
   IDE.previewPending = false;
   hidePreviewLoading();
   const iframe = document.getElementById('preview-iframe');
-  const url = IDE.previewUrl || `http://127.0.0.1:${IDE.port}`;
+  // The server hands out the preview URL; until it has, keep showing the loader.
+  if (!IDE.previewUrl) { showPreviewLoading(); IDE.previewPending = true; return; }
   iframe.style.display = '';
-  iframe.src = url;
+  iframe.src = IDE.previewUrl;
+}
+
+// The waiting panel says which step the sandbox is on and the newest line of its output.
+const STAGE_TITLES = {
+  clone: 'Cloning the repository…',
+  approve: 'Waiting for approval…',
+  image: 'Preparing the runtime…',
+  install: 'Installing dependencies…',
+  start: 'Starting the dev server…',
+  preview: 'Opening the preview link…',
+  failed: 'The app did not start',
+};
+function showStageInPreview(stage, detail) {
+  const title = document.getElementById('preview-loading-title');
+  const sub = document.getElementById('preview-loading-sub');
+  if (!title || !sub || !STAGE_TITLES[stage]) return;
+  title.textContent = STAGE_TITLES[stage];
+  if (detail) sub.textContent = detail;
 }
 
 function showPreviewLoading() {
@@ -960,10 +973,7 @@ function refreshPreview() {
   loadPreviewIntoIframe();
 }
 
-// Force the live preview to reveal a just-applied edit: open the panel if it's
-// closed (so the change is actually visible), then hard-reload with a cache-bust
-// param so a CSS/Tailwind change isn't served from the iframe's cache. Returns
-// false if the app isn't reachable yet (shows the waiting state instead).
+// Force the live preview to reveal a just-applied edit.
 function showChangesInPreview() {
   const panel = document.getElementById('ide-preview-panel');
   if (panel && panel.style.display === 'none') {
@@ -976,23 +986,27 @@ function showChangesInPreview() {
     IDE.previewPending = true;
     return false;
   }
+  if (!IDE.previewUrl) {
+    showPreviewLoading();
+    IDE.previewPending = true;
+    return false;
+  }
   IDE.previewPending = false;
   hidePreviewLoading();
   const iframe = document.getElementById('preview-iframe');
-  const base = IDE.previewUrl || `http://127.0.0.1:${IDE.port}`;
+  const base = IDE.previewUrl;
   const bust = (base.includes('?') ? '&' : '?') + '_jr=' + Date.now();
   iframe.style.display = '';
   iframe.src = base + bust;
   return true;
 }
 
-// ── Locate UI source (from the preview) ──
-// A control floating on the preview reveals where the app's UI code lives in the
-// IDE. Hovering highlights the file's folder in the tree; clicking opens the file.
+// Locate UI source: a control on the preview reveals where the app's UI code lives in the IDE.
 async function getUIEntry() {
   if (IDE.uiEntry) return IDE.uiEntry;
   try {
-    const res = await fetch(`/sandbox/entry?container=${IDE.container}`);
+    const svc = IDE.activeService ? `&service=${encodeURIComponent(IDE.activeService)}` : '';
+    const res = await fetch(`/sandbox/entry?container=${IDE.container}${svc}`);
     if (!res.ok) return null;
     IDE.uiEntry = await res.json(); // { path, dir }
     // Enrich the tooltip with the actual path once we know it.
@@ -1014,8 +1028,7 @@ async function locateUISource(open) {
   }
 }
 
-// revealInTree expands the folders leading to `path`, scrolls it into view, and
-// flashes it — so you can see exactly which folder the UI lives in.
+// revealInTree expands the folders leading to `path`, scrolls it into view, and flashes it — so you can see exactly which folder the UI lives in.
 function revealInTree(path) {
   const treeRoot = document.getElementById('file-tree');
   if (!treeRoot) return;
@@ -1038,8 +1051,7 @@ function revealInTree(path) {
 }
 
 function openPreviewExternal() {
-  const url = IDE.previewUrl || `http://127.0.0.1:${IDE.port}`;
-  window.open(url, '_blank');
+  if (IDE.previewUrl) window.open(IDE.previewUrl, '_blank', 'noopener');
 }
 
 // ── Panel Tabs ──
@@ -1090,32 +1102,21 @@ function toggleAgentPanel() {
   }
 }
 
+// shell.js owns the body class and the stored choice; this keeps Monaco and the terminals in step.
 function setDarkMode(enabled) {
   IDE.darkMode = enabled;
-  document.body.classList.toggle('dark-mode', enabled);
-  localStorage.setItem('jr-dark-mode', enabled);
-
-  // Update dark mode button icon
-  const btn = document.getElementById('dark-mode-btn');
-  if (btn) {
-    btn.innerHTML = enabled
-      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg> Light'
-      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> Dark';
+  if (document.body.classList.contains('dark-mode') !== enabled && window.jrSetTheme) {
+    window.jrSetTheme(enabled);
+    return;
   }
-
-  // Update Monaco theme
   if (IDE.editor && typeof monaco !== 'undefined') {
     monaco.editor.setTheme(enabled ? 'jr-architect-dark' : 'jr-architect-light');
   }
-
-  // Update all terminal themes
   const termTheme = getTerminalTheme();
-  IDE.terminals.forEach(t => {
-    if (t.term) {
-      t.term.options.theme = termTheme;
-    }
-  });
+  IDE.terminals.forEach(t => { if (t.term) t.term.options.theme = termTheme; });
 }
+
+window.addEventListener('jr-theme', (e) => setDarkMode(e.detail.dark));
 
 // ── Toast ──
 function showToast(msg, type) {
@@ -1124,6 +1125,32 @@ function showToast(msg, type) {
   el.className = 'ide-toast show ' + type;
   clearTimeout(el._t);
   el._t = setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// ── Saved projects ──
+function setProjectSaved(saved) {
+  IDE.projectSaved = saved;
+  document.getElementById('project-chip').hidden = !saved;
+  document.querySelector('#save-project-btn span').textContent = saved ? 'Save changes' : 'Save project';
+}
+
+// Copies the sandbox's files into the user's saved projects; saving again updates the same project.
+async function saveProject() {
+  const btn = document.getElementById('save-project-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/projects/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ container: IDE.container }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'save failed');
+    setProjectSaved(true);
+    showToast(`Saved "${data.name}" (${data.files} files). Open it any time from Home.`, 'success');
+  } catch (e) {
+    showToast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ── Back to Landing ──
@@ -1143,6 +1170,7 @@ function backToLanding() {
   IDE.terminals = [];
   IDE.activeTerminalId = null;
   closePreview();
+  if (typeof loadProjects === 'function') loadProjects();
 }
 
 // ── Panel Resize ──
@@ -1165,10 +1193,6 @@ function initPanelResize() {
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
   initPanelResize();
-  // Restore dark mode on landing page too
-  if (localStorage.getItem('jr-dark-mode') === 'true') {
-    setDarkMode(true);
-  }
 });
 
 // Handle window resize for active terminal

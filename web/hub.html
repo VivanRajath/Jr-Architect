@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Hub - Jr Architect</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27%2318181B%27/%3E%3Ctext x=%2716%27 y=%2721.5%27 font-family=%27Arial,sans-serif%27 font-size=%2714%27 font-weight=%27700%27 text-anchor=%27middle%27 fill=%27%23FAFAFA%27%3EJr%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/css/tokens.css" />
+  <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
+  <link rel="stylesheet" href="/css/shell.css" />
+  <link rel="stylesheet" href="/css/hub.css" />
+</head>
+
+<body class="h-page dark-mode">
+  <header class="h-top">
+    <div class="h-brand">
+      <a href="/">Jr Architect</a>
+      <span class="h-title">Agent Hub</span>
+    </div>
+    <span class="h-spacer"></span>
+  </header>
+
+  <main class="h-main">
+    <nav class="h-tabs h-section-tabs" aria-label="Hub sections">
+      <button class="h-tab active" data-section="agents">Agents</button>
+      <button class="h-tab" data-section="workflows">Workflows</button>
+      <a class="h-tab" href="/playground.html">Playground</a>
+    </nav>
+    <div id="sec-agents">
+    <section class="h-intro">
+      <div>
+        <h1>Your agents</h1>
+        <p>Each agent is versioned and runs with only the tools and guardrails you give it.</p>
+      </div>
+      <div class="h-row">
+        <button class="h-btn h-btn-ghost" onclick="openImport()">Import</button>
+        <button class="h-btn" onclick="openStudio()">+ New agent</button>
+      </div>
+    </section>
+    <div id="agent-list" class="h-cards" aria-live="polite"></div>
+    </div>
+    <div id="sec-workflows" hidden>
+      <section class="h-intro">
+        <div>
+          <h1>Workflows</h1>
+          <p>Drag your agents onto a canvas and wire them together with conditions, human approvals and HTTP calls,
+            like n8n. Every agent step still runs through its own tools, permissions and guardrails.</p>
+        </div>
+        <div class="h-row"><button class="h-btn" onclick="openFlow()">+ New workflow</button></div>
+      </section>
+      <div id="workflow-list" class="h-cards" aria-live="polite"></div>
+    </div>
+  </main>
+
+  <aside id="drawer" class="h-drawer" aria-hidden="true">
+    <div class="h-drawer-head">
+      <div style="flex:1; min-width:0">
+        <h2 id="d-name"></h2>
+        <div class="h-row" id="d-badges"></div>
+      </div>
+      <button class="h-btn h-btn-ghost h-btn-sm" onclick="closeDrawer()" aria-label="Close">Close</button>
+    </div>
+    <div class="h-row" style="padding: 0 var(--sp-5) var(--sp-4)" id="d-actions"></div>
+    <nav class="h-tabs" id="d-tabs"></nav>
+    <div class="h-drawer-body" id="d-body"></div>
+  </aside>
+
+  <div id="modal-root"></div>
+
+  <script src="/js/shell.js"></script>
+  <script src="/js/hub-common.js"></script>
+  <script src="/js/hub.js"></script>
+</body>
+
+</html>

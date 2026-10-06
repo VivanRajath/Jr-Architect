@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Tasks{% endblock %}
+
+{% block content %}
+  <h1>Tasks</h1>
+  <p class="muted">{{ remaining }} remaining of {{ tasks|length }}</p>
+
+  {# Every POST form needs csrf_token, or Django rejects the request with a 403. #}
+  <form class="add-form" method="post" action="{% url 'core:add_task' %}">
+    {% csrf_token %}
+    <input type="text" name="title" placeholder="What needs doing?" required autofocus>
+    <button type="submit">Add</button>
+  </form>
+
+  <ul class="task-list">
+    {% for task in tasks %}
+      <li class="task {% if task.done %}is-done{% endif %}">
+        <form method="post" action="{% url 'core:toggle_task' task.pk %}">
+          {% csrf_token %}
+          <button type="submit" class="toggle" aria-label="Toggle {{ task.title }}">
+            {% if task.done %}&#10003;{% else %}&nbsp;{% endif %}
+          </button>
+        </form>
+        <span class="title">{{ task.title }}</span>
+        <time datetime="{{ task.created_at|date:'c' }}">{{ task.created_at|date:"M j" }}</time>
+      </li>
+    {% empty %}
+      <li class="empty">Nothing here yet. Add the first task above.</li>
+    {% endfor %}
+  </ul>
+{% endblock %}

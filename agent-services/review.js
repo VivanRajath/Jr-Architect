@@ -1,16 +1,14 @@
-// Run the repo's own guardrails over a git range instead of an agent's proposed
-// edit — same manifest, same packs, same deny-wins semantics, no IDE.
+// Run the repo's own guardrails over a git range instead of an agent's proposed edit — same manifest, same packs, same deny-wins semantics, no IDE.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, appendFileSync, SAFE_GIT, assertOwnGitDir } from "./workspace-fs.js";
 import { join, resolve } from "node:path";
 
 import { resolvePipelineAgents, loadComplianceRules } from "./registry.js";
 import { guardEditBlocks, reviewEditBlocks } from "./guardrails.js";
 import { modelFor, firstAvailableProvider, toollessAgentHome } from "./llm.js";
 
-// The repo's own compliance file, as an enforcing pack. It used to be injected into
-// the writer's prompt only, so a team's own rules had less force than a pulled one.
+// The repo's own compliance file, as an enforcing pack.
 export const LOCAL_PACK = ".gitagent/compliance";
 
 export function localPack(dir) {
@@ -26,7 +24,7 @@ export const AUDIT_DIR = ".gitagent/audit";
 const SKIP_REVIEW = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum|Cargo\.lock|.*\.min\.(?:js|css)|.*\.(?:png|jpe?g|gif|svg|ico|woff2?|ttf|pdf|zip))$/i;
 
 function git(dir, args) {
-  return execFileSync("git", args, { cwd: dir, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync("git", [...SAFE_GIT, ...args], { cwd: dir, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 }
 
 // Files a range touches. Renames report the new path — the one that gets judged.
@@ -34,7 +32,7 @@ export function changedFiles(dir, base, head = "HEAD") {
   let out = "";
   try {
     // Three-dot: what head added since it diverged, which is what a PR proposes.
-    out = git(dir, ["diff", "--name-status", "--find-renames", `${base}...${head}`]);
+    out = git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "--find-renames", `${base}...${head}`]);
   } catch (e) {
     throw new Error(`could not diff ${base}...${head} — ${String(e.message).split("\n")[0]}`);
   }
@@ -66,8 +64,7 @@ function contentAt(dir, head, path) {
   }
 }
 
-// The same { path, content } blocks the edit pipeline produces, so the guardrails
-// cannot tell a human's commit from an agent's rewrite.
+// The same { path, content } blocks the edit pipeline produces, so the guardrails cannot tell a human's commit from an agent's rewrite.
 export function blocksForRange(dir, base, head = "HEAD") {
   const files = changedFiles(dir, base, head);
   const skipped = [];
@@ -82,8 +79,7 @@ export function blocksForRange(dir, base, head = "HEAD") {
   return { blocks, skipped, total: files.length };
 }
 
-// One append-only line per decision, so "which pack, which version, which file,
-// when" stays answerable after the run.
+// One append-only line per decision, so "which pack, which version, which file, when" stays answerable after the run.
 export function writeAudit(dir, records) {
   if (!records.length) return null;
   const day = new Date().toISOString().slice(0, 10);
@@ -99,23 +95,28 @@ function headSha(dir, head) {
 }
 
 // Printing and exit codes are the CLI's job, so this stays usable from a server.
-export async function reviewRange({ dir, base, head = "HEAD", message, onStep } = {}) {
+export async function reviewRange({
+  dir, base, head = "HEAD", message, onStep, packs: packsOverride, audit = true,
+} = {}) {
   const step = (name, detail) => { if (onStep) onStep(name, detail); };
   const root = resolve(dir || ".");
   if (!existsSync(join(root, ".git"))) throw new Error(`${root} is not a git repository`);
+  assertOwnGitDir(root);
 
   const { blocks, skipped, total } = blocksForRange(root, base, head);
   step("Diff", `${total} changed file(s) · ${blocks.length} to review · ${skipped.length} skipped`);
   if (!blocks.length) {
-    return { ok: true, verdicts: [], denied: [], skipped, total, agents: null };
+    return { ok: true, reviewed: false, verdicts: [], denied: [], skipped, total, packs: [], unpinned: [] };
   }
 
   // Same manifest and clone-and-materialise path the IDE uses.
   let agents = { enabled: false, guardrails: [] };
-  try {
-    agents = await resolvePipelineAgents(root, onStep);
-  } catch (e) {
-    step("GitAgent", `registry unavailable (${e.message}) · code-level guards only`);
+  if (!packsOverride) {
+    try {
+      agents = await resolvePipelineAgents(root, onStep);
+    } catch (e) {
+      step("GitAgent", `registry unavailable (${e.message}) · code-level guards only`);
+    }
   }
 
   // Tier 1 — the code floor. No model, so it holds with no network and no keys.
@@ -124,9 +125,9 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
 
   // Tier 2 — the repo's own rules first, then pulled packs. Enforced identically.
   let reviewed = { allowed: floor.allowed, blocked: [], reviewed: false, why: "" };
-  const own = localPack(root);
+  const own = packsOverride ? null : localPack(root);
   if (own) step("Guardrails", `loaded the repo's own rules · ${LOCAL_PACK}`);
-  const packs = [
+  const packs = packsOverride || [
     ...(own ? [own] : []),
     ...(agents.guardrails || []).filter((g) => (g.rules || g.soul || "").trim()),
   ];
@@ -142,7 +143,7 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
     reviewed = await reviewEditBlocks(
       toollessAgentHome(), agents,
       message || `Reviewing the changes in ${base}...${head}`,
-      floor.allowed, modelFor("groq"), step,
+      floor.allowed, modelFor(undefined, "fast"), step,
     );
   }
 
@@ -154,8 +155,7 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
   const unpinned = packs.filter((p) => p.sha && !p.pin).map((p) => p.name);
   if (unpinned.length) step("Guardrails", `unpinned pack(s): ${unpinned.join(", ")}`);
 
-  // A file that only went through because the review could not run is "unreviewed",
-  // never "allow" — the gate still passes, but the evidence says what happened.
+  // A file that only went through because the review could not run is "unreviewed", never "allow".
   const passDecision = reviewed.reviewed ? "allow" : "unreviewed";
   const verdicts = [
     ...reviewed.allowed.map((b) => ({
@@ -166,13 +166,13 @@ export async function reviewRange({ dir, base, head = "HEAD", message, onStep } 
     ...denied.map((b) => ({ path: b.path, decision: "deny", reason: b.reason || "" })),
   ].sort((a, b) => a.path.localeCompare(b.path));
 
-  const auditPath = writeAudit(root, verdicts.map((v) => ({
+  const auditPath = audit ? writeAudit(root, verdicts.map((v) => ({
     at, base, head, commit: sha,
     packs: packNames,
     file: v.path,
     decision: v.decision,
     reason: v.reason || undefined,
-  })));
+  }))) : null;
 
   return {
     ok: denied.length === 0,
