@@ -262,6 +262,13 @@ export function createPlanner(deps) {
     });
   }
 
+  // Any caller holding a connection can ask the user about one command; the answer is keyed to this connection and id only.
+  function requestApproval(ws, command, why) {
+    const id = "c-" + randomBytes(6).toString("hex");
+    send(ws, { type: "command_request", id, command, why });
+    return waitForDecision(ws, id).then((approved) => ({ id, approved }));
+  }
+
   function decide(ws, { id, approved }) {
     const fn = pending.get(ws) && pending.get(ws).get(id);
     if (fn) fn(approved);
@@ -274,5 +281,5 @@ export function createPlanner(deps) {
     if (map) for (const fn of [...map.values()]) fn(false);
   }
 
-  return { startPlan, revise, proceed, decide, stop, normalisePlan, _plans: plans };
+  return { startPlan, revise, proceed, decide, stop, requestApproval, normalisePlan, _plans: plans };
 }

@@ -31,6 +31,7 @@ import {
 } from "./llm.js";
 import { guardEditBlocks, reviewEditBlocks } from "./guardrails.js";
 import { createPlanner } from "./planner.js";
+import { classifyCommand, withGuard } from "./command-policy.js";
 import * as opengap from "./opengap/index.js";
 
 // ESM has no __dirname; the knowledge worker is spawned by absolute path so the service works regardless of the cwd Go happens to start it from.
@@ -168,7 +169,8 @@ function writtenPathFrom(args) {
 }
 
 // Build a shell tool bound to a container.
-function makeShellTool(container) {
+// The model proposes a command; classifyCommand and the repo's OpenGAP hooks decide, and "ask" waits for the user over the socket.
+function makeShellTool(container, { dir = null, ask = null, user = "" } = {}) {
   return {
     name: "shell",
     description:
@@ -193,6 +195,18 @@ function makeShellTool(container) {
       const command = ((params && params.command) || "").trim();
       if (!command) return "shell: empty command.";
       if (!container) return "shell: this session has no sandbox container bound.";
+      let guard = null;
+      try { guard = dir && opengap.installed(dir) ? opengap.checkCommandLine(dir, command) : null; } catch { /* no team */ }
+      const decision = withGuard(classifyCommand(command), guard);
+      let approved = decision.action === "allow";
+      if (decision.action === "ask") approved = ask ? (await ask(command, `The agent wants to run this because it ${decision.reason}.`)).approved : false;
+      audit({ event: "agent.shell", user, container, action: decision.action, approved, reason: decision.reason, command: command.slice(0, 200) });
+      if (decision.action === "deny") return `shell: refused, ${decision.reason}. Do not retry it or try to reach the same result another way.`;
+      if (!approved) {
+        return ask
+          ? "shell: the user declined this command. Continue without it."
+          : `shell: not run, because ${decision.reason} and needs the user's approval. Tell the user the exact command so they can run it themselves.`;
+      }
       try {
         const r = await hostExec(container, command, params && params.timeout_ms);
         const head = r.timedOut ? `timed out (exit ${r.exitCode})` : `exit ${r.exitCode}`;
@@ -258,8 +272,13 @@ function makeWriteTool(dir) {
   };
 }
 
-function agentTools(dir, container) {
-  return [makeReadTool(dir), makeWriteTool(dir), makeSearchCodeTool(dir), makeShellTool(container)];
+function agentTools(dir, container, shellOpts = {}) {
+  return [makeReadTool(dir), makeWriteTool(dir), makeSearchCodeTool(dir), makeShellTool(container, { dir, ...shellOpts })];
+}
+
+// One JSON line per security-relevant agent action; never the full command output, which may hold secrets.
+function audit(event) {
+  console.log(JSON.stringify({ at: new Date().toISOString(), ...event }));
 }
 
 // Layer 2 of code retrieval: the search_code tool
@@ -1250,7 +1269,7 @@ app.post("/agent/chat", async (req, res) => {
         model,
         replaceBuiltinTools: true,
         allowedTools: AGENT_ALLOWED_TOOLS,
-        tools: agentTools(session.dir, container),
+        tools: agentTools(session.dir, container, { user: req.get("x-jr-user") || "" }),
         constraints: { maxTokens: outputCap(model) },
       };
   let fullResponse = "";
@@ -1996,7 +2015,7 @@ wss.on("connection", (ws, req) => {
           model,
           replaceBuiltinTools: true,
           allowedTools: AGENT_ALLOWED_TOOLS,
-          tools: agentTools(session.dir, targetContainer),
+          tools: agentTools(session.dir, targetContainer, { user, ask: (command, why) => planner.requestApproval(ws, command, why) }),
           constraints: { maxTokens: outputCap(model) },
         }, model, targetContainer);
       }
