@@ -9,9 +9,7 @@ This document covers how it works today, why each part is built the way it is, a
 
 Diagrams (in `docs/architecture/`):
 
-- `architecture.png` / `.svg`: the system as built.
-- `cloud-scaling.png` / `.svg`: the proposed cloud deployment.
-- `architecture.pdf`: both diagrams, one per page.
+
 
 ![System architecture](docs/architecture/architecture.png)
 
