@@ -52,8 +52,6 @@
 
   const NAV = [
     ['home', 'Home', '/', (p) => p === '/' || p === '/index.html', 'Workspace'],
-    ['projects', 'Projects', '/?open=saved', () => false, 'Workspace'],
-    ['build', 'Build', '/?mode=build', () => false, 'Workspace'],
     ['hub', 'Agents', '/hub.html', (p, h) => (p === '/hub.html' && h !== '#workflows') || p === '/studio.html', 'Automation'],
     ['flows', 'Workflows', '/hub.html#workflows', (p, h) => p === '/flows.html' || (p === '/hub.html' && h === '#workflows'), 'Automation'],
     ['settings', 'Settings', '/settings.html', (p) => p === '/settings.html', 'Automation'],
@@ -120,13 +118,6 @@
     try { pinned = localStorage.getItem('jr-rail-pinned') === 'true'; } catch { /* storage blocked */ }
     setPinned(pinned);
     pin.addEventListener('click', () => { setPinned(!document.body.classList.contains('rail-pinned')); pin.blur(); });
-    // On the home page these switch the launcher in place instead of reloading.
-    rail.querySelectorAll('[data-nav="projects"],[data-nav="build"]').forEach(a => a.addEventListener('click', (e) => {
-      if (typeof window.jrHomeNav === 'function') {
-        e.preventDefault();
-        window.jrHomeNav(a.dataset.nav);
-      }
-    }));
     mountAccount(rail);
     markActive(rail);
     ['hashchange', 'jr-nav'].forEach((ev) => window.addEventListener(ev, () => markActive(rail)));

@@ -11,40 +11,10 @@
 </head>
 <body class="dark-mode">
   <div class="auth">
-    <aside class="auth-brand" aria-label="About Jr Architect">
-      <div class="auth-brand-top">
-        <span class="auth-logo">Jr</span>
-        <span class="auth-name">Jr Architect</span>
-      </div>
-
-      <div class="auth-pitch">
-        <h1>Describe an app. Get the app, its agents and the workflows that wire them.</h1>
-        <p>One place to build with AI and to work on real code: a sandboxed IDE, a coding agent, and your GitHub repos kept in sync.</p>
-      </div>
-
-      <ul class="auth-features">
-        <li>
-          <span class="auth-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg></span>
-          <span><b>Build mode</b>A prompt becomes a PRD, tested agents, branching workflows and a full app.</span>
-        </li>
-        <li>
-          <span class="auth-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 8.5v7"/><path d="M18 10.5a6 6 0 0 1-6 6H8.5"/></svg></span>
-          <span><b>GitHub sync</b>Open any of your repos, change it with the coding agent, then pull, push and open PRs.</span>
-        </li>
-        <li>
-          <span class="auth-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m8 10 2 2-2 2"/><path d="M13 14h3"/></svg></span>
-          <span><b>Real sandboxes</b>Every project runs in its own container with a terminal and a live preview.</span>
-        </li>
-      </ul>
-
-      <p class="auth-brand-foot">Your tokens stay on the server, encrypted. Nothing is shared with the browser.</p>
-    </aside>
-
     <main class="auth-main">
       <div class="auth-card">
-        <span class="auth-logo auth-logo-sm">Jr</span>
-        <h2 class="auth-title" id="auth-title">Welcome back</h2>
-        <p class="auth-sub" id="auth-sub">Sign in to continue to your workspace.</p>
+        <span class="auth-logo">Jr</span>
+        <h1 class="auth-title" id="auth-title">Sign in to Jr Architect</h1>
 
         <div class="auth-alert" id="auth-error" role="alert" hidden></div>
 
@@ -57,10 +27,6 @@
             <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M23.5 12.27c0-.85-.08-1.67-.22-2.45H12v4.64h6.45a5.52 5.52 0 0 1-2.4 3.62v3h3.88c2.27-2.09 3.57-5.17 3.57-8.81Z"/><path fill="#34A853" d="M12 24c3.24 0 5.96-1.07 7.94-2.9l-3.88-3.01c-1.08.72-2.45 1.15-4.06 1.15-3.12 0-5.77-2.11-6.71-4.95H1.28v3.1A12 12 0 0 0 12 24Z"/><path fill="#FBBC05" d="M5.29 14.29a7.2 7.2 0 0 1 0-4.58v-3.1H1.28a12 12 0 0 0 0 10.78l4.01-3.1Z"/><path fill="#EA4335" d="M12 4.76c1.76 0 3.34.61 4.59 1.8l3.44-3.44A11.97 11.97 0 0 0 1.28 6.61l4.01 3.1C6.23 6.87 8.88 4.76 12 4.76Z"/></svg>
             <span>Continue with Google</span>
           </a>
-          <p class="auth-note" id="auth-gh-note" hidden>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
-            <span>GitHub sign-in also syncs your repositories. Signed in with Google? You can connect GitHub later in Settings.</span>
-          </p>
         </div>
 
         <div class="auth-divider" id="auth-divider" hidden><span>or</span></div>
@@ -71,9 +37,29 @@
           <button type="submit" class="auth-submit">Continue with beta code</button>
         </form>
 
-        <p class="auth-legal">By continuing you agree to use Jr Architect for your own projects. Sessions last 7 days on this device.</p>
+        <button class="auth-tour-link" type="button" id="tour-open">New here? See what Jr Architect does</button>
       </div>
     </main>
+  </div>
+  <div class="tour" id="tour" role="dialog" aria-modal="true" aria-labelledby="tour-title" hidden>
+    <div class="tour-box">
+      <header class="tour-top">
+        <span class="auth-logo">Jr</span>
+        <span class="tour-kicker">What Jr Architect does</span>
+        <span class="tour-count" id="tour-count"></span>
+        <button class="tour-skip" type="button" id="tour-skip">Skip</button>
+      </header>
+      <figure class="tour-shot"><img id="tour-img" alt="" width="1418" height="802"></figure>
+      <div class="tour-copy">
+        <h2 id="tour-title"></h2>
+        <p id="tour-text"></p>
+      </div>
+      <footer class="tour-foot">
+        <div class="tour-dots" id="tour-dots"></div>
+        <button class="tour-back" type="button" id="tour-back">Back</button>
+        <button class="tour-next" type="button" id="tour-next">Next</button>
+      </footer>
+    </div>
   </div>
   <script src="/js/login.js"></script>
 </body>
