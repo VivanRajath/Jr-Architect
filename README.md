@@ -65,7 +65,7 @@ The default model on the free tier (`openai/gpt-oss-120b`) is a capable text gen
 
 Whole-file rewrite is used instead of SEARCH/REPLACE patch markers because a weak model garbles fragile patch syntax, and a reply truncated by the output cap simply fails to parse (no half-written file is ever saved). When a stronger provider is configured, the tool-driven Agent loop is available instead (`AGENT_EDIT_STRATEGY=agentic`).
 
-For the reasoning behind each of these decisions, and the trade-offs against frontier-model tools like Cursor and Antigravity, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For the reasoning behind each of these decisions, and the trade-offs against frontier-model tools like Cursor and Antigravity, see [docs/SYSTEM_REFERENCE.md](docs/SYSTEM_REFERENCE.md); the architecture and its decisions are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## GitAgent integration
 
@@ -198,7 +198,8 @@ stylesheet means adding a file — no Go source needs to know about it.
 
 ## Documentation
 
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: the end-to-end system design, covering the component breakdown, request lifecycle, runtime detection, the agent pipeline, the API reference, the port and network map, and the security model.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)**: the architecture and the decisions behind it, with diagrams in `docs/architecture/`.
+- **[docs/SYSTEM_REFERENCE.md](docs/SYSTEM_REFERENCE.md)**: the detailed reference, covering the component breakdown, request lifecycle, runtime detection, the agent pipeline, the API reference, the port and network map, and the security model.
 - **[docs/runbook.md](docs/runbook.md)**: step-by-step setup, build, and run instructions, plus troubleshooting for the common errors (Docker, PowerShell execution, Groq rate limits, the agent panel, and live preview).
 
 ## Note
