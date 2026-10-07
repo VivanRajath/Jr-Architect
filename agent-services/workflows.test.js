@@ -1,5 +1,5 @@
 // Visual workflows: expressions, graph rules, the engine with real agent runs, and the webhook. Run: `node --test`.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +9,13 @@ process.env.AGENT_NO_LISTEN = "1";
 process.env.JR_HUB_DIR = mkdtempSync(join(tmpdir(), "jr-wf-test-"));
 process.env.GROQ_API_KEY = process.env.GROQ_API_KEY || "test-groq-test_placeholder_not_real";
 process.env.GITAGENT_REGISTRY_INDEX = "http://127.0.0.1:1/index.json";
+
+// With MONGODB_TEST_URI set, the same tests run against MongoDB in a throwaway database.
+const testDb = process.env.MONGODB_TEST_URI ? await import("./hub/db.js") : null;
+if (testDb) {
+  await testDb.connectDb(process.env.MONGODB_TEST_URI, `jr_test_${process.pid}`);
+  after(() => testDb.dropDb());
+}
 
 const wf = await import("./hub/workflows.js");
 const store = await import("./hub/store.js");
@@ -75,13 +82,13 @@ test("yes/no conditions match the booleans agents return", () => {
   assert.ok(wf.testCondition({ path: "label", op: "equals", value: "beginner" }, ctx));
 });
 
-test("the graph drops impossible edges and flags missing pieces", () => {
+test("the graph drops impossible edges and flags missing pieces", async () => {
   const w = wf.normalizeWorkflow({ nodes: [node("t", "trigger"), node("o", "output"), node("i", "if")],
     edges: [{ from: "o", to: "t" }, { from: "i", port: "maybe", to: "o" }, { from: "t", port: "main", to: "i" }, { from: "t", port: "main", to: "i" }] });
   assert.deepStrictEqual(w.edges, [{ from: "t", port: "main", to: "i" }]);
-  const v = wf.validateWorkflow(w, USER);
+  const v = await wf.validateWorkflow(w, USER);
   assert.ok(v.errors.some((e) => /field to test/.test(e.message)));
-  const noTrigger = wf.validateWorkflow({ nodes: [node("a", "agent", { agentId: "missing-agent" })] }, USER);
+  const noTrigger = await wf.validateWorkflow({ nodes: [node("a", "agent", { agentId: "missing-agent" })] }, USER);
   assert.ok(noTrigger.errors.some((e) => /exactly one Trigger/.test(e.message)));
   assert.ok(noTrigger.errors.some((e) => /does not exist/.test(e.message)));
 });
@@ -108,7 +115,7 @@ test("the false branch pauses at the approval node and resumes on a decision", a
 });
 
 test("an approval inside the agent pauses the whole workflow", async () => {
-  await store.saveAgent(USER, triage.id, { ...store.readAgent(USER, triage.id), humanInTheLoop: { approveOutput: true } });
+  await store.saveAgent(USER, triage.id, { ...(await store.readAgent(USER, triage.id)), humanInTheLoop: { approveOutput: true } });
   agentAnswers([{ category: "bug", reply: "Held for review." }]);
   const run = await wf.startWorkflowRun(triageFlow(), { email: "crash" }, { user: USER });
   assert.strictEqual(run.status, "awaiting_approval");
@@ -116,7 +123,7 @@ test("an approval inside the agent pauses the whole workflow", async () => {
   const done = await wf.decideWorkflowRun(run, triageFlow(), { approved: true }, { user: USER });
   assert.strictEqual(done.status, "completed");
   assert.strictEqual(done.output.reply, "Held for review.");
-  await store.saveAgent(USER, triage.id, { ...store.readAgent(USER, triage.id), humanInTheLoop: { approveOutput: false } });
+  await store.saveAgent(USER, triage.id, { ...(await store.readAgent(USER, triage.id)), humanInTheLoop: { approveOutput: false } });
 });
 
 test("an agent that rejects its input fails the node, not the server", async () => {

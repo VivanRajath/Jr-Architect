@@ -16,18 +16,27 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // A saved copy of a sandbox's source, kept per user under DataDir/projects so it outlives the sandbox.
 type Project struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Source    string    `json:"source"`
-	Framework string    `json:"framework,omitempty"`
-	Bytes     int64     `json:"bytes"`
-	Files     int       `json:"files"`
-	SavedAt   time.Time `json:"savedAt"`
-	OpenedAt  time.Time `json:"openedAt,omitzero"`
+	ID        string    `json:"id" bson:"_id"`
+	Name      string    `json:"name" bson:"name"`
+	Source    string    `json:"source" bson:"source"`
+	Framework string    `json:"framework,omitempty" bson:"framework,omitempty"`
+	Bytes     int64     `json:"bytes" bson:"bytes"`
+	Files     int       `json:"files" bson:"files"`
+	SavedAt   time.Time `json:"savedAt" bson:"savedAt"`
+	OpenedAt  time.Time `json:"openedAt,omitzero" bson:"openedAt,omitempty"`
+}
+
+// The database copy of a project's metadata; the files themselves stay on this machine's disk.
+type projectDoc struct {
+	Project `bson:",inline"`
+	Owner   string `bson:"owner"`
 }
 
 const (
@@ -70,13 +79,20 @@ func ProjectFiles(owner, id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := os.Stat(filepath.Join(dir, "meta.json")); err != nil {
+	if DBEnabled() {
+		if _, err := GetProject(owner, id); err != nil {
+			return "", err
+		}
+	} else if _, err := os.Stat(filepath.Join(dir, "meta.json")); err != nil {
 		return "", ErrProjectNotFound
 	}
 	return filepath.Join(dir, "files"), nil
 }
 
 func ListProjects(owner string) ([]Project, error) {
+	if DBEnabled() {
+		return listProjectsDB(owner)
+	}
 	entries, err := os.ReadDir(projectsRoot(owner))
 	if os.IsNotExist(err) {
 		return []Project{}, nil
@@ -106,6 +122,18 @@ func GetProject(owner, id string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+	if DBEnabled() {
+		var d projectDoc
+		ctx, cancel := dbctx()
+		defer cancel()
+		if err := coll(colProjects).FindOne(ctx, bson.M{"_id": id, "owner": owner}).Decode(&d); err != nil {
+			if isNoDoc(err) {
+				return Project{}, ErrProjectNotFound
+			}
+			return Project{}, err
+		}
+		return d.Project, nil
+	}
 	data, err := os.ReadFile(filepath.Join(dir, "meta.json"))
 	if err != nil {
 		return Project{}, ErrProjectNotFound
@@ -118,9 +146,37 @@ func GetProject(owner, id string) (Project, error) {
 	return p, nil
 }
 
-func writeProjectMeta(dir string, p Project) error {
+func writeProjectMeta(dir, owner string, p Project) error {
 	data, _ := json.MarshalIndent(p, "", "  ")
-	return os.WriteFile(filepath.Join(dir, "meta.json"), data, 0600)
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), data, 0600); err != nil {
+		return err
+	}
+	if !DBEnabled() {
+		return nil
+	}
+	ctx, cancel := dbctx()
+	defer cancel()
+	_, err := coll(colProjects).ReplaceOne(ctx, bson.M{"_id": p.ID}, projectDoc{Project: p, Owner: owner}, options.Replace().SetUpsert(true))
+	return err
+}
+
+func listProjectsDB(owner string) ([]Project, error) {
+	ctx, cancel := dbctx()
+	defer cancel()
+	cur, err := coll(colProjects).Find(ctx, bson.M{"owner": owner})
+	if err != nil {
+		return nil, err
+	}
+	var docs []projectDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	out := make([]Project, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, d.Project)
+	}
+	sort.Slice(out, func(i, j int) bool { return lastUsed(out[i]).After(lastUsed(out[j])) })
+	return out, nil
 }
 
 // Copies src into a project; an empty id makes a new one, an existing id is replaced in place.
@@ -159,7 +215,7 @@ func SaveProject(owner, id, name, source, framework, src string) (Project, error
 		return Project{}, err
 	}
 	p.Bytes, p.Files, p.SavedAt = bytes, count, time.Now()
-	if err := writeProjectMeta(staging, p); err != nil {
+	if err := writeProjectMeta(staging, owner, p); err != nil {
 		return Project{}, err
 	}
 
@@ -179,7 +235,7 @@ func MarkProjectOpened(owner, id string) {
 	if p, err := GetProject(owner, id); err == nil {
 		p.OpenedAt = time.Now()
 		dir, _ := projectDir(owner, id)
-		writeProjectMeta(dir, p)
+		writeProjectMeta(dir, owner, p)
 	}
 }
 
@@ -188,6 +244,13 @@ func DeleteProject(owner, id string) error {
 	defer projectsMu.Unlock()
 	if _, err := GetProject(owner, id); err != nil {
 		return err
+	}
+	if DBEnabled() {
+		ctx, cancel := dbctx()
+		defer cancel()
+		if _, err := coll(colProjects).DeleteOne(ctx, bson.M{"_id": id, "owner": owner}); err != nil {
+			return err
+		}
 	}
 	dir, _ := projectDir(owner, id)
 	return os.RemoveAll(dir)

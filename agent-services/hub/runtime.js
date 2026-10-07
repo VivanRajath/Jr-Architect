@@ -163,7 +163,7 @@ export const TOOL_IMPL = {
     const note = String(args.note || "").trim();
     if (!note) throw new Error("note is empty");
     if (GUARD_SECRET.test(note)) throw new Error("refused: the note looks like it contains a secret");
-    appendMemory(ctx.user, ctx.agentId, note, def.memory.maxNotes);
+    await appendMemory(ctx.user, ctx.agentId, note, def.memory.maxNotes);
     return "saved";
   },
 };
@@ -225,22 +225,22 @@ export function newRun(def, input, ctx) {
   };
 }
 
-function persist(run, ctx) {
-  if (ctx.agentId && ctx.user) saveRun(ctx.user, ctx.agentId, run);
+async function persist(run, ctx) {
+  if (ctx.agentId && ctx.user) await saveRun(ctx.user, ctx.agentId, run);
 }
 
-function finish(run, status, fields, ctx) {
+async function finish(run, status, fields, ctx) {
   Object.assign(run, { status, finishedAt: Date.now(), pendingApproval: null }, fields);
   step(run, status, status === "completed" ? "Run finished" : fields.error || status);
-  persist(run, ctx);
+  await persist(run, ctx);
   return run;
 }
 
-function pause(run, approval, ctx) {
+async function pause(run, approval, ctx) {
   run.status = "awaiting_approval";
   run.pendingApproval = { ...approval, requestedAt: Date.now() };
   step(run, "approval", approval.summary);
-  persist(run, ctx);
+  await persist(run, ctx);
   return run;
 }
 
@@ -324,7 +324,7 @@ function segmentTools(run, def, ctx, control, state) {
   return tools;
 }
 
-function settle(run, def, value, errs, ctx) {
+async function settle(run, def, value, errs, ctx) {
   if (errs.length) return finish(run, "failed", { error: `output does not match the schema: ${errs.slice(0, 3).join("; ")}`, output: value }, ctx);
   const blocked = guardText(typeof value === "string" ? value : JSON.stringify(value), def);
   if (blocked) return finish(run, "blocked", { error: `guardrail: the output ${blocked}` }, ctx);
@@ -340,7 +340,7 @@ export async function drive(run, defIn, ctx) {
   const def = normalizeDefinition(defIn);
   const model = modelIdFor(def);
   if (!providerHasKey(def.model.provider)) return finish(run, "failed", { error: `no API key for ${def.model.provider}` }, ctx);
-  const notes = def.memory.mode === "persistent" && ctx.agentId ? readMemory(ctx.user, ctx.agentId) : [];
+  const notes = def.memory.mode === "persistent" && ctx.agentId ? await readMemory(ctx.user, ctx.agentId) : [];
   // One budget for the whole call, retries included, so n8n never waits past the configured timeout.
   const deadline = Date.now() + def.runtime.timeoutSeconds * 1000;
 
@@ -383,7 +383,7 @@ export async function drive(run, defIn, ctx) {
 }
 
 // Validates and records the run without calling a model, so a caller can hand back its id before it finishes.
-export function prepareRun(defIn, rawInput, ctx) {
+export async function prepareRun(defIn, rawInput, ctx) {
   const def = normalizeDefinition(defIn);
   // A workflow passes values on as earlier agents produced them; yes/no, numbers and lists are converted to what this agent declares.
   const input = coerceToSchema(rawInput, def.inputSchema);
@@ -393,12 +393,12 @@ export function prepareRun(defIn, rawInput, ctx) {
   const inputErrs = checkInput(def, input);
   if (inputErrs.length) return finish(run, "rejected", { error: `input rejected: ${inputErrs.join("; ")}` }, ctx);
   step(run, "start", `Running ${def.identity.name} v${def.version}`);
-  persist(run, ctx);
+  await persist(run, ctx);
   return run;
 }
 
 export async function startRun(defIn, input, ctx) {
-  const run = prepareRun(defIn, input, ctx);
+  const run = await prepareRun(defIn, input, ctx);
   return run.status === "running" ? drive(run, defIn, ctx) : run;
 }
 

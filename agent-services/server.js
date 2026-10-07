@@ -20,6 +20,8 @@ import {
 } from "./registry.js";
 import { knowledgeStatus, OVERVIEW_REL } from "./knowledge.js";
 import { createHubRouter } from "./hub/routes.js";
+import { connectDb } from "./hub/db.js";
+import { importHubFiles } from "./hub/import.js";
 import { reviewRange, writeAudit, AUDIT_DIR } from "./review.js";
 import {
   NO_KEY_MESSAGE, KNOWLEDGE_KEY,
@@ -2022,6 +2024,17 @@ if (!process.env.AGENT_NO_LISTEN) {
   // Bind loopback explicitly.
   const HOST = process.env.AGENT_HOST || "127.0.0.1";
   pruneGroqKeys().catch((e) => console.error("[agent] could not check the Groq keys:", e.message));
+  // With MONGODB_URI set, the hub must reach the database before it serves anything, or saves would land in the wrong store.
+  try {
+    if (await connectDb()) {
+      const counts = await importHubFiles();
+      if (counts) console.log(`[agent-service] imported ${counts.agents} agents, ${counts.workflows} workflows and ${counts.runs} runs into MongoDB`);
+      console.log("[agent-service] using MongoDB");
+    }
+  } catch (e) {
+    console.error("[agent-service] database error:", e.message);
+    process.exit(1);
+  }
   server.listen(PORT, HOST, () => {
     console.log(`[agent-service] running on ${HOST}:${PORT}`);
   });

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { git, withLock, readJSON, writeJSON, userDir, readAgent, readRun as readAgentRun } from "./store.js";
 import { slugify, bumpPatch } from "./definition.js";
+import { hasDb, col, objectId, trimRuns, saveRunDoc, readRunDoc, listRunDocs } from "./db.js";
 import { startRun, resolveApproval, checkPublicUrl, privateNetAllowed } from "./runtime.js";
 
 export const MAX_WORKFLOWS_PER_USER = Number(process.env.JR_HUB_MAX_WORKFLOWS) || (process.env.JR_PUBLIC_ORIGIN ? 25 : 500);
@@ -95,7 +96,7 @@ export function normalizeWorkflow(input) {
   };
 }
 
-export function validateWorkflow(wIn, user) {
+export async function validateWorkflow(wIn, user) {
   const w = normalizeWorkflow(wIn);
   const errors = [];
   const warnings = [];
@@ -106,7 +107,7 @@ export function validateWorkflow(wIn, user) {
     const c = n.config;
     if (n.type === "agent") {
       if (!c.agentId) errors.push(at(n, "choose an agent."));
-      else if (user && !readAgent(user, c.agentId)) errors.push(at(n, `agent ${c.agentId} does not exist.`));
+      else if (user && !(await readAgent(user, c.agentId))) errors.push(at(n, `agent ${c.agentId} does not exist.`));
     }
     if (n.type === "if" && !c.path) errors.push(at(n, "set the field to test, for example $json.status."));
     if (n.type === "http") {
@@ -196,7 +197,7 @@ export function testCondition(cfg, ctx) {
   }
 }
 
-// --- storage: one git repository per user holding <id>.json per workflow ---
+// --- storage: MongoDB when configured, else one git repository per user holding <id>.json per workflow ---
 
 const wfRoot = (user) => join(userDir(user), "workflows");
 const wfState = (user, id) => join(userDir(user), "wfstate", id);
@@ -213,8 +214,18 @@ async function ensureRepo(user) {
   return root;
 }
 
-export function readWorkflow(user, id) {
+function wfFromDoc(doc) {
+  const n = normalizeWorkflow(doc.workflow);
+  n.id = doc.slug;
+  return n;
+}
+
+export async function readWorkflow(user, id) {
   assertId(id);
+  if (hasDb()) {
+    const doc = await col("workflows").findOne({ owner: user, slug: id });
+    return doc ? wfFromDoc(doc) : null;
+  }
   const w = readJSON(join(wfRoot(user), `${id}.json`), null);
   if (!w) return null;
   const n = normalizeWorkflow(w);
@@ -222,33 +233,53 @@ export function readWorkflow(user, id) {
   return n;
 }
 
-export function listWorkflows(user) {
+export async function listWorkflows(user) {
+  if (hasDb()) {
+    const docs = await col("workflows").find({ owner: user }).sort({ updatedAt: -1 }).toArray();
+    return docs.map((d) => ({ ...wfFromDoc(d), updatedAt: d.updatedAt.getTime() }));
+  }
   let files = [];
   try { files = fs.readdirSync(wfRoot(user)).filter((f) => f.endsWith(".json")); } catch { return []; }
-  return files.map((f) => {
+  const out = [];
+  for (const f of files) {
     const id = f.slice(0, -5);
-    if (!ID_RE.test(id)) return null;
-    const w = readWorkflow(user, id);
-    return w && { ...w, updatedAt: fs.statSync(join(wfRoot(user), f)).mtimeMs };
-  }).filter(Boolean).sort((a, b) => b.updatedAt - a.updatedAt);
+    if (!ID_RE.test(id)) continue;
+    const w = await readWorkflow(user, id);
+    if (w) out.push({ ...w, updatedAt: fs.statSync(join(wfRoot(user), f)).mtimeMs });
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-async function commit(user, id, w, message) {
+async function commit(user, id, w, message, isNew) {
+  const msg = String(message).replace(/\s+/g, " ").slice(0, 100);
+  if (hasDb()) {
+    const now = new Date();
+    if (isNew) await col("workflows").insertOne({ owner: user, slug: id, version: w.version, workflow: w, createdAt: now, updatedAt: now });
+    else await col("workflows").updateOne({ owner: user, slug: id }, { $set: { version: w.version, workflow: w, updatedAt: now } });
+    await col("workflow_versions").insertOne({ owner: user, slug: id, version: w.version, message: msg, workflow: w, createdAt: now });
+    return;
+  }
   const root = await ensureRepo(user);
   writeJSON(join(root, `${id}.json`), w);
   await git(root, ["add", "--", `${id}.json`]);
-  await git(root, ["commit", "-q", "-m", `${id}: ${String(message).replace(/\s+/g, " ").slice(0, 100)} (v${w.version})`, "--", `${id}.json`]);
+  await git(root, ["commit", "-q", "-m", `${id}: ${msg} (v${w.version})`, "--", `${id}.json`]);
+}
+
+async function slugTaken(user, id) {
+  if (hasDb()) return !!(await col("workflows").findOne({ owner: user, slug: id }, { projection: { _id: 1 } }));
+  return fs.existsSync(join(wfRoot(user), `${id}.json`));
 }
 
 export async function createWorkflow(user, input, message = "Create workflow") {
-  if (listWorkflows(user).length >= MAX_WORKFLOWS_PER_USER) throw Object.assign(new Error(`You can keep up to ${MAX_WORKFLOWS_PER_USER} workflows; delete one first.`), { status: 409 });
+  const count = hasDb() ? await col("workflows").countDocuments({ owner: user }) : (await listWorkflows(user)).length;
+  if (count >= MAX_WORKFLOWS_PER_USER) throw Object.assign(new Error(`You can keep up to ${MAX_WORKFLOWS_PER_USER} workflows; delete one first.`), { status: 409 });
   const w = normalizeWorkflow(input && input.nodes ? input : { ...blankWorkflow(), ...(input || {}), nodes: blankWorkflow().nodes, edges: blankWorkflow().edges });
   return withLock(wfRoot(user), async () => {
     let id = slugify(w.name);
-    for (let i = 2; fs.existsSync(join(wfRoot(user), `${id}.json`)); i++) id = `${slugify(w.name).slice(0, 44)}-${i}`;
+    for (let i = 2; await slugTaken(user, id); i++) id = `${slugify(w.name).slice(0, 44)}-${i}`;
     w.id = id;
     w.version = "0.1.0";
-    await commit(user, id, w, message);
+    await commit(user, id, w, message, true);
     return w;
   });
 }
@@ -256,14 +287,14 @@ export async function createWorkflow(user, input, message = "Create workflow") {
 export async function saveWorkflow(user, id, input, message = "Update workflow") {
   assertId(id);
   return withLock(wfRoot(user), async () => {
-    const current = readWorkflow(user, id);
+    const current = await readWorkflow(user, id);
     if (!current) throw Object.assign(new Error("workflow not found"), { status: 404 });
     const w = normalizeWorkflow(input);
     w.id = id;
     w.version = current.version;
     if (JSON.stringify(w) === JSON.stringify(current)) return { workflow: current, changed: false };
     w.version = bumpPatch(current.version);
-    await commit(user, id, w, message);
+    await commit(user, id, w, message, false);
     return { workflow: w, changed: true };
   });
 }
@@ -271,6 +302,16 @@ export async function saveWorkflow(user, id, input, message = "Update workflow")
 export async function deleteWorkflow(user, id) {
   assertId(id);
   return withLock(wfRoot(user), async () => {
+    if (hasDb()) {
+      const { deletedCount } = await col("workflows").deleteOne({ owner: user, slug: id });
+      if (!deletedCount) return false;
+      await Promise.all([
+        col("workflow_versions").deleteMany({ owner: user, slug: id }),
+        col("runs").deleteMany({ owner: user, scope: "workflow", scopeId: id }),
+        col("playground_threads").deleteMany({ owner: user, workflow: id }),
+      ]);
+      return true;
+    }
     const f = join(wfRoot(user), `${id}.json`);
     if (!fs.existsSync(f)) return false;
     await git(wfRoot(user), ["rm", "-q", "--", `${id}.json`]);
@@ -282,6 +323,10 @@ export async function deleteWorkflow(user, id) {
 
 export async function listWorkflowVersions(user, id) {
   assertId(id);
+  if (hasDb()) {
+    const docs = await col("workflow_versions").find({ owner: user, slug: id }, { projection: { workflow: 0 } }).sort({ createdAt: -1 }).limit(50).toArray();
+    return docs.map((d) => ({ sha: d._id.toHexString(), at: d.createdAt.getTime(), message: d.message, version: d.version }));
+  }
   if (!fs.existsSync(join(wfRoot(user), ".git"))) return [];
   const out = await git(wfRoot(user), ["log", "-n", "50", "--format=%H%x09%at%x09%s", "--", `${id}.json`]);
   return out.trim().split("\n").filter(Boolean).map((l) => {
@@ -294,11 +339,24 @@ export async function listWorkflowVersions(user, id) {
 export async function restoreWorkflowVersion(user, id, sha) {
   assertId(id);
   if (!/^[a-f0-9]{7,40}$/.test(String(sha || ""))) throw Object.assign(new Error("invalid version"), { status: 400 });
-  const old = JSON.parse(await git(wfRoot(user), ["show", `${sha}:${id}.json`]));
+  let old;
+  if (hasDb()) {
+    const _id = objectId(sha);
+    const doc = _id && await col("workflow_versions").findOne({ _id, owner: user, slug: id });
+    if (!doc) throw Object.assign(new Error("version not found"), { status: 404 });
+    old = doc.workflow;
+  } else {
+    old = JSON.parse(await git(wfRoot(user), ["show", `${sha}:${id}.json`]));
+  }
   return saveWorkflow(user, id, old, `Restore v${old.version}`);
 }
 
-export function saveWorkflowRun(user, id, run) {
+export async function saveWorkflowRun(user, id, run) {
+  if (hasDb()) {
+    await saveRunDoc(user, "workflow", id, run);
+    await trimRuns(user, "workflow", id, MAX_RUNS_KEPT);
+    return;
+  }
   const dir = join(wfState(user, id), "runs");
   writeJSON(join(dir, `${run.id}.json`), run);
   let files = [];
@@ -309,14 +367,16 @@ export function saveWorkflowRun(user, id, run) {
   }
 }
 
-export function readWorkflowRun(user, id, runId) {
+export async function readWorkflowRun(user, id, runId) {
   assertId(id);
   if (!RUN_RE.test(String(runId || ""))) return null;
+  if (hasDb()) return readRunDoc(user, "workflow", id, runId);
   return readJSON(join(wfState(user, id), "runs", `${runId}.json`), null);
 }
 
-export function listWorkflowRuns(user, id, limit = 20) {
+export async function listWorkflowRuns(user, id, limit = 20) {
   assertId(id);
+  if (hasDb()) return (await listRunDocs(user, "workflow", id, limit)).map(summaryRun);
   let files = [];
   try { files = fs.readdirSync(join(wfState(user, id), "runs")).filter((f) => f.endsWith(".json")); } catch { return []; }
   return files.map((f) => readJSON(join(wfState(user, id), "runs", f), null)).filter(Boolean)
@@ -367,14 +427,14 @@ function note(run, text) {
   if (run.log.length > 200) run.log.shift();
 }
 
-function persist(run, ctx) {
-  if (ctx.user && run.workflowId && ctx.persist !== false) saveWorkflowRun(ctx.user, run.workflowId, run);
+async function persist(run, ctx) {
+  if (ctx.user && run.workflowId && ctx.persist !== false) await saveWorkflowRun(ctx.user, run.workflowId, run);
 }
 
-function finishRun(run, status, fields, ctx) {
+async function finishRun(run, status, fields, ctx) {
   Object.assign(run, { status, finishedAt: Date.now(), pending: null, queue: [] }, fields);
   note(run, status === "completed" ? "Workflow finished" : `Workflow ${status}: ${fields.error || ""}`);
-  persist(run, ctx);
+  await persist(run, ctx);
   return run;
 }
 
@@ -404,7 +464,7 @@ export async function continueRun(run, wIn, ctx) {
     if (!node) continue;
     const exprCtx = { json: input, nodes: run.byName };
     run.nodes[node.id] = { status: "running", startedAt: Date.now(), input: clampJSON(input, 64 * 1024), runs: ((run.nodes[node.id] && run.nodes[node.id].runs) || 0) + 1 };
-    persist(run, ctx);
+    await persist(run, ctx);
     try {
       const c = node.config;
       switch (node.type) {
@@ -423,18 +483,18 @@ export async function continueRun(run, wIn, ctx) {
           run.pending = { nodeId: node.id, kind: "approval", message, input };
           run.status = "awaiting_approval";
           note(run, `${node.name} is waiting for approval`);
-          persist(run, ctx);
+          await persist(run, ctx);
           return run;
         }
         case "agent": {
-          const def = readAgent(ctx.user, c.agentId);
+          const def = await readAgent(ctx.user, c.agentId);
           if (!def) throw new Error(`agent ${c.agentId} does not exist`);
           if (ctx.spendLLM) ctx.spendLLM();
           const agentInput = resolveTemplate(c.input, exprCtx);
           note(run, `${node.name} runs agent ${def.identity.name} v${def.version}`);
           const ar = await startRun(def, agentInput, { user: ctx.user, agentId: def.id, source: "workflow" });
           run.nodes[node.id].agentRunId = ar.id;
-          const r = agentOutcome(run, w, node, ar, ctx);
+          const r = await agentOutcome(run, w, node, ar, ctx);
           if (r) return r;
           break;
         }
@@ -450,7 +510,7 @@ export async function continueRun(run, wIn, ctx) {
 }
 
 // Maps an agent run onto the node: completed continues, a pause pauses the workflow, anything else fails it.
-function agentOutcome(run, w, node, ar, ctx) {
+async function agentOutcome(run, w, node, ar, ctx) {
   run.nodes[node.id].agentStatus = ar.status;
   run.nodes[node.id].agentSteps = (ar.steps || []).slice(-12);
   if (ar.status === "completed") { nodeDone(run, w, node, "main", ar.output); return null; }
@@ -459,7 +519,7 @@ function agentOutcome(run, w, node, ar, ctx) {
     run.pending = { nodeId: node.id, kind: "agent", agentRunId: ar.id, message: ar.pendingApproval && ar.pendingApproval.summary, detail: ar.pendingApproval };
     run.status = "awaiting_approval";
     note(run, `${node.name} is waiting for approval inside the agent`);
-    persist(run, ctx);
+    await persist(run, ctx);
     return run;
   }
   throw new Error(`agent run ${ar.status}: ${ar.error || "no output"}`);
@@ -468,12 +528,12 @@ function agentOutcome(run, w, node, ar, ctx) {
 export async function startWorkflowRun(wIn, input, ctx) {
   const w = normalizeWorkflow(wIn);
   const run = newRun(w, input, ctx.source || "editor");
-  const v = validateWorkflow(w, ctx.user);
+  const v = await validateWorkflow(w, ctx.user);
   if (!v.ok) return finishRun(run, "failed", { error: v.errors.map((e) => e.message).join("; ") }, ctx);
   const trigger = w.nodes.find((n) => n.type === "trigger");
   run.queue.push({ nodeId: trigger.id, input: input ?? trigger.config.sample });
   note(run, "Workflow started");
-  persist(run, ctx);
+  await persist(run, ctx);
   return continueRun(run, w, ctx);
 }
 
@@ -492,13 +552,13 @@ export async function decideWorkflowRun(run, wIn, decision, ctx) {
     nodeDone(run, w, node, approved ? "approved" : "rejected", { ...(p.input && typeof p.input === "object" && !Array.isArray(p.input) ? p.input : { value: p.input }), approved, note: noteText });
     return continueRun(run, w, ctx);
   }
-  const ar = readAgentRun(ctx.user, node.config.agentId, p.agentRunId);
-  const def = readAgent(ctx.user, node.config.agentId);
+  const ar = await readAgentRun(ctx.user, node.config.agentId, p.agentRunId);
+  const def = await readAgent(ctx.user, node.config.agentId);
   if (!ar || !def) return finishRun(run, "failed", { error: "the agent run or agent no longer exists" }, ctx);
   if (approved && ctx.spendLLM) ctx.spendLLM();
   const out = await resolveApproval(ar, def, { approved, note: noteText }, { user: ctx.user, agentId: def.id, source: "workflow" });
   try {
-    const r = agentOutcome(run, w, node, out, ctx);
+    const r = await agentOutcome(run, w, node, out, ctx);
     if (r) return r;
   } catch (e) {
     Object.assign(run.nodes[node.id], { status: "error", finishedAt: Date.now(), error: e.message });
