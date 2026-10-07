@@ -2,7 +2,7 @@
 (() => {
   const mode = (m) => () => { if (typeof setMode === 'function') setMode(m); };
   const STEPS = [
-    { el: '#panel-build .hx-composer', before: mode('build'), title: 'Build mode', text: 'Describe an app in plain words. Jr Architect asks a few design questions, writes a spec you can edit, builds the agents and workflows, then the app itself.' },
+    { el: '#panel-build .hx-composer', before: mode('build'), title: 'Hello, welcome to Jr Architect', text: "Let's build your first app. Describe it here in plain words: Jr Architect asks a few design questions, writes a spec you can edit, builds the agents and workflows, then the app itself." },
     { el: '.hx-ideas', title: 'Need a starting point?', text: 'Click an idea to drop it into the box, then press Build.' },
     { el: '#panel-dev', before: mode('dev'), title: 'Open code', text: 'Pick one of your GitHub repos, paste a repo URL, or drop a folder from your computer. It opens in a sandboxed IDE with a terminal, live preview and the coding agent.' },
     { el: '#panel-prompt', before: mode('prompt'), title: 'Run a repo', text: 'Paste any GitHub URL to get it running on a live URL. The stack and ports are detected and shown to you before anything runs.' },
@@ -101,8 +101,21 @@
     else if (e.key === 'ArrowLeft') go(step - 1);
   }
 
-  function start() {
-    if (ui || document.body.classList.contains('ide-mode')) return;
+  // First name for the greeting, from whoever is signed in.
+  async function userName() {
+    try {
+      const p = (await (await fetch('/auth/me', { headers: { 'X-Jr': '1' } })).json()).profile || {};
+      return (p.name || '').split(' ')[0] || p.login || (p.email || '').split('@')[0];
+    } catch { return ''; }
+  }
+
+  let starting = false;
+  async function start() {
+    if (ui || starting || document.body.classList.contains('ide-mode')) return;
+    starting = true;
+    const name = await userName();
+    starting = false;
+    STEPS[0].title = name ? `Hello ${name}, welcome to Jr Architect` : 'Hello, welcome to Jr Architect';
     build();
     document.addEventListener('keydown', onKey);
     addEventListener('resize', place);
