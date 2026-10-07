@@ -39,6 +39,8 @@ type Sandbox struct {
 	URL string `json:"url,omitempty"`
 	// Where the build is while Status is still "building": "image" or "container".
 	Stage string `json:"-"`
+	// The GitHub "owner/name" this workspace pushes to, recorded by the server; the workspace's own origin is not trusted for this.
+	GitHub string `json:"-"`
 }
 
 // The service the preview opens, or false when nothing serves HTTP.

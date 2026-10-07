@@ -58,7 +58,7 @@ func githubLogHandler(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	env := gitEnv("", "", "")
+	env := localGitEnv("", "")
 	if out, err := runGit(sb, env, "rev-parse", "--is-inside-work-tree"); err != nil || strings.TrimSpace(out) != "true" {
 		writeJSON(w, map[string]any{"repo": false, "commits": []graphCommit{}})
 		return
@@ -92,7 +92,7 @@ func githubShowHandler(w http.ResponseWriter, r *http.Request) {
 		core.JSONError(w, "not a commit hash", 400)
 		return
 	}
-	env := gitEnv("", "", "")
+	env := localGitEnv("", "")
 	if path := q.Get("path"); path != "" {
 		if !graphPathRe.MatchString(path) || strings.HasPrefix(path, "-") || strings.Contains(path, "..") {
 			core.JSONError(w, "not a file path", 400)
@@ -151,9 +151,18 @@ func githubUnshallowHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	gh, _ := githubFor(r)
-	env := gitEnv(gh.Token, "", "")
-	if out, err := runGit(sb, env, "fetch", "--unshallow", "--tags", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil && !strings.Contains(out, "complete repository") {
-		msg := redactToken(err.Error(), gh.Token)
+	st, err := readGitState(sb, "", false)
+	if err != nil || !st.Repo {
+		core.JSONError(w, "this workspace is not a git repository", 400)
+		return
+	}
+	repo := boundRepo(sb, st.GitHub)
+	if repo == "" {
+		core.JSONError(w, "this workspace has no GitHub remote to load history from", 400)
+		return
+	}
+	if out, err := fetchFor(sb, gh.Token, repo, true); err != nil {
+		msg := err.Error()
 		if authFailure(out) {
 			msg = "GitHub refused the fetch; connect GitHub to load the history of a private repository"
 		}
