@@ -52,8 +52,6 @@
 
   const NAV = [
     ['home', 'Home', '/', (p) => p === '/' || p === '/index.html', 'Workspace'],
-    ['projects', 'Projects', '/?open=saved', () => false, 'Workspace'],
-    ['build', 'Build', '/?mode=build', () => false, 'Workspace'],
     ['hub', 'Agents', '/hub.html', (p, h) => (p === '/hub.html' && h !== '#workflows') || p === '/studio.html', 'Automation'],
     ['flows', 'Workflows', '/hub.html#workflows', (p, h) => p === '/flows.html' || (p === '/hub.html' && h === '#workflows'), 'Automation'],
     ['settings', 'Settings', '/settings.html', (p) => p === '/settings.html', 'Automation'],
@@ -104,10 +102,16 @@
       ${group('Workspace')}
       ${group('Automation')}
       <div class="jr-rail-foot">
+        <button class="jr-rail-item jr-rail-tour" type="button">${icon('flag', 16)}<span>Take the tour</span></button>
         <button class="jr-rail-item jr-rail-pin" type="button">${icon('panelLeft', 16)}<span></span></button>
         <button class="jr-rail-item jr-rail-theme" type="button">${icon('theme', 16)}<span>Toggle theme</span></button>
       </div>`;
     rail.querySelector('.jr-rail-theme').addEventListener('click', () => window.jrToggleTheme());
+    // The tour lives on the home page; elsewhere this goes there and starts it.
+    rail.querySelector('.jr-rail-tour').addEventListener('click', () => {
+      if (typeof window.jrStartTour === 'function' && !document.body.classList.contains('ide-mode')) window.jrStartTour();
+      else location.href = '/?tour=1';
+    });
     // Collapsed to icons by default and opened by hovering; pinning keeps it open and pushes the page over.
     const pin = rail.querySelector('.jr-rail-pin');
     const setPinned = (on) => {
@@ -120,13 +124,6 @@
     try { pinned = localStorage.getItem('jr-rail-pinned') === 'true'; } catch { /* storage blocked */ }
     setPinned(pinned);
     pin.addEventListener('click', () => { setPinned(!document.body.classList.contains('rail-pinned')); pin.blur(); });
-    // On the home page these switch the launcher in place instead of reloading.
-    rail.querySelectorAll('[data-nav="projects"],[data-nav="build"]').forEach(a => a.addEventListener('click', (e) => {
-      if (typeof window.jrHomeNav === 'function') {
-        e.preventDefault();
-        window.jrHomeNav(a.dataset.nav);
-      }
-    }));
     mountAccount(rail);
     markActive(rail);
     ['hashchange', 'jr-nav'].forEach((ev) => window.addEventListener(ev, () => markActive(rail)));

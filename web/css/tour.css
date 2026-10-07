@@ -1,0 +1,65 @@
+/* Home page tour: the spotlight's huge shadow dims everything else, and the block layer keeps the page still while it runs. */
+.tour-block { position: fixed; inset: 0; z-index: 9000; }
+
+.tour-spot {
+  position: fixed;
+  z-index: 9001;
+  border-radius: var(--r-lg);
+  box-shadow: 0 0 0 2px var(--text), 0 0 0 9999px rgba(0, 0, 0, .62);
+  pointer-events: none;
+  transition: top .25s var(--ease), left .25s var(--ease), width .25s var(--ease), height .25s var(--ease);
+}
+
+.tour-tip {
+  position: fixed;
+  z-index: 9002;
+  width: min(340px, calc(100vw - 16px));
+  padding: 16px 18px 14px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border2);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  transition: top .25s var(--ease), left .25s var(--ease);
+}
+
+.tour-arrow {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.tour-tip[data-side="bottom"] .tour-arrow { top: 0; border-right: 0; border-bottom: 0; }
+.tour-tip[data-side="top"] .tour-arrow { top: 100%; border-left: 0; border-top: 0; }
+.tour-tip[data-side="right"] .tour-arrow { left: 0; border-top: 0; border-right: 0; }
+
+.tour-count { font-size: var(--fs-xs); color: var(--text3); letter-spacing: .04em; text-transform: uppercase; margin-bottom: 6px; }
+.tour-tip h3 { margin: 0 0 6px; font-size: var(--fs-lg); font-weight: var(--fw-bold); }
+.tour-tip p { margin: 0; font-size: var(--fs-md); line-height: 1.5; color: var(--text2); }
+
+.tour-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+
+.tour-actions button {
+  height: 32px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+
+.tour-skip { margin-right: auto; padding: 0 !important; color: var(--text3); background: none; border: 0; }
+.tour-skip:hover { color: var(--text); }
+.tour-back { color: var(--text2); background: transparent; border: 1px solid var(--border2); }
+.tour-back:hover { color: var(--text); background: var(--hover); }
+.tour-back:disabled { visibility: hidden; }
+.tour-next { min-width: 72px; color: var(--on-accent); background: var(--accent); border: 0; }
+.tour-actions button:focus-visible { outline: 2px solid var(--accent-glow); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-spot, .tour-tip { transition: none; }
+}

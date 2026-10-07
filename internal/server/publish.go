@@ -57,7 +57,7 @@ func repoSlug(name string) string {
 
 // Creates the repo, writes the README and safe examples of secret files, commits everything and pushes, then invites the collaborator.
 func publishWorkspace(ctx context.Context, sb core.Sandbox, gh core.GitHubLink, opts publishOpts) (publishResult, error) {
-	st, err := readGitState(sb, gh.Token, false)
+	st, err := readGitState(sb, "", false)
 	if err != nil {
 		return publishResult{}, err
 	}
@@ -82,7 +82,9 @@ func publishWorkspace(ctx context.Context, sb core.Sandbox, gh core.GitHubLink, 
 	}
 
 	name, email := commitIdentity(gh)
-	env := gitEnv(gh.Token, name, email)
+	env := localGitEnv(name, email)
+	core.UpdateSandbox(sb.Container, func(s *core.Sandbox) { s.GitHub = created.FullName })
+	sb.GitHub = created.FullName
 	if !st.Repo {
 		if _, err := runGit(sb, env, "init", "-b", "main"); err != nil {
 			return res, fmt.Errorf("the repository was created but git init failed: %w", err)
@@ -91,7 +93,7 @@ func publishWorkspace(ctx context.Context, sb core.Sandbox, gh core.GitHubLink, 
 	if _, err := runGit(sb, env, "remote", "add", "origin", created.CloneURL); err != nil {
 		return res, fmt.Errorf("the repository was created but git failed: %w", err)
 	}
-	st, _ = readGitState(sb, gh.Token, false)
+	st, _ = readGitState(sb, "", false)
 	if len(st.Changes) > 0 {
 		if _, err := runGit(sb, env, append([]string{"add", "-A"}, addPathspec(st)...)...); err != nil {
 			return res, fmt.Errorf("the repository was created but staging failed: %w", err)
@@ -108,9 +110,14 @@ func publishWorkspace(ctx context.Context, sb core.Sandbox, gh core.GitHubLink, 
 	if branch == "" {
 		branch = "main"
 	}
-	if _, err := runGit(sb, env, "push", "-u", "origin", "HEAD:refs/heads/"+branch); err != nil {
-		return res, fmt.Errorf("the repository was created but the push failed: %s", redactToken(err.Error(), gh.Token))
+	head, err := runGit(sb, env, "rev-parse", "HEAD")
+	if err != nil {
+		return res, fmt.Errorf("the repository was created but there is no commit to push: %w", err)
 	}
+	if _, err := secureRemoteGit(sb, gh.Token, remoteOp{Op: "push", Repo: created.FullName, SHA: strings.TrimSpace(head), Branch: branch}); err != nil {
+		return res, fmt.Errorf("the repository was created but the push failed: %s", err.Error())
+	}
+	runGit(sb, env, "branch", "--set-upstream-to=origin/"+branch)
 
 	topics := []string{"jr-architect", "built-with-jr-architect"}
 	if opts.Build != nil && opts.Build.PRD != nil && opts.Build.PRD.Stack != "" {

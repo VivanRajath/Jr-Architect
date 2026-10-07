@@ -148,18 +148,24 @@ var (
 	noGit   = map[string]bool{}
 )
 
-// Runs git against the workspace inside the sandbox, so a repo's hooks or config never execute on the host.
-func runGit(sb core.Sandbox, env []string, args ...string) (string, error) {
+// Git config for git that runs where repository code runs: it can never carry a token, which only remoteGitEnv adds.
+// A struct, not a slice, so a []string from gitEnv(token, ...) cannot be passed where this is expected.
+type localEnv struct{ vars []string }
+
+func localGitEnv(name, email string) localEnv { return localEnv{gitEnv("", name, email)} }
+
+// Runs tokenless git against the workspace inside the sandbox, so a repo's hooks or config never execute on the host.
+func runGit(sb core.Sandbox, env localEnv, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 	noGitMu.Lock()
 	skipExec := noGit[sb.Container]
 	noGitMu.Unlock()
 	if !skipExec {
-		cmd := append([]string{"exec", "-i", "-w", "/workspace"}, envNames(env)...)
+		cmd := append([]string{"exec", "-i", "-w", "/workspace"}, envNames(env.vars)...)
 		cmd = append(append(cmd, sb.Container, "git"), args...)
 		c := exec.CommandContext(ctx, core.CLI(), cmd...)
-		c.Env = append(os.Environ(), env...)
+		c.Env = append(os.Environ(), env.vars...)
 		out, err := c.CombinedOutput()
 		if err == nil || !execUnavailable(string(out)) {
 			return string(out), wrapGitErr(err, string(out), ctx)
@@ -168,10 +174,10 @@ func runGit(sb core.Sandbox, env []string, args ...string) (string, error) {
 		noGit[sb.Container] = true
 		noGitMu.Unlock()
 	}
-	cmd := append([]string{"run", "--rm", "-i", "-v", sb.Workdir + ":/workspace", "-w", "/workspace"}, envNames(env)...)
+	cmd := append([]string{"run", "--rm", "-i", "-v", sb.Workdir + ":/workspace", "-w", "/workspace"}, envNames(env.vars)...)
 	cmd = append(append(cmd, "--entrypoint", "git", gitFallbackImage), args...)
 	c := exec.CommandContext(ctx, core.CLI(), cmd...)
-	c.Env = append(os.Environ(), env...)
+	c.Env = append(os.Environ(), env.vars...)
 	out, err := c.CombinedOutput()
 	return string(out), wrapGitErr(err, string(out), ctx)
 }

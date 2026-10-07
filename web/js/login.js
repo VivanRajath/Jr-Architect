@@ -22,13 +22,11 @@ if (params.get('error')) showError(params.get('error'));
   const oauth = p.google || p.github;
   show('auth-providers', oauth);
   show('auth-github', p.github);
-  show('auth-gh-note', p.github);
   show('auth-google', p.google);
   show('auth-form', p.beta);
   show('auth-divider', oauth && p.beta);
   if (!oauth && p.beta) {
     document.getElementById('auth-title').textContent = 'Private beta';
-    document.getElementById('auth-sub').textContent = 'Enter the beta code you were given.';
     document.getElementById('code').focus();
   }
   if (!oauth && !p.beta) showError('No sign-in method is set up on this server yet.');
@@ -74,3 +72,4 @@ document.getElementById('auth-form').addEventListener('submit', async (e) => {
   }
   btn.disabled = false;
 });
+

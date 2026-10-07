@@ -234,8 +234,9 @@ func commitIdentity(gh core.GitHubLink) (string, string) {
 	return name, email
 }
 
+// Reads git state with tokenless git in the sandbox; a fetch, when asked for, goes through secureRemoteGit.
 func readGitState(sb core.Sandbox, token string, fetch bool) (gitState, error) {
-	env := gitEnv(token, "", "")
+	env := localGitEnv("", "")
 	if out, err := runGit(sb, env, "rev-parse", "--is-inside-work-tree"); err != nil || strings.TrimSpace(out) != "true" {
 		return gitState{Repo: false, Changes: []gitChange{}}, nil
 	}
@@ -244,12 +245,16 @@ func readGitState(sb core.Sandbox, token string, fetch bool) (gitState, error) {
 	if strings.Contains(remote, "fatal") || strings.Contains(remote, "error") {
 		remote = ""
 	}
-	if fetch && remote != "" {
-		if out, err := runGit(sb, env, "fetch", "--prune", "origin"); err != nil {
+	origin := ""
+	if o, n, ok := parseGitHubRepo(remote); ok {
+		origin = o + "/" + n
+	}
+	if repo := boundRepo(sb, origin); fetch && repo != "" {
+		if out, err := fetchFor(sb, token, repo, false); err != nil {
 			if authFailure(out) {
 				return gitState{}, fmt.Errorf("GitHub refused the fetch; reconnect GitHub in Settings")
 			}
-			return gitState{}, fmt.Errorf("fetch failed: %s", redactToken(err.Error(), token))
+			return gitState{}, fmt.Errorf("fetch failed: %s", err.Error())
 		}
 	}
 	out, err := runGit(sb, env, "status", "--porcelain=v1", "-b", "-uall")
@@ -314,23 +319,48 @@ func githubPullHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, email := commitIdentity(gh)
-	env := gitEnv(gh.Token, name, email)
-	out, err := runGit(sb, env, "pull", "--rebase", "--autostash", "--no-edit")
-	if err != nil {
-		// Leave the workspace as it was rather than half-rebased.
-		runGit(sb, env, "rebase", "--abort")
-		msg := redactToken(err.Error(), gh.Token)
-		if strings.Contains(out, "CONFLICT") {
-			msg = "the remote changes conflict with yours; commit or discard yours, then pull again"
-		} else if authFailure(out) {
+	st, err := readGitState(sb, "", false)
+	if err != nil || !st.Repo {
+		core.JSONError(w, "this workspace is not a git repository", 400)
+		return
+	}
+	repo := boundRepo(sb, st.GitHub)
+	if repo == "" {
+		core.JSONError(w, "this workspace is not linked to a GitHub repository", 400)
+		return
+	}
+	// A pull is a fetch with the token, outside the sandbox, then a rebase without it, inside.
+	if out, err := fetchFor(sb, gh.Token, repo, false); err != nil {
+		msg := err.Error()
+		if authFailure(out) {
 			msg = "GitHub refused the pull; reconnect GitHub in Settings"
 		}
 		core.JSONError(w, msg, 409)
 		return
 	}
+	upstream := st.Upstream
+	if upstream == "" && st.Branch != "" {
+		upstream = "origin/" + st.Branch
+	}
+	if upstream == "" {
+		core.JSONError(w, "the workspace is not on a branch", 400)
+		return
+	}
+	env := localGitEnv(name, email)
+	out, err := runGit(sb, env, "rebase", "--autostash", upstream)
+	if err != nil {
+		// Leave the workspace as it was rather than half-rebased.
+		runGit(sb, env, "rebase", "--abort")
+		msg := err.Error()
+		if strings.Contains(out, "CONFLICT") {
+			msg = "the remote changes conflict with yours; commit or discard yours, then pull again"
+		}
+		core.JSONError(w, msg, 409)
+		return
+	}
 	core.Logf("github", "pull container=%s user=%s", sb.Container, sb.Owner)
-	st, _ := readGitState(sb, gh.Token, false)
-	writeJSON(w, map[string]interface{}{"state": st, "output": strings.TrimSpace(redactToken(out, gh.Token))})
+	st, _ = readGitState(sb, "", false)
+	writeJSON(w, map[string]interface{}{"state": st, "output": strings.TrimSpace(out)})
 }
 
 type prRequest struct {
@@ -358,16 +388,23 @@ func githubPushHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, email := commitIdentity(gh)
-	env := gitEnv(gh.Token, name, email)
-	st, err := readGitState(sb, gh.Token, false)
+	env := localGitEnv(name, email)
+	st, err := readGitState(sb, "", false)
 	if err != nil {
 		core.JSONError(w, err.Error(), 502)
 		return
 	}
-	if !st.Repo || st.GitHub == "" {
+	repo := boundRepo(sb, st.GitHub)
+	if !st.Repo || repo == "" {
 		core.JSONError(w, "this workspace is not linked to a GitHub repository; publish it first", 400)
 		return
 	}
+	// The server's record of the repository decides where a push goes; a workspace that rewired its origin is refused.
+	if st.GitHub != "" && !strings.EqualFold(st.GitHub, repo) {
+		core.JSONError(w, "this workspace's origin was changed to "+st.GitHub+", but it was opened from "+repo+"; pushing elsewhere is not allowed", 409)
+		return
+	}
+	st.GitHub = repo
 	fail := func(step string, err error) {
 		core.JSONError(w, step+": "+redactToken(err.Error(), gh.Token), 502)
 	}
@@ -401,8 +438,13 @@ func githubPushHandler(w http.ResponseWriter, r *http.Request) {
 		core.JSONError(w, "the workspace is not on a branch; name one to push to", 400)
 		return
 	}
-	if out, err := runGit(sb, env, "push", "-u", "origin", "HEAD:refs/heads/"+st.Branch); err != nil {
-		msg := redactToken(err.Error(), gh.Token)
+	head, err := runGit(sb, env, "rev-parse", "HEAD")
+	if err != nil {
+		fail("could not read the commit to push", err)
+		return
+	}
+	if out, err := secureRemoteGit(sb, gh.Token, remoteOp{Op: "push", Repo: repo, SHA: strings.TrimSpace(head), Branch: st.Branch}); err != nil {
+		msg := err.Error()
 		if strings.Contains(out, "rejected") || strings.Contains(out, "fetch first") || strings.Contains(out, "non-fast-forward") {
 			msg = "GitHub has newer commits on " + st.Branch + "; pull first, then push"
 		} else if authFailure(out) {
@@ -411,6 +453,7 @@ func githubPushHandler(w http.ResponseWriter, r *http.Request) {
 		core.JSONError(w, msg, 409)
 		return
 	}
+	runGit(sb, env, "branch", "--set-upstream-to=origin/"+st.Branch)
 	core.Logf("github", "push container=%s user=%s repo=%s branch=%s", sb.Container, sb.Owner, st.GitHub, st.Branch)
 	out := map[string]interface{}{"committed": committed, "branch": st.Branch, "repo": st.GitHub}
 	if req.PR != nil {

@@ -36,17 +36,6 @@ function setMode(mode) {
   if (focus) document.getElementById(focus).focus();
 }
 
-// The rail's Projects and Build links switch the launcher in place on this page.
-window.jrHomeNav = (target) => {
-  if (document.body.classList.contains('ide-mode')) { location.href = target === 'build' ? '/?mode=build' : '/?open=saved'; return; }
-  if (target === 'build') {
-    setMode('build');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  } else {
-    document.getElementById('work').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-};
-
 // "Good evening, Vivan" when we know who is signed in.
 async function greet() {
   const h = new Date().getHours();
@@ -1364,7 +1353,7 @@ async function loadHubSummary() {
   }
 }
 
-// ?mode=build and ?open=saved come from the rail on other pages.
+// ?mode=, ?open= and ?github come from links on other pages and the OAuth return.
 async function initHome() {
   initLocalUpload();
   const q = new URLSearchParams(location.search);
