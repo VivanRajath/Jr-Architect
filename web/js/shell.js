@@ -102,10 +102,16 @@
       ${group('Workspace')}
       ${group('Automation')}
       <div class="jr-rail-foot">
+        <button class="jr-rail-item jr-rail-tour" type="button">${icon('flag', 16)}<span>Take the tour</span></button>
         <button class="jr-rail-item jr-rail-pin" type="button">${icon('panelLeft', 16)}<span></span></button>
         <button class="jr-rail-item jr-rail-theme" type="button">${icon('theme', 16)}<span>Toggle theme</span></button>
       </div>`;
     rail.querySelector('.jr-rail-theme').addEventListener('click', () => window.jrToggleTheme());
+    // The tour lives on the home page; elsewhere this goes there and starts it.
+    rail.querySelector('.jr-rail-tour').addEventListener('click', () => {
+      if (typeof window.jrStartTour === 'function' && !document.body.classList.contains('ide-mode')) window.jrStartTour();
+      else location.href = '/?tour=1';
+    });
     // Collapsed to icons by default and opened by hovering; pinning keeps it open and pushes the page over.
     const pin = rail.querySelector('.jr-rail-pin');
     const setPinned = (on) => {

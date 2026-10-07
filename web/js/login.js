@@ -27,7 +27,7 @@ if (params.get('error')) showError(params.get('error'));
   show('auth-divider', oauth && p.beta);
   if (!oauth && p.beta) {
     document.getElementById('auth-title').textContent = 'Private beta';
-    if (document.getElementById('tour').hidden) document.getElementById('code').focus();
+    document.getElementById('code').focus();
   }
   if (!oauth && !p.beta) showError('No sign-in method is set up on this server yet.');
   for (const id of ['auth-github', 'auth-google']) {
@@ -73,65 +73,3 @@ document.getElementById('auth-form').addEventListener('submit', async (e) => {
   btn.disabled = false;
 });
 
-// First-visit walkthrough of what the platform does; Skip or the last step drops the visitor on the sign-in card.
-const TOUR = [
-  ['home', 'Describe an app, or bring your code', 'Start from one box: type an idea in plain words, open one of your GitHub repos, or paste any repo URL to run it.'],
-  ['questions', 'Design decisions, not a form', 'A short interview turns a vague idea into a precise app. Every question has a recommended answer picked for you.'],
-  ['build', 'Agents and workflows, built first', 'Your answers become an editable spec. Then the AI agents the app needs and the workflows that connect them are built and tested before any UI.'],
-  ['playground', 'Talk to your workflows', 'Try every workflow in the Playground, see each agent step, and change the flow in a visual editor.'],
-  ['ide-preview', 'A real IDE with a live preview', 'Every project runs in its own sandbox with a code editor, a terminal and a preview that updates as you edit.'],
-  ['plan-review', 'Plan first, then the agent builds', 'Ask for a change and review the plan like a design doc. The coding agent then builds it task by task, within guardrails you set.'],
-  ['source-control', 'Synced with GitHub', 'Commit, push and open pull requests from the IDE. Everything you build is yours, as a normal repo with a README.'],
-];
-const tour = document.getElementById('tour');
-const tourImg = document.getElementById('tour-img');
-const tourNext = document.getElementById('tour-next');
-const tourBack = document.getElementById('tour-back');
-const tourDots = document.getElementById('tour-dots');
-let step = 0;
-
-tourDots.innerHTML = TOUR.map((t, i) => `<button type="button" aria-label="Step ${i + 1}: ${t[1]}"></button>`).join('');
-tourDots.querySelectorAll('button').forEach((b, i) => b.addEventListener('click', () => showStep(i)));
-
-function showStep(i) {
-  step = i;
-  const [img, title, text] = TOUR[i];
-  tourImg.classList.add('fading');
-  const pic = new Image();
-  pic.onload = pic.onerror = () => { tourImg.src = pic.src; tourImg.alt = title; tourImg.classList.remove('fading'); };
-  pic.src = `/img/tour/${img}.webp`;
-  if (TOUR[i + 1]) new Image().src = `/img/tour/${TOUR[i + 1][0]}.webp`;
-  document.getElementById('tour-title').textContent = title;
-  document.getElementById('tour-text').textContent = text;
-  document.getElementById('tour-count').textContent = `${i + 1} / ${TOUR.length}`;
-  tourDots.querySelectorAll('button').forEach((b, j) => b.classList.toggle('on', j === i));
-  tourBack.disabled = i === 0;
-  tourNext.textContent = i === TOUR.length - 1 ? 'Sign in' : 'Next';
-}
-
-function openTour() {
-  showStep(0);
-  tour.hidden = false;
-  tourNext.focus();
-}
-
-function closeTour() {
-  tour.hidden = true;
-  try { localStorage.setItem('jr-tour-done', '1'); } catch { /* storage blocked */ }
-  document.getElementById('tour-open').focus();
-}
-
-tourNext.addEventListener('click', () => (step < TOUR.length - 1 ? showStep(step + 1) : closeTour()));
-tourBack.addEventListener('click', () => step > 0 && showStep(step - 1));
-document.getElementById('tour-skip').addEventListener('click', closeTour);
-document.getElementById('tour-open').addEventListener('click', openTour);
-document.addEventListener('keydown', (e) => {
-  if (tour.hidden) return;
-  if (e.key === 'Escape') closeTour();
-  else if (e.key === 'ArrowRight') tourNext.click();
-  else if (e.key === 'ArrowLeft') tourBack.click();
-});
-
-let seen = false;
-try { seen = localStorage.getItem('jr-tour-done') === '1'; } catch { /* storage blocked */ }
-if (!seen && !params.get('error')) openTour();

@@ -190,14 +190,14 @@ func meHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-// Reachable without a session: the login page, what it loads (tour screenshots included), and the health probe.
+// Reachable without a session: the login page, what it loads, and the health probe.
 func isPublicPath(p string) bool {
 	switch p {
 	case "/login", "/login.html", "/auth/login", "/auth/providers", "/health", "/ready", "/css/tokens.css", "/css/login.css", "/js/login.js", "/vendor/fonts/fonts.css":
 		return true
 	}
 	// The OAuth handlers check the session themselves where it matters.
-	return strings.HasPrefix(p, "/vendor/fonts/") || strings.HasPrefix(p, "/img/tour/") || strings.HasPrefix(p, "/auth/oauth/")
+	return strings.HasPrefix(p, "/vendor/fonts/") || strings.HasPrefix(p, "/auth/oauth/")
 }
 
 // Only honoured from loopback: the agent service is the one caller that holds the token.
