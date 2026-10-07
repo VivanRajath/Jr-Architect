@@ -2,6 +2,7 @@
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { readJSON, writeJSON, userDir, readAgent } from "./store.js";
+import { hasDb, col } from "./db.js";
 
 const MAX_MESSAGES = 100;
 // The input field a typed message goes into, when the workflow has one by these names.
@@ -22,17 +23,20 @@ export function isGreeting(text) {
 }
 
 // Walks the graph from the trigger and reads it back as steps a person can follow.
-export function describeWorkflow(user, w) {
+export async function describeWorkflow(user, w) {
   const byId = Object.fromEntries(w.nodes.map((n) => [n.id, n]));
   const out = (id) => w.edges.filter((e) => e.from === id);
   const agents = [];
   const seen = new Set();
+  // Agent definitions are loaded up front so the walk below stays synchronous.
+  const defs = {};
+  for (const n of w.nodes) {
+    if (n.type !== "agent" || !n.config.agentId || n.config.agentId in defs) continue;
+    try { defs[n.config.agentId] = await readAgent(user, n.config.agentId); } catch { defs[n.config.agentId] = null; }
+  }
   const agentInfo = (n) => {
-    let purpose = "";
-    try {
-      const a = n.config.agentId ? readAgent(user, n.config.agentId) : null;
-      purpose = (a && (a.identity.description || a.purpose)) || "";
-    } catch { /* agent deleted */ }
+    const a = defs[n.config.agentId];
+    const purpose = (a && (a.identity.description || a.purpose)) || "";
     return { name: n.name, purpose: String(purpose).slice(0, 240) };
   };
   // One readable line per node, following edges; branches are spelled out once.
@@ -93,22 +97,28 @@ export function greetingReply(info) {
   return parts.join(" ");
 }
 
-export function readThread(user, id) {
-  const t = readJSON(file(user, id), null);
+export async function readThread(user, id) {
+  const t = hasDb() ? await col("playground_threads").findOne({ owner: user, workflow: id }) : readJSON(file(user, id), null);
   return Array.isArray(t && t.messages) ? t.messages : [];
 }
 
-export function appendMessages(user, id, ...messages) {
-  const all = [...readThread(user, id), ...messages.map((m) => ({ id: msgId(), at: Date.now(), ...m }))].slice(-MAX_MESSAGES);
-  writeJSON(file(user, id), { messages: all });
+async function writeThread(user, id, messages) {
+  if (!hasDb()) return writeJSON(file(user, id), { messages });
+  await col("playground_threads").updateOne({ owner: user, workflow: id },
+    { $set: { messages, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } }, { upsert: true });
+}
+
+export async function appendMessages(user, id, ...messages) {
+  const all = [...await readThread(user, id), ...messages.map((m) => ({ id: msgId(), at: Date.now(), ...m }))].slice(-MAX_MESSAGES);
+  await writeThread(user, id, all);
   return all.slice(-messages.length);
 }
 
-export function updateMessage(user, id, messageId, patch) {
-  const all = readThread(user, id).map((m) => (m.id === messageId ? { ...m, ...patch } : m));
-  writeJSON(file(user, id), { messages: all });
+export async function updateMessage(user, id, messageId, patch) {
+  const all = (await readThread(user, id)).map((m) => (m.id === messageId ? { ...m, ...patch } : m));
+  await writeThread(user, id, all);
 }
 
-export function clearThread(user, id) {
-  writeJSON(file(user, id), { messages: [] });
+export async function clearThread(user, id) {
+  await writeThread(user, id, []);
 }

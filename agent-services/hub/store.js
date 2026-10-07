@@ -1,4 +1,4 @@
-// Per-user agent storage: each agent is its own git repository in gitagent layout, so every save is a version.
+// Per-user agent storage: MongoDB when configured, else each agent is its own git repository in gitagent layout; every save is a version.
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -7,6 +7,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   normalizeDefinition, renderGitagentFiles, definitionFromGitagent, slugify, bumpPatch,
 } from "./definition.js";
+import { hasDb, col, objectId, trimRuns, saveRunDoc, readRunDoc, listRunDocs } from "./db.js";
 
 // A public server shares one machine among many people; a local install belongs to one person who builds many apps.
 export const MAX_AGENTS_PER_USER = Number(process.env.JR_HUB_MAX_AGENTS) || (process.env.JR_PUBLIC_ORIGIN ? 25 : 500);
@@ -66,8 +67,24 @@ function writeFiles(dir, def) {
   for (const [name, body] of Object.entries(renderGitagentFiles(def))) fs.writeFileSync(join(dir, name), body);
 }
 
-export function readAgent(user, id) {
+// The stored definition goes back through normalize, so a read compares equal to what a save would write.
+function defFromDoc(doc) {
+  const def = normalizeDefinition(doc.definition);
+  def.id = doc.slug;
+  def.version = doc.version;
+  return def;
+}
+
+function keyPublic(k) {
+  return k ? { prefix: k.prefix, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt || null } : null;
+}
+
+export async function readAgent(user, id) {
   assertId(id);
+  if (hasDb()) {
+    const doc = await col("agents").findOne({ owner: user, slug: id });
+    return doc ? defFromDoc(doc) : null;
+  }
   const dir = agentDir(user, id);
   if (!fs.existsSync(join(dir, "agent.yaml"))) return null;
   const def = definitionFromGitagent({ "agent.yaml": fs.readFileSync(join(dir, "agent.yaml"), "utf8") });
@@ -75,36 +92,62 @@ export function readAgent(user, id) {
   return def;
 }
 
-export function listAgents(user) {
+export async function listAgents(user) {
+  if (hasDb()) {
+    const [docs, keys] = await Promise.all([
+      col("agents").find({ owner: user }).sort({ updatedAt: -1 }).toArray(),
+      col("api_keys").find({ owner: user, kind: "agent" }).toArray(),
+    ]);
+    const byTarget = Object.fromEntries(keys.map((k) => [k.target, k]));
+    return docs.map((d) => ({ definition: defFromDoc(d), updatedAt: d.updatedAt.getTime(), n8n: keyPublic(byTarget[d.slug]) }));
+  }
   const root = join(userDir(user), "agents");
   let names = [];
   try { names = fs.readdirSync(root); } catch { return []; }
   const keys = readJSON(join(userDir(user), "keys.json"), {});
-  return names.filter((n) => ID_RE.test(n)).map((id) => {
+  const out = [];
+  for (const id of names.filter((n) => ID_RE.test(n))) {
     try {
-      const def = readAgent(user, id);
-      if (!def) return null;
+      const def = await readAgent(user, id);
+      if (!def) continue;
       const st = fs.statSync(join(root, id, "agent.yaml"));
-      return { definition: def, updatedAt: st.mtimeMs, n8n: keys[id] ? { prefix: keys[id].prefix, createdAt: keys[id].createdAt, lastUsedAt: keys[id].lastUsedAt || null } : null };
-    } catch { return null; }
-  }).filter(Boolean).sort((a, b) => b.updatedAt - a.updatedAt);
+      out.push({ definition: def, updatedAt: st.mtimeMs, n8n: keyPublic(keys[id]) });
+    } catch { /* unreadable agent */ }
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-function uniqueId(user, base) {
-  const root = join(userDir(user), "agents");
+async function slugTaken(user, id) {
+  if (hasDb()) return !!(await col("agents").findOne({ owner: user, slug: id }, { projection: { _id: 1 } }));
+  return fs.existsSync(join(userDir(user), "agents", id));
+}
+
+async function uniqueId(user, base) {
   let id = slugify(base);
-  for (let i = 2; fs.existsSync(join(root, id)); i++) id = `${slugify(base).slice(0, 44)}-${i}`;
+  for (let i = 2; await slugTaken(user, id); i++) id = `${slugify(base).slice(0, 44)}-${i}`;
   return id;
 }
 
+async function addAgentVersion(user, def, message) {
+  await col("agent_versions").insertOne({
+    owner: user, slug: def.id, version: def.version, message: String(message).replace(/\s+/g, " ").slice(0, 120), definition: def, createdAt: new Date(),
+  });
+}
+
 export async function createAgent(user, input, message = "Create agent") {
-  const count = listAgents(user).length;
+  const count = hasDb() ? await col("agents").countDocuments({ owner: user }) : (await listAgents(user)).length;
   if (count >= MAX_AGENTS_PER_USER) throw Object.assign(new Error(`You can keep up to ${MAX_AGENTS_PER_USER} agents; delete one first.`), { status: 409 });
   const def = normalizeDefinition(input);
-  def.id = uniqueId(user, def.identity.name);
-  def.version = "0.1.0";
-  const dir = agentDir(user, def.id);
-  return withLock(dir, async () => {
+  return withLock(`agents:${user}`, async () => {
+    def.id = await uniqueId(user, def.identity.name);
+    def.version = "0.1.0";
+    if (hasDb()) {
+      const now = new Date();
+      await col("agents").insertOne({ owner: user, slug: def.id, version: def.version, definition: def, createdAt: now, updatedAt: now });
+      await addAgentVersion(user, def, message);
+      return def;
+    }
+    const dir = agentDir(user, def.id);
     fs.mkdirSync(dir, { recursive: true });
     try {
       await git(dir, ["init", "-q", "-b", "main"]);
@@ -122,16 +165,20 @@ export async function createAgent(user, input, message = "Create agent") {
 
 export async function saveAgent(user, id, input, message = "Update agent") {
   assertId(id);
-  const dir = agentDir(user, id);
-  return withLock(dir, async () => {
-    const current = readAgent(user, id);
+  return withLock(`agents:${user}`, async () => {
+    const current = await readAgent(user, id);
     if (!current) throw Object.assign(new Error("agent not found"), { status: 404 });
     const def = normalizeDefinition(input);
     def.id = id;
     def.version = current.version;
-    const before = JSON.stringify(current);
-    if (JSON.stringify({ ...def }) === before) return { definition: current, changed: false };
+    if (JSON.stringify(def) === JSON.stringify(current)) return { definition: current, changed: false };
     def.version = bumpPatch(current.version);
+    if (hasDb()) {
+      await col("agents").updateOne({ owner: user, slug: id }, { $set: { version: def.version, definition: def, updatedAt: new Date() } });
+      await addAgentVersion(user, def, message);
+      return { definition: def, changed: true };
+    }
+    const dir = agentDir(user, id);
     writeFiles(dir, def);
     await git(dir, ["add", "-A"]);
     await git(dir, ["commit", "-q", "-m", `${String(message).replace(/\s+/g, " ").slice(0, 120)} (v${def.version})`]);
@@ -141,6 +188,17 @@ export async function saveAgent(user, id, input, message = "Update agent") {
 
 export async function deleteAgent(user, id) {
   assertId(id);
+  if (hasDb()) {
+    const { deletedCount } = await col("agents").deleteOne({ owner: user, slug: id });
+    if (!deletedCount) return false;
+    await Promise.all([
+      col("agent_versions").deleteMany({ owner: user, slug: id }),
+      col("agent_memory").deleteMany({ owner: user, agent: id }),
+      col("runs").deleteMany({ owner: user, scope: "agent", scopeId: id }),
+    ]);
+    await revokeKey(user, id);
+    return true;
+  }
   const dir = agentDir(user, id);
   if (!fs.existsSync(dir)) return false;
   fs.rmSync(dir, { recursive: true, force: true });
@@ -151,6 +209,11 @@ export async function deleteAgent(user, id) {
 
 export async function listVersions(user, id) {
   assertId(id);
+  if (hasDb()) {
+    if (!(await slugTaken(user, id))) return null;
+    const docs = await col("agent_versions").find({ owner: user, slug: id }, { projection: { definition: 0 } }).sort({ createdAt: -1 }).limit(50).toArray();
+    return docs.map((d) => ({ sha: d._id.toHexString(), at: d.createdAt.getTime(), message: d.message, version: d.version }));
+  }
   const dir = agentDir(user, id);
   if (!fs.existsSync(dir)) return null;
   const out = await git(dir, ["log", "-n", "50", "--format=%H%x09%at%x09%s", "--", "agent.yaml"]);
@@ -164,6 +227,12 @@ export async function listVersions(user, id) {
 export async function readVersion(user, id, sha) {
   assertId(id);
   if (!/^[a-f0-9]{7,40}$/.test(String(sha || ""))) throw Object.assign(new Error("invalid version"), { status: 400 });
+  if (hasDb()) {
+    const _id = objectId(sha);
+    const doc = _id && await col("agent_versions").findOne({ _id, owner: user, slug: id });
+    if (!doc) throw Object.assign(new Error("version not found"), { status: 404 });
+    return defFromDoc(doc);
+  }
   const dir = agentDir(user, id);
   const yamlText = await git(dir, ["show", `${sha}:agent.yaml`]);
   const def = definitionFromGitagent({ "agent.yaml": yamlText });
@@ -197,25 +266,32 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 // Agents and workflows each get their own token namespace, so an agent token can never run a workflow of the same name.
 const KEY_KINDS = { agent: { prefix: "jrk", slot: (id) => id }, workflow: { prefix: "jrw", slot: (id) => `wf:${id}` } };
 
-export function keyInfo(user, id, kind = "agent") {
-  const e = readJSON(keysPath(user), {})[KEY_KINDS[kind].slot(id)];
-  return e ? { prefix: e.prefix, createdAt: e.createdAt, lastUsedAt: e.lastUsedAt || null } : null;
+export async function keyInfo(user, id, kind = "agent") {
+  if (hasDb()) return keyPublic(await col("api_keys").findOne({ owner: user, kind, target: id }));
+  return keyPublic(readJSON(keysPath(user), {})[KEY_KINDS[kind].slot(id)]);
 }
 
 export async function issueKey(user, id, kind = "agent") {
   assertId(id);
   const k = KEY_KINDS[kind];
+  const secret = randomBytes(24).toString("hex");
+  const token = `${k.prefix}_${userKey(user)}_${id}_${secret}`;
+  const entry = { hash: sha256(token), prefix: token.slice(0, 12 + id.length) + "…", createdAt: Date.now(), owner: user };
+  if (hasDb()) {
+    await col("api_keys").updateOne({ owner: user, kind, target: id },
+      { $set: { ...entry, lastUsedAt: null } }, { upsert: true });
+    return token;
+  }
   return withLock(keysPath(user), async () => {
     const keys = readJSON(keysPath(user), {});
-    const secret = randomBytes(24).toString("hex");
-    const token = `${k.prefix}_${userKey(user)}_${id}_${secret}`;
-    keys[k.slot(id)] = { hash: sha256(token), prefix: token.slice(0, 12 + id.length) + "…", createdAt: Date.now(), owner: user };
+    keys[k.slot(id)] = entry;
     writeJSON(keysPath(user), keys);
     return token;
   });
 }
 
 export async function revokeKey(user, id, kind = "agent") {
+  if (hasDb()) return (await col("api_keys").deleteOne({ owner: user, kind, target: id })).deletedCount > 0;
   const slot = KEY_KINDS[kind].slot(id);
   return withLock(keysPath(user), async () => {
     const keys = readJSON(keysPath(user), {});
@@ -227,10 +303,18 @@ export async function revokeKey(user, id, kind = "agent") {
 }
 
 // Returns { user, id } for a valid token bound to that agent, else null.
-export function resolveKey(token, id, kind = "agent") {
+export async function resolveKey(token, id, kind = "agent") {
   const k = KEY_KINDS[kind];
   const m = /^(jr[kw])_([a-f0-9]{24})_([a-z0-9][a-z0-9-]{0,47})_([a-f0-9]{48})$/.exec(String(token || ""));
   if (!m || m[1] !== k.prefix || m[3] !== id) return null;
+  if (hasDb()) {
+    const entry = await col("api_keys").findOne({ hash: sha256(token), kind, target: id });
+    if (!entry || userKey(entry.owner) !== m[2]) return null;
+    if (!entry.lastUsedAt || Date.now() - entry.lastUsedAt > 60_000) {
+      col("api_keys").updateOne({ _id: entry._id }, { $set: { lastUsedAt: Date.now() } }).catch(() => {});
+    }
+    return { user: entry.owner, id };
+  }
   const keysFile = join(hubRoot(), m[2], "keys.json");
   const keys = readJSON(keysFile, {});
   const entry = keys[k.slot(id)];
@@ -245,21 +329,36 @@ export function resolveKey(token, id, kind = "agent") {
   return { user: entry.owner, id };
 }
 
-// --- runtime state: memory notes and run records, outside the versioned repo ---
+// --- runtime state: memory notes and run records, outside the versioned definition ---
 
-export function readMemory(user, id) {
+export async function readMemory(user, id) {
   assertId(id);
+  if (hasDb()) {
+    const doc = await col("agent_memory").findOne({ owner: user, agent: id });
+    return doc ? doc.notes : [];
+  }
   return readJSON(join(stateDir(user, id), "memory.json"), []);
 }
 
-export function appendMemory(user, id, note, max) {
-  const notes = readMemory(user, id);
-  notes.push({ note: String(note).slice(0, 300), at: Date.now() });
+export async function appendMemory(user, id, note, max) {
+  const entry = { note: String(note).slice(0, 300), at: Date.now() };
+  if (hasDb()) {
+    assertId(id);
+    await col("agent_memory").updateOne({ owner: user, agent: id },
+      { $push: { notes: { $each: [entry], $slice: -max } }, $set: { updatedAt: new Date() } }, { upsert: true });
+    return;
+  }
+  const notes = await readMemory(user, id);
+  notes.push(entry);
   writeJSON(join(stateDir(user, id), "memory.json"), notes.slice(-max));
 }
 
-export function clearMemory(user, id) {
+export async function clearMemory(user, id) {
   assertId(id);
+  if (hasDb()) {
+    await col("agent_memory").deleteOne({ owner: user, agent: id });
+    return;
+  }
   fs.rmSync(join(stateDir(user, id), "memory.json"), { force: true });
 }
 
@@ -267,8 +366,13 @@ export function newRunId() {
   return "r-" + randomBytes(8).toString("hex");
 }
 
-export function saveRun(user, id, run) {
+export async function saveRun(user, id, run) {
   assertId(id);
+  if (hasDb()) {
+    await saveRunDoc(user, "agent", id, run);
+    await trimRuns(user, "agent", id, MAX_RUNS_KEPT);
+    return;
+  }
   const dir = join(stateDir(user, id), "runs");
   writeJSON(join(dir, `${run.id}.json`), run);
   let files = [];
@@ -279,14 +383,16 @@ export function saveRun(user, id, run) {
   }
 }
 
-export function readRun(user, id, runId) {
+export async function readRun(user, id, runId) {
   assertId(id);
   if (!RUN_RE.test(String(runId || ""))) return null;
+  if (hasDb()) return readRunDoc(user, "agent", id, runId);
   return readJSON(join(stateDir(user, id), "runs", `${runId}.json`), null);
 }
 
-export function listRuns(user, id, limit = 20) {
+export async function listRuns(user, id, limit = 20) {
   assertId(id);
+  if (hasDb()) return listRunDocs(user, "agent", id, limit, "transcript");
   const dir = join(stateDir(user, id), "runs");
   let files = [];
   try { files = fs.readdirSync(dir).filter((f) => RUN_RE.test(f.replace(/\.json$/, ""))); } catch { return []; }

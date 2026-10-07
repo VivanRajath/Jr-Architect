@@ -115,8 +115,8 @@ export function createHubRouter({ allowLLM }) {
     const lim = allowLLM(user);
     if (!lim.ok) throw new HttpError(429, `hourly AI limit reached, try again in ${lim.minutes} min`);
   };
-  const mustAgent = (user, id) => {
-    const def = store.readAgent(user, id);
+  const mustAgent = async (user, id) => {
+    const def = await store.readAgent(user, id);
     if (!def) throw new HttpError(404, "agent not found");
     return def;
   };
@@ -130,7 +130,7 @@ export function createHubRouter({ allowLLM }) {
   const sweepDrafts = () => { const now = Date.now(); for (const [k, v] of draftRuns) if (v.expires < now) draftRuns.delete(k); };
   const summary = (def) => ({ ...def, validation: validateDefinition(def) });
 
-  r.get("/meta", (req, res) => {
+  r.get("/meta", async (req, res) => {
     userOf(req);
     res.json({
       tools: TOOL_CATALOG,
@@ -140,9 +140,9 @@ export function createHubRouter({ allowLLM }) {
     });
   });
 
-  r.get("/agents", (req, res) => {
+  r.get("/agents", async (req, res) => {
     const user = userOf(req);
-    res.json({ agents: store.listAgents(user).map((a) => ({ ...a, definition: summary(a.definition) })) });
+    res.json({ agents: (await store.listAgents(user)).map((a) => ({ ...a, definition: summary(a.definition) })) });
   });
 
   r.post("/agents", async (req, res) => {
@@ -151,10 +151,10 @@ export function createHubRouter({ allowLLM }) {
     res.status(201).json({ definition: def, validation: validateDefinition(def) });
   });
 
-  r.get("/agents/:id", (req, res) => {
+  r.get("/agents/:id", async (req, res) => {
     const user = userOf(req);
-    const def = mustAgent(user, req.params.id);
-    const n8n = store.listAgents(user).find((a) => a.definition.id === def.id)?.n8n || null;
+    const def = await mustAgent(user, req.params.id);
+    const n8n = await store.keyInfo(user, def.id);
     res.json({ definition: def, validation: validateDefinition(def), prompt: buildSystemPrompt(def), files: renderGitagentFiles(def), n8n });
   });
 
@@ -172,33 +172,33 @@ export function createHubRouter({ allowLLM }) {
 
   r.post("/agents/:id/duplicate", async (req, res) => {
     const user = userOf(req);
-    const src = mustAgent(user, req.params.id);
+    const src = await mustAgent(user, req.params.id);
     const copy = { ...src, identity: { ...src.identity, name: `${src.identity.name} copy` } };
     res.status(201).json({ definition: await store.createAgent(user, copy, `Duplicate of ${src.id} v${src.version}`) });
   });
 
   r.get("/agents/:id/versions", async (req, res) => {
     const user = userOf(req);
-    mustAgent(user, req.params.id);
+    await mustAgent(user, req.params.id);
     res.json({ versions: await store.listVersions(user, req.params.id) });
   });
 
   r.get("/agents/:id/versions/:sha", async (req, res) => {
     const user = userOf(req);
-    const current = mustAgent(user, req.params.id);
+    const current = await mustAgent(user, req.params.id);
     const old = await store.readVersion(user, req.params.id, req.params.sha);
     res.json({ definition: old, diffFromCurrent: diffDefinitions(current, old) });
   });
 
   r.post("/agents/:id/versions/:sha/restore", async (req, res) => {
     const user = userOf(req);
-    mustAgent(user, req.params.id);
+    await mustAgent(user, req.params.id);
     res.json(await store.restoreVersion(user, req.params.id, req.params.sha));
   });
 
-  r.get("/agents/:id/export", (req, res) => {
+  r.get("/agents/:id/export", async (req, res) => {
     const user = userOf(req);
-    const def = mustAgent(user, req.params.id);
+    const def = await mustAgent(user, req.params.id);
     res.setHeader("Content-Disposition", `attachment; filename="${def.id}.jr-agent.json"`);
     res.json(store.exportBundle(def));
   });
@@ -212,7 +212,7 @@ export function createHubRouter({ allowLLM }) {
     res.status(201).json({ definition: await store.createAgent(user, def, "Import agent") });
   });
 
-  r.post("/preview", (req, res) => {
+  r.post("/preview", async (req, res) => {
     userOf(req);
     const def = normalizeDefinition(req.body && req.body.definition);
     res.json({ definition: def, prompt: buildSystemPrompt(def), validation: validateDefinition(def), files: renderGitagentFiles(def) });
@@ -244,7 +244,7 @@ export function createHubRouter({ allowLLM }) {
   r.post("/test", async (req, res) => {
     const user = userOf(req);
     const { agentId, definition, input } = req.body || {};
-    const def = agentId ? mustAgent(user, agentId) : normalizeDefinition(definition);
+    const def = agentId ? await mustAgent(user, agentId) : normalizeDefinition(definition);
     spendLLM(user);
     const ctx = { user, agentId: agentId ? def.id : null, source: "studio" };
     const run = await tracked(user, () => startRun(def, input, ctx));
@@ -260,8 +260,8 @@ export function createHubRouter({ allowLLM }) {
     const { agentId, approved, note } = req.body || {};
     let run; let def; let ctx;
     if (agentId) {
-      def = mustAgent(user, agentId);
-      run = store.readRun(user, agentId, req.params.runId);
+      def = await mustAgent(user, agentId);
+      run = await store.readRun(user, agentId, req.params.runId);
       ctx = { user, agentId, source: "studio" };
     } else {
       const d = draftRuns.get(req.params.runId);
@@ -275,65 +275,65 @@ export function createHubRouter({ allowLLM }) {
     res.json({ run: publicRun(out) });
   });
 
-  r.get("/agents/:id/runs", (req, res) => {
+  r.get("/agents/:id/runs", async (req, res) => {
     const user = userOf(req);
-    mustAgent(user, req.params.id);
-    res.json({ runs: store.listRuns(user, req.params.id).map(publicRun) });
+    await mustAgent(user, req.params.id);
+    res.json({ runs: (await store.listRuns(user, req.params.id)).map(publicRun) });
   });
 
-  r.get("/agents/:id/runs/:runId", (req, res) => {
+  r.get("/agents/:id/runs/:runId", async (req, res) => {
     const user = userOf(req);
-    const run = store.readRun(user, req.params.id, req.params.runId);
+    const run = await store.readRun(user, req.params.id, req.params.runId);
     if (!run) throw new HttpError(404, "run not found");
     res.json({ run: publicRun(run) });
   });
 
-  r.delete("/agents/:id/memory", (req, res) => {
+  r.delete("/agents/:id/memory", async (req, res) => {
     const user = userOf(req);
-    mustAgent(user, req.params.id);
-    store.clearMemory(user, req.params.id);
+    await mustAgent(user, req.params.id);
+    await store.clearMemory(user, req.params.id);
     res.json({ cleared: true });
   });
 
-  r.get("/agents/:id/memory", (req, res) => {
+  r.get("/agents/:id/memory", async (req, res) => {
     const user = userOf(req);
-    mustAgent(user, req.params.id);
-    res.json({ notes: store.readMemory(user, req.params.id) });
+    await mustAgent(user, req.params.id);
+    res.json({ notes: await store.readMemory(user, req.params.id) });
   });
 
-  r.get("/agents/:id/connect", (req, res) => {
+  r.get("/agents/:id/connect", async (req, res) => {
     const user = userOf(req);
-    const def = mustAgent(user, req.params.id);
-    const n8n = store.listAgents(user).find((a) => a.definition.id === def.id)?.n8n || null;
+    const def = await mustAgent(user, req.params.id);
+    const n8n = await store.keyInfo(user, def.id);
     res.json({ connected: !!n8n, key: n8n, ...connectInfo(def, "") });
   });
 
   // The token is shown once; only its hash is kept, so a lost token is replaced, not recovered.
   r.post("/agents/:id/connect", async (req, res) => {
     const user = userOf(req);
-    const def = mustAgent(user, req.params.id);
+    const def = await mustAgent(user, req.params.id);
     const token = await store.issueKey(user, def.id);
     res.json({ connected: true, token, ...connectInfo(def, token) });
   });
 
   r.delete("/agents/:id/connect", async (req, res) => {
     const user = userOf(req);
-    mustAgent(user, req.params.id);
+    await mustAgent(user, req.params.id);
     res.json({ revoked: await store.revokeKey(user, req.params.id) });
   });
 
   // --- n8n: authenticated by the agent's token alone ---
 
-  const hookAuth = (req) => {
+  const hookAuth = async (req) => {
     const m = /^Bearer\s+(\S+)$/i.exec(req.get("authorization") || "");
-    const who = m && store.resolveKey(m[1], req.params.id);
+    const who = m && await store.resolveKey(m[1], req.params.id);
     if (!who) throw new HttpError(401, "invalid or revoked agent token");
     return who;
   };
 
   r.post("/hook/:id/run", async (req, res) => {
-    const { user, id } = hookAuth(req);
-    const def = mustAgent(user, id);
+    const { user, id } = await hookAuth(req);
+    const def = await mustAgent(user, id);
     const body = req.body || {};
     const input = body.input !== undefined ? body.input : body;
     let callbackUrl = null;
@@ -344,7 +344,7 @@ export function createHubRouter({ allowLLM }) {
     spendLLM(user);
     const ctx = { user, agentId: id, source: "n8n", callbackUrl };
     if (body.wait === false) {
-      const run = prepareRun(def, input, ctx);
+      const run = await prepareRun(def, input, ctx);
       if (run.status === "running") {
         tracked(user, () => drive(run, def, ctx)).then(sendCallback).catch((e) => console.error("[hub] background run failed:", e.message));
       }
@@ -358,17 +358,17 @@ export function createHubRouter({ allowLLM }) {
     });
   });
 
-  r.get("/hook/:id/runs/:runId", (req, res) => {
-    const { user, id } = hookAuth(req);
-    const run = store.readRun(user, id, req.params.runId);
+  r.get("/hook/:id/runs/:runId", async (req, res) => {
+    const { user, id } = await hookAuth(req);
+    const run = await store.readRun(user, id, req.params.runId);
     if (!run) throw new HttpError(404, "run not found");
     res.json(publicRun(run));
   });
 
   r.post("/hook/:id/runs/:runId/decision", async (req, res) => {
-    const { user, id } = hookAuth(req);
-    const def = mustAgent(user, id);
-    const run = store.readRun(user, id, req.params.runId);
+    const { user, id } = await hookAuth(req);
+    const def = await mustAgent(user, id);
+    const run = await store.readRun(user, id, req.params.runId);
     if (!run) throw new HttpError(404, "run not found");
     const approved = !!(req.body && req.body.approved);
     if (approved) spendLLM(user);
@@ -379,28 +379,28 @@ export function createHubRouter({ allowLLM }) {
 
   // --- visual workflows ---
 
-  const mustWorkflow = (user, id) => {
-    const w = wf.readWorkflow(user, id);
+  const mustWorkflow = async (user, id) => {
+    const w = await wf.readWorkflow(user, id);
     if (!w) throw new HttpError(404, "workflow not found");
     return w;
   };
   const wfCtx = (user, source, extra = {}) => ({ user, source, spendLLM: () => spendLLM(user), ...extra });
-  const wfSummary = (user, w) => ({ ...w, validation: wf.validateWorkflow(w, user), webhook: store.keyInfo(user, w.id, "workflow") });
+  const wfSummary = async (user, w) => ({ ...w, validation: await wf.validateWorkflow(w, user), webhook: await store.keyInfo(user, w.id, "workflow") });
 
-  r.get("/workflows/meta", (req, res) => {
+  r.get("/workflows/meta", async (req, res) => {
     userOf(req);
     res.json({ nodeTypes: wf.NODE_TYPES, ifOps: wf.IF_OPS, blank: wf.blankWorkflow(), publicBase: publicBase() });
   });
 
-  r.get("/workflows", (req, res) => {
+  r.get("/workflows", async (req, res) => {
     const user = userOf(req);
-    res.json({ workflows: wf.listWorkflows(user).map((w) => wfSummary(user, w)) });
+    res.json({ workflows: await Promise.all((await wf.listWorkflows(user)).map((w) => wfSummary(user, w))) });
   });
 
   r.post("/workflows", async (req, res) => {
     const user = userOf(req);
     const w = await wf.createWorkflow(user, req.body && req.body.workflow, (req.body && req.body.message) || "Create workflow");
-    res.status(201).json({ workflow: wfSummary(user, w) });
+    res.status(201).json({ workflow: await wfSummary(user, w) });
   });
 
   // Build mode: one call creates an app's agents, their workflows and a webhook token for each workflow.
@@ -409,21 +409,21 @@ export function createHubRouter({ allowLLM }) {
     res.status(201).json(await applyBlueprint(user, req.body));
   });
 
-  r.post("/workflows/validate", (req, res) => {
+  r.post("/workflows/validate", async (req, res) => {
     const user = userOf(req);
     const w = wf.normalizeWorkflow(req.body && req.body.workflow);
-    res.json({ workflow: w, validation: wf.validateWorkflow(w, user) });
+    res.json({ workflow: w, validation: await wf.validateWorkflow(w, user) });
   });
 
-  r.get("/workflows/:id", (req, res) => {
+  r.get("/workflows/:id", async (req, res) => {
     const user = userOf(req);
-    res.json({ workflow: wfSummary(user, mustWorkflow(user, req.params.id)) });
+    res.json({ workflow: await wfSummary(user, await mustWorkflow(user, req.params.id)) });
   });
 
   r.put("/workflows/:id", async (req, res) => {
     const user = userOf(req);
     const out = await wf.saveWorkflow(user, req.params.id, req.body && req.body.workflow, (req.body && req.body.message) || "Update workflow");
-    res.json({ changed: out.changed, workflow: wfSummary(user, out.workflow) });
+    res.json({ changed: out.changed, workflow: await wfSummary(user, out.workflow) });
   });
 
   r.delete("/workflows/:id", async (req, res) => {
@@ -435,28 +435,28 @@ export function createHubRouter({ allowLLM }) {
 
   r.post("/workflows/:id/duplicate", async (req, res) => {
     const user = userOf(req);
-    const src = mustWorkflow(user, req.params.id);
+    const src = await mustWorkflow(user, req.params.id);
     res.status(201).json({ workflow: await wf.createWorkflow(user, { ...src, name: `${src.name} copy` }, `Duplicate of ${src.id}`) });
   });
 
   r.get("/workflows/:id/versions", async (req, res) => {
     const user = userOf(req);
-    mustWorkflow(user, req.params.id);
+    await mustWorkflow(user, req.params.id);
     res.json({ versions: await wf.listWorkflowVersions(user, req.params.id) });
   });
 
   r.post("/workflows/:id/versions/:sha/restore", async (req, res) => {
     const user = userOf(req);
-    mustWorkflow(user, req.params.id);
+    await mustWorkflow(user, req.params.id);
     const out = await wf.restoreWorkflowVersion(user, req.params.id, req.params.sha);
-    res.json({ changed: out.changed, workflow: wfSummary(user, out.workflow) });
+    res.json({ changed: out.changed, workflow: await wfSummary(user, out.workflow) });
   });
 
   // The editor runs what is on the canvas; a saved workflow's runs are kept, an unsaved draft's live in memory.
   r.post("/workflows/run", async (req, res) => {
     const user = userOf(req);
     const { workflowId, workflow, input } = req.body || {};
-    const w = workflowId ? mustWorkflow(user, workflowId) : wf.normalizeWorkflow(workflow);
+    const w = workflowId ? await mustWorkflow(user, workflowId) : wf.normalizeWorkflow(workflow);
     if (!workflowId) w.id = "";
     const run = await tracked(user, () => wf.startWorkflowRun(w, input, wfCtx(user, "editor")));
     if (!workflowId && run.status === "awaiting_approval") {
@@ -475,25 +475,25 @@ export function createHubRouter({ allowLLM }) {
     };
   };
 
-  r.get("/workflows/:id/playground", (req, res) => {
+  r.get("/workflows/:id/playground", async (req, res) => {
     const user = userOf(req);
-    const w = mustWorkflow(user, req.params.id);
-    res.json({ info: pg.describeWorkflow(user, w), messages: pg.readThread(user, w.id) });
+    const w = await mustWorkflow(user, req.params.id);
+    res.json({ info: await pg.describeWorkflow(user, w), messages: await pg.readThread(user, w.id) });
   });
 
   // A greeting gets the system's answer; anything else runs the saved workflow once.
   r.post("/workflows/:id/playground", async (req, res) => {
     const user = userOf(req);
-    const w = mustWorkflow(user, req.params.id);
+    const w = await mustWorkflow(user, req.params.id);
     const text = String((req.body && req.body.text) || "").slice(0, 4000);
     const input = req.body && req.body.input && typeof req.body.input === "object" ? req.body.input : null;
     if (!text.trim() && !input) throw new HttpError(400, "type a message first");
     // Field values are defaults from the workflow's examples, so only the typed text decides whether this is a greeting.
     if (pg.isGreeting(text)) {
-      const msgs = pg.appendMessages(user, w.id, { role: "user", text }, { role: "system", text: pg.greetingReply(pg.describeWorkflow(user, w)) });
+      const msgs = await pg.appendMessages(user, w.id, { role: "user", text }, { role: "system", text: pg.greetingReply(await pg.describeWorkflow(user, w)) });
       return res.json({ messages: msgs });
     }
-    const [userMsg] = pg.appendMessages(user, w.id, { role: "user", text, input });
+    const [userMsg] = await pg.appendMessages(user, w.id, { role: "user", text, input });
     let reply;
     try {
       const run = await tracked(user, () => wf.startWorkflowRun(w, input || { message: text }, wfCtx(user, "playground")));
@@ -501,28 +501,28 @@ export function createHubRouter({ allowLLM }) {
     } catch (e) {
       reply = { role: "system", error: e.message || String(e) };
     }
-    const [botMsg] = pg.appendMessages(user, w.id, reply);
+    const [botMsg] = await pg.appendMessages(user, w.id, reply);
     res.json({ messages: [userMsg, botMsg] });
   });
 
   r.post("/workflows/:id/playground/decision", async (req, res) => {
     const user = userOf(req);
-    const w = mustWorkflow(user, req.params.id);
+    const w = await mustWorkflow(user, req.params.id);
     const { messageId, approved, note } = req.body || {};
-    const msg = pg.readThread(user, w.id).find((m) => m.id === messageId && m.role === "run");
-    const run = msg && wf.readWorkflowRun(user, w.id, msg.run.id);
+    const msg = (await pg.readThread(user, w.id)).find((m) => m.id === messageId && m.role === "run");
+    const run = msg && await wf.readWorkflowRun(user, w.id, msg.run.id);
     if (!run) throw new HttpError(404, "that run is no longer available");
     const out = await tracked(user, () => wf.decideWorkflowRun(run, w, { approved: !!approved, note }, wfCtx(user, "playground")));
     wfCallback(out);
-    pg.updateMessage(user, w.id, messageId, { decided: approved ? "approved" : "rejected" });
-    const [botMsg] = pg.appendMessages(user, w.id, { role: "run", run: runForChat(out) });
+    await pg.updateMessage(user, w.id, messageId, { decided: approved ? "approved" : "rejected" });
+    const [botMsg] = await pg.appendMessages(user, w.id, { role: "run", run: runForChat(out) });
     res.json({ decided: messageId, message: botMsg });
   });
 
-  r.delete("/workflows/:id/playground", (req, res) => {
+  r.delete("/workflows/:id/playground", async (req, res) => {
     const user = userOf(req);
-    const w = mustWorkflow(user, req.params.id);
-    pg.clearThread(user, w.id);
+    const w = await mustWorkflow(user, req.params.id);
+    await pg.clearThread(user, w.id);
     res.json({ ok: true });
   });
 
@@ -531,8 +531,8 @@ export function createHubRouter({ allowLLM }) {
     const { workflowId, approved, note } = req.body || {};
     let run; let w;
     if (workflowId) {
-      w = mustWorkflow(user, workflowId);
-      run = wf.readWorkflowRun(user, workflowId, req.params.runId);
+      w = await mustWorkflow(user, workflowId);
+      run = await wf.readWorkflowRun(user, workflowId, req.params.runId);
     } else {
       const d = draftRuns.get(req.params.runId);
       if (d && d.user === user && d.workflow) { run = d.run; w = d.def; }
@@ -544,35 +544,35 @@ export function createHubRouter({ allowLLM }) {
     res.json({ run: wf.publicWorkflowRun(out) });
   });
 
-  r.get("/workflows/:id/runs", (req, res) => {
+  r.get("/workflows/:id/runs", async (req, res) => {
     const user = userOf(req);
-    mustWorkflow(user, req.params.id);
-    res.json({ runs: wf.listWorkflowRuns(user, req.params.id).map(wf.publicWorkflowRun) });
+    await mustWorkflow(user, req.params.id);
+    res.json({ runs: (await wf.listWorkflowRuns(user, req.params.id)).map(wf.publicWorkflowRun) });
   });
 
-  r.get("/workflows/:id/runs/:runId", (req, res) => {
+  r.get("/workflows/:id/runs/:runId", async (req, res) => {
     const user = userOf(req);
-    const run = wf.readWorkflowRun(user, req.params.id, req.params.runId);
+    const run = await wf.readWorkflowRun(user, req.params.id, req.params.runId);
     if (!run) throw new HttpError(404, "run not found");
     res.json({ run: wf.publicWorkflowRun(run) });
   });
 
   r.post("/workflows/:id/connect", async (req, res) => {
     const user = userOf(req);
-    const w = mustWorkflow(user, req.params.id);
+    const w = await mustWorkflow(user, req.params.id);
     const token = await store.issueKey(user, w.id, "workflow");
-    res.json({ token, key: store.keyInfo(user, w.id, "workflow"), ...wfHookInfo(w, token) });
+    res.json({ token, key: await store.keyInfo(user, w.id, "workflow"), ...wfHookInfo(w, token) });
   });
 
-  r.get("/workflows/:id/connect", (req, res) => {
+  r.get("/workflows/:id/connect", async (req, res) => {
     const user = userOf(req);
-    const w = mustWorkflow(user, req.params.id);
-    res.json({ key: store.keyInfo(user, w.id, "workflow"), ...wfHookInfo(w, "") });
+    const w = await mustWorkflow(user, req.params.id);
+    res.json({ key: await store.keyInfo(user, w.id, "workflow"), ...wfHookInfo(w, "") });
   });
 
   r.delete("/workflows/:id/connect", async (req, res) => {
     const user = userOf(req);
-    mustWorkflow(user, req.params.id);
+    await mustWorkflow(user, req.params.id);
     res.json({ revoked: await store.revokeKey(user, req.params.id, "workflow") });
   });
 
@@ -584,35 +584,35 @@ export function createHubRouter({ allowLLM }) {
     } catch (e) { console.error(`[hub] workflow callback for ${run.id} failed: ${e.message}`); }
   };
 
-  const wfHookAuth = (req) => {
+  const wfHookAuth = async (req) => {
     const m = /^Bearer\s+(\S+)$/i.exec(req.get("authorization") || "");
-    const who = m && store.resolveKey(m[1], req.params.id, "workflow");
+    const who = m && await store.resolveKey(m[1], req.params.id, "workflow");
     if (!who) throw new HttpError(401, "invalid or revoked workflow token");
     return who;
   };
 
   r.post("/hook-wf/:id/run", async (req, res) => {
-    const { user, id } = wfHookAuth(req);
-    const w = mustWorkflow(user, id);
+    const { user, id } = await wfHookAuth(req);
+    const w = await mustWorkflow(user, id);
     const body = req.body || {};
     const input = body.input !== undefined ? body.input : body;
     if (body.callbackUrl) await checkPublicUrl(String(body.callbackUrl), { allowHttp: privateNetAllowed() }).catch((e) => { throw new HttpError(400, `callbackUrl: ${e.message}`); });
     const run = await tracked(user, () => wf.startWorkflowRun(w, input, wfCtx(user, "webhook")));
-    if (body.callbackUrl && run.status === "awaiting_approval") { run.callbackUrl = String(body.callbackUrl); wf.saveWorkflowRun(user, id, run); }
+    if (body.callbackUrl && run.status === "awaiting_approval") { run.callbackUrl = String(body.callbackUrl); await wf.saveWorkflowRun(user, id, run); }
     res.status(run.status === "awaiting_approval" ? 202 : 200).json({ ...wf.publicWorkflowRun(run), pollUrl: `${publicBase()}/hooks/workflows/${id}/runs/${run.id}` });
   });
 
-  r.get("/hook-wf/:id/runs/:runId", (req, res) => {
-    const { user, id } = wfHookAuth(req);
-    const run = wf.readWorkflowRun(user, id, req.params.runId);
+  r.get("/hook-wf/:id/runs/:runId", async (req, res) => {
+    const { user, id } = await wfHookAuth(req);
+    const run = await wf.readWorkflowRun(user, id, req.params.runId);
     if (!run) throw new HttpError(404, "run not found");
     res.json(wf.publicWorkflowRun(run));
   });
 
   r.post("/hook-wf/:id/runs/:runId/decision", async (req, res) => {
-    const { user, id } = wfHookAuth(req);
-    const w = mustWorkflow(user, id);
-    const run = wf.readWorkflowRun(user, id, req.params.runId);
+    const { user, id } = await wfHookAuth(req);
+    const w = await mustWorkflow(user, id);
+    const run = await wf.readWorkflowRun(user, id, req.params.runId);
     if (!run) throw new HttpError(404, "run not found");
     const out = await tracked(user, () => wf.decideWorkflowRun(run, w, { approved: !!(req.body && req.body.approved), note: req.body && req.body.note }, wfCtx(user, "webhook")));
     wfCallback(out);

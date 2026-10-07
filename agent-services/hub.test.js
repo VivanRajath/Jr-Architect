@@ -1,5 +1,5 @@
 // Agent Hub: definition, git-backed store, runtime enforcement and the HTTP surface. Run: `node --test`.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +9,13 @@ process.env.AGENT_NO_LISTEN = "1";
 process.env.JR_HUB_DIR = mkdtempSync(join(tmpdir(), "jr-hub-test-"));
 process.env.GROQ_API_KEY = process.env.GROQ_API_KEY || "test-groq-test_placeholder_not_real";
 process.env.GITAGENT_REGISTRY_INDEX = "http://127.0.0.1:1/index.json";
+
+// With MONGODB_TEST_URI set, the same tests run against MongoDB in a throwaway database.
+const testDb = process.env.MONGODB_TEST_URI ? await import("./hub/db.js") : null;
+if (testDb) {
+  await testDb.connectDb(process.env.MONGODB_TEST_URI, `jr_test_${process.pid}`);
+  after(() => testDb.dropDb());
+}
 
 const def = await import("./hub/definition.js");
 const store = await import("./hub/store.js");
@@ -107,18 +114,18 @@ test("every save is a git version, and a version restores", async () => {
   const restored = await store.restoreVersion(user, created.id, versions[1].sha);
   assert.strictEqual(restored.definition.purpose, sample().purpose);
   assert.strictEqual(restored.definition.version, "0.1.2");
-  assert.strictEqual(store.readAgent("u-other", created.id), null, "another user never sees it");
+  assert.strictEqual(await store.readAgent("u-other", created.id), null, "another user never sees it");
 });
 
 test("an n8n token is bound to one agent and dies on revoke", async () => {
   const user = "u-keys";
   const a = await store.createAgent(user, sample());
   const token = await store.issueKey(user, a.id);
-  assert.deepStrictEqual(store.resolveKey(token, a.id), { user, id: a.id });
-  assert.strictEqual(store.resolveKey(token, "other-agent"), null);
-  assert.strictEqual(store.resolveKey(token.slice(0, -1) + (token.endsWith("0") ? "1" : "0"), a.id), null);
+  assert.deepStrictEqual(await store.resolveKey(token, a.id), { user, id: a.id });
+  assert.strictEqual(await store.resolveKey(token, "other-agent"), null);
+  assert.strictEqual(await store.resolveKey(token.slice(0, -1) + (token.endsWith("0") ? "1" : "0"), a.id), null);
   await store.revokeKey(user, a.id);
-  assert.strictEqual(store.resolveKey(token, a.id), null);
+  assert.strictEqual(await store.resolveKey(token, a.id), null);
 });
 
 test("only the agent's own tools are offered, and a bad answer is repaired once", async () => {
@@ -454,7 +461,7 @@ test("the playground reads a branching workflow back as steps", async () => {
     n("x", "agent", "Next Lesson"), n("h", "agent", "Hint Giver"), n("o1", "output", "Result"), n("o2", "output", "Result 2"),
   ], edges: [{ from: "t", port: "main", to: "g" }, { from: "g", port: "main", to: "b" }, { from: "b", port: "true", to: "x" }, { from: "b", port: "false", to: "h" },
     { from: "x", port: "main", to: "o1" }, { from: "h", port: "main", to: "o2" }] };
-  const info = describeWorkflow("u-desc", w);
+  const info = await describeWorkflow("u-desc", w);
   assert.deepStrictEqual(info.steps, ["Grader", "Passed?: if yes, Next Lesson; if no, Hint Giver"]);
   assert.deepStrictEqual(info.agents.map((a) => a.name), ["Grader", "Next Lesson", "Hint Giver"]);
   assert.strictEqual(info.mainField, "task", "a message-like field is the main one even when it is not first");
@@ -501,5 +508,5 @@ test("values from an earlier agent are converted to what the next agent declares
 test("Build mode's placeholder samples are not offered as examples", async () => {
   const { describeWorkflow } = await import("./hub/playground.js");
   const w = { id: "x", name: "X", nodes: [{ id: "t", type: "trigger", name: "Start", config: { sample: { user_input: "Example user_input", servings: "4" } } }], edges: [] };
-  assert.deepStrictEqual(describeWorkflow("u-x", w).inputs, [{ name: "user_input", example: "" }, { name: "servings", example: "4" }]);
+  assert.deepStrictEqual((await describeWorkflow("u-x", w)).inputs, [{ name: "user_input", example: "" }, { name: "servings", example: "4" }]);
 });
