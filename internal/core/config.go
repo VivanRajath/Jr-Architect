@@ -20,6 +20,8 @@ type Config struct {
 	PreviewScheme string
 	WorkDir       string
 	DataDir       string // saved projects and API keys; outlives every sandbox
+	MongoURI      string // when set, users, projects and keys live in MongoDB instead of DataDir files
+	MongoDB       string
 	BetaCode      string
 	SessionSecret []byte
 	// OAuth apps for sign-in; either one turns the login on, and GitHub's also links repos.
@@ -91,6 +93,8 @@ func LoadConfig() (Config, error) {
 	c.PreviewDomain = strings.ToLower(strings.Trim(envStr("JR_PREVIEW_DOMAIN", ""), "."))
 	c.WorkDir = envStr("JR_WORK_DIR", c.WorkDir)
 	c.DataDir = envStr("JR_DATA_DIR", c.DataDir)
+	c.MongoURI = envStr("MONGODB_URI", "")
+	c.MongoDB = envStr("MONGODB_DB", "jr_architect")
 	c.BetaCode = envStr("JR_BETA_CODE", "")
 	c.SessionSecret = []byte(envStr("JR_SESSION_SECRET", ""))
 	c.GoogleClientID = envStr("JR_GOOGLE_CLIENT_ID", "")

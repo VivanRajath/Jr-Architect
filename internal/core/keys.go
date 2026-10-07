@@ -66,6 +66,13 @@ func keysFile() string { return filepath.Join(Cfg.DataDir, "keys.json") }
 
 // keys.json maps a provider to a list of keys; a plain string is the single-key format from before.
 func readSavedKeys() map[string][]string {
+	if DBEnabled() {
+		return readSavedKeysDB()
+	}
+	return readSavedKeysFile()
+}
+
+func readSavedKeysFile() map[string][]string {
 	out := map[string][]string{}
 	raw := map[string]json.RawMessage{}
 	if data, err := os.ReadFile(keysFile()); err == nil {
@@ -87,6 +94,9 @@ func readSavedKeys() map[string][]string {
 }
 
 func writeSavedKeys(keys map[string][]string) error {
+	if DBEnabled() {
+		return writeSavedKeysDB(keys)
+	}
 	if err := os.MkdirAll(Cfg.DataDir, 0700); err != nil {
 		return err
 	}

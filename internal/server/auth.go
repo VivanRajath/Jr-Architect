@@ -164,6 +164,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		user = "u-" + hex.EncodeToString(b)
 	}
 	setSessionCookie(w, newSessionValue(user, time.Now()), int(sessionTTL.Seconds()))
+	core.RecordBetaUser(user)
 	core.Logf("auth", "login user=%s ip=%s", user, clientIP(r))
 	writeJSON(w, map[string]string{"status": "ok"})
 }
@@ -180,7 +181,7 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 func meHandler(w http.ResponseWriter, r *http.Request) {
 	user := core.UserOf(r)
 	out := map[string]interface{}{"user": user, "auth": core.Cfg.AuthEnabled()}
-	if p, ok := core.GetProfile(user); ok {
+	if p, ok := core.GetProfile(user); ok && p.Provider != "beta" {
 		out["profile"] = p
 	}
 	if gh, ok := core.GetGitHub(user); ok {

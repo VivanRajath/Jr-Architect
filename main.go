@@ -111,6 +111,17 @@ func main() {
 		os.Exit(1)
 	}
 	core.Cfg = cfg
+	if cfg.MongoURI != "" {
+		if err := core.OpenDB(cfg.MongoURI, cfg.MongoDB); err != nil {
+			fmt.Println("database error:", err)
+			os.Exit(1)
+		}
+		if err := core.ImportFilesToDB(); err != nil {
+			fmt.Println("database import error:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("[db] using MongoDB database %q\n", cfg.MongoDB)
+	}
 	core.LoadSavedKeys()
 	builder.SetTemplates(builderTemplates)
 
