@@ -1015,34 +1015,10 @@ async function runsPanel(p) {
   }));
 }
 
-async function hookPanel(p, token) {
+function hookPanel(p) {
   if (!F.id) { p.innerHTML = '<h3>API</h3><div class="h-muted">Save the workflow first.</div>'; return; }
-  const info = token ? token : await hubApi('GET', `/workflows/${F.id}/connect`);
-  const key = info.key;
-  p.innerHTML = `
-    <h3>API</h3>
-    <p class="h-muted">Run this workflow from your own apps and automations: n8n, Zapier, Make, a script or your backend. It runs exactly as the Run button does, with its own token.</p>
-    ${info.localOnly ? '<div class="h-callout warn">This server has no public address, so only callers on this machine can reach it.</div>' : ''}
-    ${info.token ? `<div class="h-callout good"><strong>Copy this token now.</strong> Only a hash is kept. The examples below have it filled in.<pre class="h-code">${esc(info.token)}</pre><button class="h-btn h-btn-sm" id="w-copy">Copy token</button></div>` : ''}
-    <div class="h-row" style="margin: var(--sp-3) 0">${key ? `<span class="h-pill good">API on</span><span class="h-muted">${esc(key.prefix)}${key.lastUsedAt ? ` · last used ${esc(timeAgo(key.lastUsedAt))}` : ''}</span>` : '<span class="h-pill">No token yet</span>'}</div>
-    <div class="h-row"><button class="h-btn h-btn-sm" id="w-issue">${key ? 'Replace token' : 'Create API token'}</button>${key ? '<button class="h-btn h-btn-danger h-btn-sm" id="w-off">Revoke</button>' : ''}</div>
-    <span class="h-label">Endpoint</span><pre class="h-code">POST ${esc(info.runUrl)}
-Authorization: Bearer &lt;token&gt;
-
-${esc(JSON.stringify(info.exampleBody, null, 2))}</pre>
-    <span class="h-label">Call it</span>${snippetsHtml(info)}
-    <div class="h-help">The response has <code>status</code> and <code>output</code>. A paused run answers 202; approve it here or POST {"approved": true} to ${esc(info.decisionUrl)}.</div>`;
-  wireSnippets(p, info);
-  if ($('w-copy')) $('w-copy').addEventListener('click', () => copyText(info.token));
-  $('w-issue').addEventListener('click', async () => {
-    if (key && !confirm('Replace the token? Callers using the old one stop working.')) return;
-    hookPanel(p, await hubApi('POST', `/workflows/${F.id}/connect`));
-  });
-  if ($('w-off')) $('w-off').addEventListener('click', async () => {
-    if (!confirm('Revoke the token? API calls to this workflow will be refused.')) return;
-    await hubApi('DELETE', `/workflows/${F.id}/connect`);
-    hookPanel(p);
-  });
+  p.innerHTML = '<h3>API</h3><div id="f-api"></div>';
+  renderApiPanel($('f-api'), 'workflow', F.id);
 }
 
 // --- wiring the chrome ---
