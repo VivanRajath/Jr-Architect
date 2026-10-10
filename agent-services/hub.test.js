@@ -510,3 +510,15 @@ test("Build mode's placeholder samples are not offered as examples", async () =>
   const w = { id: "x", name: "X", nodes: [{ id: "t", type: "trigger", name: "Start", config: { sample: { user_input: "Example user_input", servings: "4" } } }], edges: [] };
   assert.deepStrictEqual((await describeWorkflow("u-x", w)).inputs, [{ name: "user_input", example: "" }, { name: "servings", example: "4" }]);
 });
+
+test("API snippets keep the body exact in curl, JavaScript and Python", async () => {
+  const { snippets } = await import("./hub/routes.js");
+  const body = { input: { note: "it's true", ok: true, none: null } };
+  const blank = snippets("https://x.test/hooks/agents/a/run", body, "", "JR_AGENT_TOKEN");
+  const q = "'" + String.fromCharCode(92) + "''";
+  assert.ok(blank.curl.includes(`-d '{"input":{"note":"it${q}s true","ok":true,"none":null}}'`));
+  assert.ok(blank.javascript.includes("process.env.JR_AGENT_TOKEN"));
+  assert.ok(blank.python.includes(`"note": "it's true"`) && blank.python.includes(`"ok": True`) && blank.python.includes(`"none": None`));
+  const filled = snippets("https://x.test/run", body, "jrk_secret", "JR_AGENT_TOKEN");
+  for (const s of Object.values(filled)) assert.ok(s.includes("Bearer jrk_secret"));
+});

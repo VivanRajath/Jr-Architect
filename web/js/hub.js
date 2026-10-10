@@ -2,7 +2,7 @@
 const HUB = { agents: [], meta: null, current: null, tab: 'overview' };
 
 const TABS = [
-  ['overview', 'Overview'], ['test', 'Test'], ['runs', 'Runs'], ['versions', 'Versions'], ['n8n', 'n8n'], ['prompt', 'Prompt & files'],
+  ['overview', 'Overview'], ['test', 'Test'], ['runs', 'Runs'], ['versions', 'Versions'], ['api', 'API'], ['prompt', 'Prompt & files'],
 ];
 
 async function loadAgents() {
@@ -41,12 +41,20 @@ async function loadAgents() {
           ${d.tools.map((t) => `<span class="h-pill accent">${esc(t.id)}</span>`).join('')}
           ${d.guardrails.rules.length ? `<span class="h-pill">${d.guardrails.rules.length} guardrail${d.guardrails.rules.length === 1 ? '' : 's'}</span>` : ''}
           ${d.humanInTheLoop.approveOutput || d.humanInTheLoop.approveTools.length ? '<span class="h-pill warn">human approval</span>' : ''}
-          ${n8n ? '<span class="h-pill good">n8n connected</span>' : ''}
+          ${n8n ? '<span class="h-pill good">API on</span>' : ''}
           ${v.ok ? '' : `<span class="h-pill bad">${v.errors.length} issue${v.errors.length === 1 ? '' : 's'}</span>`}
         </div>
-        <div class="h-muted">Updated ${esc(timeAgo(updatedAt))}</div>
+        <div class="h-row" style="justify-content:space-between">
+          <span class="h-muted">Updated ${esc(timeAgo(updatedAt))}</span>
+          <button class="h-link" data-api-agent="${esc(d.id)}" title="Call this agent from your own workflows and apps">${n8n ? 'API' : 'Get API'}</button>
+        </div>
       </article>`;
   }).join('');
+  list.querySelectorAll('[data-api-agent]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const a = HUB.agents.find((x) => x.definition.id === b.dataset.apiAgent);
+    openApiModal('agent', b.dataset.apiAgent, a ? a.definition.identity.name : b.dataset.apiAgent);
+  }));
   list.querySelectorAll('.h-card').forEach((c) => {
     c.addEventListener('click', () => openAgent(c.dataset.id));
     c.addEventListener('keydown', (e) => { if (e.key === 'Enter') openAgent(c.dataset.id); });
@@ -70,9 +78,10 @@ async function openAgent(id, tab) {
     <span class="h-pill">v${esc(d.version)}</span>
     <span class="h-pill">${esc(d.id)}</span>
     ${HUB.current.validation.ok ? '<span class="h-pill good">valid</span>' : `<span class="h-pill bad">${HUB.current.validation.errors.length} issue(s)</span>`}
-    ${HUB.current.n8n ? '<span class="h-pill good">n8n connected</span>' : ''}`;
+    ${HUB.current.n8n ? '<span class="h-pill good">API on</span>' : ''}`;
   document.getElementById('d-actions').innerHTML = `
     <button class="h-btn h-btn-sm" onclick="openStudio('${esc(id)}')">Edit in Studio</button>
+    <button class="h-btn h-btn-ghost h-btn-sm" onclick="showTab('api')">API</button>
     <button class="h-btn h-btn-ghost h-btn-sm" onclick="openFlow('', '${esc(id)}')">Use in a workflow</button>
     <button class="h-btn h-btn-ghost h-btn-sm" onclick="duplicateAgent('${esc(id)}')">Duplicate</button>
     <button class="h-btn h-btn-ghost h-btn-sm" onclick="exportAgent('${esc(id)}')">Export</button>
@@ -100,7 +109,7 @@ function showTab(tab) {
   document.querySelectorAll('#d-tabs .h-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   const body = document.getElementById('d-body');
   body.innerHTML = '';
-  ({ overview: tabOverview, test: tabTest, runs: tabRuns, versions: tabVersions, n8n: tabN8n, prompt: tabPrompt })[tab](body);
+  ({ overview: tabOverview, test: tabTest, runs: tabRuns, versions: tabVersions, api: tabApi, prompt: tabPrompt })[tab](body);
 }
 
 function listOrNone(items, fmt = esc) {
@@ -120,6 +129,9 @@ function tabOverview(body) {
   const issues = [...v.errors.map((e) => ['bad', e]), ...v.warnings.map((w) => ['warn', w])];
   body.innerHTML = `
     ${issues.length ? issues.map(([k, i]) => `<div class="h-callout ${k}">${esc(i.message)}</div>`).join('') : '<div class="h-callout good">This agent passes validation.</div>'}
+    <span class="h-label">API endpoint</span>
+    <div class="h-api-url"><code>POST ${esc(apiRunUrl('agent', d.id))}</code><button class="h-btn h-btn-ghost h-btn-sm" onclick="showTab('api')">${HUB.current.n8n ? 'Code &amp; token' : 'Create token'}</button></div>
+    <div class="h-help">${HUB.current.n8n ? 'API is on. Call it with the token from the API tab.' : 'Create a token in the API tab to call this agent from your own workflows and apps.'}</div>
     <span class="h-label">Purpose</span><div>${esc(d.purpose) || '<span class="h-muted">Not set</span>'}</div>
     <span class="h-label">Responsibilities</span>${listOrNone(d.responsibilities)}
     <span class="h-label">Model</span>
@@ -155,7 +167,7 @@ async function clearMemory() {
 function tabTest(body) {
   const d = HUB.current.definition;
   body.innerHTML = `
-    <p class="h-muted">Runs the saved version (v${esc(d.version)}) exactly as n8n would, and records the run.</p>
+    <p class="h-muted">Runs the saved version (v${esc(d.version)}) exactly as an API call would, and records the run.</p>
     <span class="h-label">Input (JSON)</span>
     <textarea id="t-input" class="h-textarea mono" rows="8">${esc(JSON.stringify(sampleFor(d.inputSchema), null, 2))}</textarea>
     <div class="h-row" style="margin-top: var(--sp-3)"><button class="h-btn" id="t-run">Run agent</button><span class="h-muted" id="t-state"></span></div>
@@ -195,8 +207,8 @@ function showRunIn(box, run, agentId) {
 async function tabRuns(body) {
   body.innerHTML = '<div class="h-muted">Loading runs…</div>';
   const { runs } = await hubApi('GET', `/agents/${HUB.current.id}/runs`);
-  if (!runs.length) { body.innerHTML = '<div class="h-muted">No runs yet. Try the Test tab, or call it from n8n.</div>'; return; }
-  body.innerHTML = '<p class="h-muted" style="margin-bottom: var(--sp-4)">Latest runs from Studio, this Hub and n8n. Paused runs can be approved here.</p>';
+  if (!runs.length) { body.innerHTML = '<div class="h-muted">No runs yet. Try the Test tab, or call it through its API.</div>'; return; }
+  body.innerHTML = '<p class="h-muted" style="margin-bottom: var(--sp-4)">Latest runs from Studio, this Hub and API calls. Paused runs can be approved here.</p>';
   for (const r of runs) {
     const box = document.createElement('div');
     showRunIn(box, r, HUB.current.id);
@@ -231,61 +243,26 @@ async function tabVersions(body) {
   }));
 }
 
-async function tabN8n(body) {
-  body.innerHTML = '<div class="h-muted">Loading…</div>';
-  const info = await hubApi('GET', `/agents/${HUB.current.id}/connect`);
-  renderN8n(body, info, '');
+function tabApi(body) {
+  renderApiPanel(body, 'agent', HUB.current.id, { onChange: loadAgents });
 }
 
-function renderN8n(body, info, token) {
-  const key = info.key;
-  body.innerHTML = `
-    <p>n8n runs the workflow; Jr Architect runs the agent. An n8n <strong>HTTP Request</strong> node calls the agent with a token, gets structured output back, and the workflow continues.</p>
-    ${info.localOnly ? '<div class="h-callout warn">This server has no public address, so only an n8n on this machine can reach these URLs.</div>' : ''}
-    ${token ? `<div class="h-callout good"><strong>Copy this token now.</strong> Only a hash is stored, so it cannot be shown again.<pre class="h-code">${esc(token)}</pre><button class="h-btn h-btn-sm" onclick="copyText('${esc(token)}')">Copy token</button></div>` : ''}
-    <div class="h-row" style="margin: var(--sp-4) 0">
-      ${key ? `<span class="h-pill good">Connected</span><span class="h-muted">token ${esc(key.prefix)} · created ${esc(timeAgo(key.createdAt))}${key.lastUsedAt ? ` · last used ${esc(timeAgo(key.lastUsedAt))}` : ''}</span>` : '<span class="h-pill">Not connected</span>'}
-    </div>
-    <div class="h-row">
-      <button class="h-btn" id="n-issue">${key ? 'Replace token' : 'Connect to n8n'}</button>
-      ${key ? '<button class="h-btn h-btn-danger" id="n-revoke">Disconnect</button>' : ''}
-      <button class="h-btn h-btn-ghost" id="n-workflow">Download n8n workflow</button>
-    </div>
-    <span class="h-label">Run endpoint</span>
-    <pre class="h-code">POST ${esc(info.runUrl)}
-Authorization: Bearer &lt;token&gt;
-Content-Type: application/json
-
-${esc(JSON.stringify(info.exampleBody, null, 2))}</pre>
-    <span class="h-label">What comes back</span>
-    <ul class="h-list">
-      <li><code>status</code>: completed, awaiting_approval, failed, rejected or blocked</li>
-      <li><code>output</code>: the agent's result, checked against its output schema</li>
-      <li>If a human must approve, the response is <code>202</code> with a <code>decisionUrl</code>. Approve in this Hub, or POST <code>{"approved": true}</code> to it from n8n.</li>
-      <li>Add <code>"callbackUrl"</code> (an n8n Wait node's <code>$execution.resumeUrl</code>) to be called when a paused run ends, or <code>"wait": false</code> to return immediately and poll.</li>
-    </ul>
-    <span class="h-label">Try it with curl</span>
-    <pre class="h-code">${esc(info.curl)}</pre>
-    <div class="h-help">The token can run only this agent, within its own tools, permissions, guardrails and your hourly AI limit.</div>`;
-  document.getElementById('n-issue').addEventListener('click', async () => {
-    if (key && !confirm('Replace the token? Workflows using the old one stop working.')) return;
-    const out = await hubApi('POST', `/agents/${HUB.current.id}/connect`);
-    renderN8n(body, { ...out, key: { prefix: out.token.slice(0, 16) + '…', createdAt: Date.now() } }, out.token);
-    HUB.lastWorkflow = out.workflow;
-    loadAgents();
-  });
-  const revoke = document.getElementById('n-revoke');
-  if (revoke) revoke.addEventListener('click', async () => {
-    if (!confirm('Disconnect? n8n calls with this token will be refused.')) return;
-    await hubApi('DELETE', `/agents/${HUB.current.id}/connect`);
-    hubToast('Disconnected');
-    loadAgents();
-    tabN8n(body);
-  });
-  document.getElementById('n-workflow').addEventListener('click', () => {
-    downloadJSON(`${HUB.current.id}.n8n-workflow.json`, info.workflow);
-    hubToast(token ? 'Workflow downloaded with your token filled in' : 'Workflow downloaded; paste your token into the HTTP Request node');
-  });
+// The API panel in a pop-up, so an agent or workflow's endpoint is one click from the lists.
+function openApiModal(kind, id, name) {
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="h-modal-bg" id="api-bg">
+      <div class="h-modal h-modal-wide" role="dialog" aria-modal="true" aria-labelledby="api-title">
+        <div class="h-row" style="justify-content:space-between"><h2 id="api-title">API: ${esc(name)}</h2><button class="h-btn h-btn-ghost h-btn-sm" id="api-close">Close</button></div>
+        <div id="api-body"></div>
+      </div>
+    </div>`;
+  const close = () => { root.innerHTML = ''; document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  document.getElementById('api-close').addEventListener('click', close);
+  document.getElementById('api-bg').addEventListener('click', (e) => { if (e.target.id === 'api-bg') close(); });
+  renderApiPanel(document.getElementById('api-body'), kind, id, { onChange: kind === 'agent' ? loadAgents : loadWorkflows });
 }
 
 function tabPrompt(body) {
@@ -313,7 +290,7 @@ async function exportAgent(id) {
 }
 
 async function deleteAgent(id, confirmed = false) {
-  if (!confirmed && !confirm('Delete this agent, its versions, runs and n8n token? This cannot be undone.')) return;
+  if (!confirmed && !confirm('Delete this agent, its versions, runs and API token? This cannot be undone.')) return;
   try {
     await hubApi('DELETE', `/agents/${id}`);
     hubToast('Agent deleted');
@@ -384,12 +361,12 @@ async function loadWorkflows() {
       <div class="h-card-foot">
         ${agents.map((n) => `<span class="h-pill accent">${esc(n.name)}</span>`).join('')}
         ${w.nodes.some((n) => n.type === 'approval') ? '<span class="h-pill warn">human approval</span>' : ''}
-        ${w.webhook ? '<span class="h-pill good">webhook on</span>' : ''}
+        ${w.webhook ? '<span class="h-pill good">API on</span>' : ''}
         ${w.validation.ok ? '' : `<span class="h-pill bad">${w.validation.errors.length} issue(s)</span>`}
       </div>
       <div class="h-row" style="justify-content:space-between">
         <span class="h-muted">Updated ${esc(timeAgo(w.updatedAt))}</span>
-        <span class="h-row"><a class="h-link" href="/playground.html?id=${encodeURIComponent(w.id)}">Playground</a><button class="h-link" data-dup="${esc(w.id)}">Duplicate</button><button class="h-link" data-del="${esc(w.id)}">Delete</button></span>
+        <span class="h-row"><button class="h-link" data-api-wf="${esc(w.id)}" data-name="${esc(w.name)}">${w.webhook ? 'API' : 'Get API'}</button><a class="h-link" href="/playground.html?id=${encodeURIComponent(w.id)}">Playground</a><button class="h-link" data-dup="${esc(w.id)}">Duplicate</button><button class="h-link" data-del="${esc(w.id)}">Delete</button></span>
       </div>
     </article>`;
   }).join('');
@@ -398,11 +375,12 @@ async function loadWorkflows() {
     c.addEventListener('keydown', (e) => { if (e.key === 'Enter') openFlow(c.dataset.wf); });
     c.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, workflowMenu(c.dataset.wf)); });
   });
+  list.querySelectorAll('[data-api-wf]').forEach((b) => b.addEventListener('click', () => openApiModal('workflow', b.dataset.apiWf, b.dataset.name)));
   list.querySelectorAll('[data-dup]').forEach((b) => b.addEventListener('click', async () => {
     try { await hubApi('POST', `/workflows/${b.dataset.dup}/duplicate`); hubToast('Duplicated'); loadWorkflows(); } catch (e) { hubToast(e.message, 'error'); }
   }));
   list.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
-    if (confirm('Delete this workflow, its run history and its webhook token? Its past versions stay in the git history.')) deleteWorkflow(b.dataset.del);
+    if (confirm('Delete this workflow, its run history and its API token? Its past versions stay in the git history.')) deleteWorkflow(b.dataset.del);
   }));
 }
 
@@ -421,6 +399,7 @@ function agentMenu(id) {
     { label: 'Open', icon: 'open', onClick: () => openAgent(id) },
     { label: 'Edit in Studio', icon: 'pencil', onClick: () => openStudio(id) },
     { label: 'Use in a new workflow', icon: 'flows', onClick: () => openFlow(null, id) },
+    { label: 'API', icon: 'braces', onClick: () => { const a = HUB.agents.find((x) => x.definition.id === id); openApiModal('agent', id, a ? a.definition.identity.name : id); } },
     '-',
     { label: 'Duplicate', icon: 'copy', onClick: () => duplicateAgent(id) },
     { label: 'Export', icon: 'external', onClick: () => exportAgent(id) },
@@ -435,6 +414,7 @@ function workflowMenu(id) {
     { label: 'Open', icon: 'open', onClick: () => openFlow(id) },
     { label: 'Open Playground', icon: 'play', onClick: () => { location.href = `/playground.html?id=${encodeURIComponent(id)}`; } },
     { label: 'Open in new tab', icon: 'external', onClick: () => window.open(`/flows.html?id=${encodeURIComponent(id)}`, '_blank') },
+    { label: 'API', icon: 'braces', onClick: () => { const c = document.querySelector(`[data-api-wf="${CSS.escape(id)}"]`); openApiModal('workflow', id, c ? c.dataset.name : id); } },
     '-',
     { label: 'Duplicate', icon: 'copy', onClick: () => duplicateWorkflow(id) },
     { label: 'New workflow', icon: 'plus', onClick: () => openFlow() },

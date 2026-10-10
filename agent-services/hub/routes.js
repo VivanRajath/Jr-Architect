@@ -65,6 +65,48 @@ export function n8nWorkflow(def, token) {
   };
 }
 
+// Copy-paste calls for the API tab; the token is filled in only right after it is issued.
+export function snippets(runUrl, body, token, envVar) {
+  const indent = (text, pad) => text.split("\n").join(`\n${pad}`);
+  const jsAuth = token ? JSON.stringify(`Bearer ${token}`) : `\`Bearer \${process.env.${envVar}}\``;
+  const pyAuth = token ? JSON.stringify(`Bearer ${token}`) : `f"Bearer {os.environ['${envVar}']}"`;
+  const curl = `curl -X POST ${runUrl} -H "Authorization: Bearer ${token || `$${envVar}`}" -H "Content-Type: application/json" -d '${JSON.stringify(body).replace(/'/g, "'\\''")}'`;
+  const javascript = [
+    `const res = await fetch("${runUrl}", {`,
+    `  method: "POST",`,
+    `  headers: { Authorization: ${jsAuth}, "Content-Type": "application/json" },`,
+    `  body: JSON.stringify(${indent(JSON.stringify(body, null, 2), "  ")}),`,
+    `});`,
+    `const run = await res.json(); // status: completed, awaiting_approval, failed, ...`,
+    `console.log(run.status, run.output);`,
+  ].join("\n");
+  const python = [
+    `import os, requests`,
+    ``,
+    `res = requests.post(`,
+    `    "${runUrl}",`,
+    `    headers={"Authorization": ${pyAuth}},`,
+    `    json=${indent(pyLiteral(body), "    ")},`,
+    `    timeout=140,`,
+    `)`,
+    `run = res.json()  # status: completed, awaiting_approval, failed, ...`,
+    `print(run["status"], run.get("output"))`,
+  ].join("\n");
+  return { curl, javascript, python };
+}
+
+// JSON value as a Python literal: True/False/None, with strings kept exact.
+function pyLiteral(v, pad = "") {
+  if (v === null || v === undefined) return "None";
+  if (v === true) return "True";
+  if (v === false) return "False";
+  if (typeof v !== "object") return JSON.stringify(v);
+  const inner = `${pad}    `;
+  if (Array.isArray(v)) return v.length ? `[\n${v.map((x) => inner + pyLiteral(x, inner)).join(",\n")},\n${pad}]` : "[]";
+  const keys = Object.keys(v);
+  return keys.length ? `{\n${keys.map((k) => `${inner}${JSON.stringify(k)}: ${pyLiteral(v[k], inner)}`).join(",\n")},\n${pad}}` : "{}";
+}
+
 function connectInfo(def, token) {
   const base = `${publicBase()}/hooks/agents/${def.id}`;
   const body = { input: sampleFor(def.inputSchema) };
@@ -73,7 +115,7 @@ function connectInfo(def, token) {
     pollUrl: `${base}/runs/{runId}`,
     decisionUrl: `${base}/runs/{runId}/decision`,
     exampleBody: body,
-    curl: `curl -X POST ${base}/run -H "Authorization: Bearer ${token || "$JR_AGENT_TOKEN"}" -H "Content-Type: application/json" -d '${JSON.stringify(body)}'`,
+    ...snippets(`${base}/run`, body, token, "JR_AGENT_TOKEN"),
     workflow: n8nWorkflow(def, token),
     localOnly: !process.env.JR_PUBLIC_ORIGIN,
   };
@@ -85,7 +127,7 @@ function wfHookInfo(w, token) {
   const body = { input: trigger ? trigger.config.sample : {} };
   return {
     runUrl: `${base}/run`, pollUrl: `${base}/runs/{runId}`, decisionUrl: `${base}/runs/{runId}/decision`, exampleBody: body,
-    curl: `curl -X POST ${base}/run -H "Authorization: Bearer ${token || "$JR_WORKFLOW_TOKEN"}" -H "Content-Type: application/json" -d '${JSON.stringify(body)}'`,
+    ...snippets(`${base}/run`, body, token, "JR_WORKFLOW_TOKEN"),
     localOnly: !process.env.JR_PUBLIC_ORIGIN,
   };
 }

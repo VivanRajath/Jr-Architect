@@ -66,6 +66,84 @@ async function copyText(text) {
   try { await navigator.clipboard.writeText(text); hubToast('Copied'); } catch { hubToast('Copy failed; select and copy by hand', 'error'); }
 }
 
+// Code examples for an agent or workflow endpoint: one tab per language, each with a copy button.
+const SNIPPET_LANGS = [['curl', 'curl'], ['javascript', 'JavaScript'], ['python', 'Python']];
+function snippetsHtml(info) {
+  return `<div class="h-snip">
+    <div class="h-snip-tabs" role="tablist">${SNIPPET_LANGS.map(([k, label], i) => `<button type="button" role="tab" class="h-snip-tab${i ? '' : ' active'}" data-lang="${k}">${label}</button>`).join('')}
+      <button type="button" class="h-btn h-btn-ghost h-btn-sm h-snip-copy">Copy</button></div>
+    <pre class="h-code h-snip-code">${esc(info[SNIPPET_LANGS[0][0]] || '')}</pre>
+  </div>`;
+}
+function wireSnippets(root, info) {
+  const box = root.querySelector('.h-snip');
+  if (!box) return;
+  let lang = SNIPPET_LANGS[0][0];
+  box.querySelectorAll('.h-snip-tab').forEach((t) => t.addEventListener('click', () => {
+    lang = t.dataset.lang;
+    box.querySelectorAll('.h-snip-tab').forEach((x) => x.classList.toggle('active', x === t));
+    box.querySelector('.h-snip-code').textContent = info[lang] || '';
+  }));
+  box.querySelector('.h-snip-copy').addEventListener('click', () => copyText(info[lang] || ''));
+}
+
+// The endpoint an agent or workflow answers on; the Go server proxies /hooks/* on this same origin.
+function apiRunUrl(kind, id) {
+  return `${location.origin}/hooks/${kind === 'agent' ? 'agents' : 'workflows'}/${encodeURIComponent(id)}/run`;
+}
+
+// One API panel for an agent or a workflow: token, endpoint, code examples. Used by the Hub tab, the list pop-up and the flow editor.
+async function renderApiPanel(el, kind, id, { onChange } = {}, fresh = null) {
+  const path = `/${kind === 'agent' ? 'agents' : 'workflows'}/${encodeURIComponent(id)}/connect`;
+  if (!fresh) el.innerHTML = '<div class="h-muted">Loading…</div>';
+  let info;
+  try { info = fresh || await hubApi('GET', path); } catch (e) { el.innerHTML = `<div class="h-callout bad">${esc(e.message)}</div>`; return; }
+  const token = fresh ? fresh.token : '';
+  const key = info.key || (token ? { prefix: token.slice(0, 16) + '…', createdAt: Date.now() } : null);
+  const what = kind === 'agent' ? 'agent' : 'workflow';
+  el.innerHTML = `
+    <p class="h-muted">Call this ${what} from your own workflows and apps: n8n, Zapier, Make, a script or your backend. Each call runs the saved version and returns its result as JSON.</p>
+    ${info.localOnly ? '<div class="h-callout warn">This server has no public address, so only callers on this machine can reach these URLs.</div>' : ''}
+    ${token ? `<div class="h-callout good"><strong>Copy this token now.</strong> Only a hash is stored, so it cannot be shown again. The examples below have it filled in.<pre class="h-code">${esc(token)}</pre><button class="h-btn h-btn-sm" data-api="copy">Copy token</button></div>` : ''}
+    <div class="h-row" style="margin: var(--sp-3) 0">
+      ${key ? `<span class="h-pill good">API on</span><span class="h-muted">token ${esc(key.prefix)}${key.lastUsedAt ? ` · last used ${esc(timeAgo(key.lastUsedAt))}` : key.createdAt ? ` · created ${esc(timeAgo(key.createdAt))}` : ''}</span>` : '<span class="h-pill">No token yet</span>'}
+    </div>
+    <div class="h-row">
+      <button class="h-btn h-btn-sm" data-api="issue">${key ? 'Replace token' : 'Create API token'}</button>
+      ${key ? '<button class="h-btn h-btn-danger h-btn-sm" data-api="revoke">Revoke token</button>' : ''}
+    </div>
+    <span class="h-label">Endpoint</span>
+    <div class="h-api-url"><code>POST ${esc(info.runUrl)}</code><button class="h-btn h-btn-ghost h-btn-sm" data-api="url">Copy URL</button></div>
+    <span class="h-label">Request body</span>
+    <pre class="h-code">${esc(JSON.stringify(info.exampleBody, null, 2))}</pre>
+    <span class="h-label">Call it</span>
+    ${snippetsHtml(info)}
+    <span class="h-label">What comes back</span>
+    <ul class="h-list">
+      <li><code>status</code>: completed, awaiting_approval, failed, rejected or blocked. <code>output</code>: the result${kind === 'agent' ? ", checked against the agent's output schema" : ''}.</li>
+      <li>If a person must approve, the response is <code>202</code> with a <code>decisionUrl</code>. Approve in Jr Architect, or POST <code>{"approved": true}</code> to it.</li>
+      <li>Add <code>"wait": false</code> to get a run id back at once and poll <code>${esc(info.pollUrl)}</code>, or <code>"callbackUrl"</code> to be called when a paused run ends.</li>
+    </ul>
+    ${kind === 'agent' ? '<span class="h-label">Using n8n?</span><button class="h-btn h-btn-ghost h-btn-sm" data-api="n8n">Download a ready n8n workflow</button>' : ''}
+    <div class="h-help">The token can run only this ${what}, within its tools, permissions, guardrails and your hourly AI limit.</div>`;
+  wireSnippets(el, info);
+  const on = (name, fn) => { const b = el.querySelector(`[data-api="${name}"]`); if (b) b.addEventListener('click', fn); };
+  on('copy', () => copyText(token));
+  on('url', () => copyText(info.runUrl));
+  on('issue', async () => {
+    if (key && !confirm(`Replace the token? Anything calling this ${what} with the old one stops working.`)) return;
+    try { renderApiPanel(el, kind, id, { onChange }, await hubApi('POST', path)); if (onChange) onChange(); } catch (e) { hubToast(e.message, 'error'); }
+  });
+  on('revoke', async () => {
+    if (!confirm(`Revoke the token? API calls to this ${what} will be refused.`)) return;
+    try { await hubApi('DELETE', path); hubToast('Token revoked'); renderApiPanel(el, kind, id, { onChange }); if (onChange) onChange(); } catch (e) { hubToast(e.message, 'error'); }
+  });
+  on('n8n', () => {
+    downloadJSON(`${id}.n8n-workflow.json`, info.workflow);
+    hubToast(token ? 'Workflow downloaded with your token filled in' : 'Workflow downloaded; paste your token into the HTTP Request node');
+  });
+}
+
 // shell.js owns the theme.
 function toggleTheme() { if (window.jrToggleTheme) window.jrToggleTheme(); }
 
