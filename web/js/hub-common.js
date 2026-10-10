@@ -66,6 +66,27 @@ async function copyText(text) {
   try { await navigator.clipboard.writeText(text); hubToast('Copied'); } catch { hubToast('Copy failed; select and copy by hand', 'error'); }
 }
 
+// Code examples for an agent or workflow endpoint: one tab per language, each with a copy button.
+const SNIPPET_LANGS = [['curl', 'curl'], ['javascript', 'JavaScript'], ['python', 'Python']];
+function snippetsHtml(info) {
+  return `<div class="h-snip">
+    <div class="h-snip-tabs" role="tablist">${SNIPPET_LANGS.map(([k, label], i) => `<button type="button" role="tab" class="h-snip-tab${i ? '' : ' active'}" data-lang="${k}">${label}</button>`).join('')}
+      <button type="button" class="h-btn h-btn-ghost h-btn-sm h-snip-copy">Copy</button></div>
+    <pre class="h-code h-snip-code">${esc(info[SNIPPET_LANGS[0][0]] || '')}</pre>
+  </div>`;
+}
+function wireSnippets(root, info) {
+  const box = root.querySelector('.h-snip');
+  if (!box) return;
+  let lang = SNIPPET_LANGS[0][0];
+  box.querySelectorAll('.h-snip-tab').forEach((t) => t.addEventListener('click', () => {
+    lang = t.dataset.lang;
+    box.querySelectorAll('.h-snip-tab').forEach((x) => x.classList.toggle('active', x === t));
+    box.querySelector('.h-snip-code').textContent = info[lang] || '';
+  }));
+  box.querySelector('.h-snip-copy').addEventListener('click', () => copyText(info[lang] || ''));
+}
+
 // shell.js owns the theme.
 function toggleTheme() { if (window.jrToggleTheme) window.jrToggleTheme(); }
 

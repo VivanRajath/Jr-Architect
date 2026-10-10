@@ -785,10 +785,10 @@ function configForm(n) {
   switch (n.type) {
     case 'trigger': return `
       <label class="h-label">Started by</label>
-      <select class="h-select" data-cfg="mode"><option value="manual" ${c.mode === 'manual' ? 'selected' : ''}>Run button</option><option value="webhook" ${c.mode === 'webhook' ? 'selected' : ''}>Webhook (n8n, scripts) or Run button</option></select>
+      <select class="h-select" data-cfg="mode"><option value="manual" ${c.mode === 'manual' ? 'selected' : ''}>Run button</option><option value="webhook" ${c.mode === 'webhook' ? 'selected' : ''}>API call or Run button</option></select>
       <label class="h-label">Test input (JSON)</label>
       <textarea class="h-textarea mono" rows="7" data-tpl="sample">${esc(JSON.stringify(c.sample, null, 2))}</textarea>
-      <div class="h-help">Used when you click Run workflow. A webhook call sends its own input.</div>`;
+      <div class="h-help">Used when you click Run workflow. An API call sends its own input.</div>`;
     case 'agent': {
       const a = F.agents.find((x) => x.id === c.agentId);
       return `
@@ -816,7 +816,7 @@ function configForm(n) {
       <textarea class="h-textarea mono" rows="2" data-tpl="headers">${esc(JSON.stringify(c.headers, null, 2))}</textarea>
       ${c.method === 'POST' ? `<label class="h-label">Body</label>${tpl('body', 5)}` : exprHelp(n)}
       <div class="h-help">HTTPS only; private network addresses are refused on the public server.</div>`;
-    case 'output': return `<label class="h-label">Result</label>${tpl('value', 5, 'What the Run button, the webhook caller or n8n gets back.')}`;
+    case 'output': return `<label class="h-label">Result</label>${tpl('value', 5, 'What the Run button or an API caller gets back.')}`;
     default: return '';
   }
 }
@@ -1005,7 +1005,7 @@ async function runsPanel(p) {
   if (!F.id) { p.innerHTML = '<h3>Executions</h3><div class="h-muted">Save the workflow to keep a history of its runs.</div>'; return; }
   p.innerHTML = '<h3>Executions</h3><div class="h-muted">Loading…</div>';
   const { runs } = await hubApi('GET', `/workflows/${F.id}/runs`);
-  p.innerHTML = `<h3>Executions</h3><p class="h-muted" style="margin-bottom: var(--sp-3)">Runs from the editor, the webhook and n8n. Click one to show it on the canvas.</p>
+  p.innerHTML = `<h3>Executions</h3><p class="h-muted" style="margin-bottom: var(--sp-3)">Runs from the editor and API calls. Click one to show it on the canvas.</p>
     ${runs.length ? runs.map((r) => `<div class="f-run-item" data-run="${esc(r.id)}"><span class="h-pill s-${esc(r.status)}">${esc(STATUS_WORD[r.status] || r.status)}</span><span>${esc(r.source)}</span><span class="h-muted">${esc(timeAgo(r.startedAt))}</span></div>`).join('') : '<div class="h-muted">No runs yet.</div>'}`;
   p.querySelectorAll('[data-run]').forEach((el) => el.addEventListener('click', () => {
     const r = runs.find((x) => x.id === el.dataset.run);
@@ -1016,29 +1016,30 @@ async function runsPanel(p) {
 }
 
 async function hookPanel(p, token) {
-  if (!F.id) { p.innerHTML = '<h3>Webhook</h3><div class="h-muted">Save the workflow first.</div>'; return; }
+  if (!F.id) { p.innerHTML = '<h3>API</h3><div class="h-muted">Save the workflow first.</div>'; return; }
   const info = token ? token : await hubApi('GET', `/workflows/${F.id}/connect`);
   const key = info.key;
   p.innerHTML = `
-    <h3>Webhook</h3>
-    <p class="h-muted">Start this workflow from anywhere: n8n (an HTTP Request node), a script, or another service. It runs exactly as the Run button does, with its own token.</p>
+    <h3>API</h3>
+    <p class="h-muted">Run this workflow from your own apps and automations: n8n, Zapier, Make, a script or your backend. It runs exactly as the Run button does, with its own token.</p>
     ${info.localOnly ? '<div class="h-callout warn">This server has no public address, so only callers on this machine can reach it.</div>' : ''}
-    ${info.token ? `<div class="h-callout good"><strong>Copy this token now.</strong> Only a hash is kept.<pre class="h-code">${esc(info.token)}</pre><button class="h-btn h-btn-sm" id="w-copy">Copy</button></div>` : ''}
-    <div class="h-row" style="margin: var(--sp-3) 0">${key ? `<span class="h-pill good">Enabled</span><span class="h-muted">${esc(key.prefix)}${key.lastUsedAt ? ` · last used ${esc(timeAgo(key.lastUsedAt))}` : ''}</span>` : '<span class="h-pill">Off</span>'}</div>
-    <div class="h-row"><button class="h-btn h-btn-sm" id="w-issue">${key ? 'Replace token' : 'Enable webhook'}</button>${key ? '<button class="h-btn h-btn-danger h-btn-sm" id="w-off">Disable</button>' : ''}</div>
-    <span class="h-label">Call</span><pre class="h-code">POST ${esc(info.runUrl)}
+    ${info.token ? `<div class="h-callout good"><strong>Copy this token now.</strong> Only a hash is kept. The examples below have it filled in.<pre class="h-code">${esc(info.token)}</pre><button class="h-btn h-btn-sm" id="w-copy">Copy token</button></div>` : ''}
+    <div class="h-row" style="margin: var(--sp-3) 0">${key ? `<span class="h-pill good">API on</span><span class="h-muted">${esc(key.prefix)}${key.lastUsedAt ? ` · last used ${esc(timeAgo(key.lastUsedAt))}` : ''}</span>` : '<span class="h-pill">No token yet</span>'}</div>
+    <div class="h-row"><button class="h-btn h-btn-sm" id="w-issue">${key ? 'Replace token' : 'Create API token'}</button>${key ? '<button class="h-btn h-btn-danger h-btn-sm" id="w-off">Revoke</button>' : ''}</div>
+    <span class="h-label">Endpoint</span><pre class="h-code">POST ${esc(info.runUrl)}
 Authorization: Bearer &lt;token&gt;
 
 ${esc(JSON.stringify(info.exampleBody, null, 2))}</pre>
-    <span class="h-label">curl</span><pre class="h-code">${esc(info.curl)}</pre>
-    <div class="h-help">A paused run answers 202; approve it here or POST {"approved": true} to ${esc(info.decisionUrl)}.</div>`;
+    <span class="h-label">Call it</span>${snippetsHtml(info)}
+    <div class="h-help">The response has <code>status</code> and <code>output</code>. A paused run answers 202; approve it here or POST {"approved": true} to ${esc(info.decisionUrl)}.</div>`;
+  wireSnippets(p, info);
   if ($('w-copy')) $('w-copy').addEventListener('click', () => copyText(info.token));
   $('w-issue').addEventListener('click', async () => {
     if (key && !confirm('Replace the token? Callers using the old one stop working.')) return;
     hookPanel(p, await hubApi('POST', `/workflows/${F.id}/connect`));
   });
   if ($('w-off')) $('w-off').addEventListener('click', async () => {
-    if (!confirm('Disable the webhook?')) return;
+    if (!confirm('Revoke the token? API calls to this workflow will be refused.')) return;
     await hubApi('DELETE', `/workflows/${F.id}/connect`);
     hookPanel(p);
   });
